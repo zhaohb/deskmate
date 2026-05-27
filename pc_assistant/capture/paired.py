@@ -1,0 +1,209 @@
+"""Paired capture pipeline — the heart of the recorder.
+
+Each capture:
+  1. Snapshot the focused app/window/title/url.
+  2. Apply window filters (exclude apps, incognito titles, etc.).
+  3. Take one screenshot per requested monitor.
+  4. Walk the UIA tree of the focused window.
+  5. Optionally OCR the screenshot (engine-driven fallback).
+  6. Optionally PII-redact OCR & accessibility text.
+  7. Insert a `frames` row + attached `ocr_text` + `accessibility` rows.
+
+The order is intentionally stable so each frame is paired with the matching
+OCR and accessibility data.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+import time
+from datetime import datetime, timezone
+from typing import Any
+
+from .. import events as bus
+from ..a11y.browser_url import resolve_browser_url
+from ..a11y.uia_tree import foreground_window, walk_focused_window
+from ..a11y.win_events import foreground_app_name
+from ..config import Config
+from ..core import is_app_excluded, is_title_private
+from ..core.filter import WindowFilter
+from ..db import DatabaseManager
+from ..logger import get
+from ..redact import maybe_redact
+from ..screen.capture import Monitor, grab_monitor, list_monitors
+from ..screen.ocr import OcrEngine, perform_ocr
+from ..screen.snapshot import SnapshotWriter
+
+logger = get("capture.paired")
+
+
+class PairedCapture:
+    """Stateful capture coordinator. Owns dedup/min-gap state."""
+
+    def __init__(self, cfg: Config, db: DatabaseManager) -> None:
+        self.cfg = cfg
+        self.db = db
+        self.snapshot = SnapshotWriter()
+        self._monitors: list[Monitor] = list_monitors()
+        self._filter = WindowFilter(
+            ignored_apps=cfg.filters.ignored_apps,
+            ignored_windows=cfg.filters.ignored_windows,
+            included_windows=cfg.filters.included_windows,
+        )
+        self._lock = threading.Lock()
+        self._last_at = 0.0
+        self._last_signature = ""
+
+    def _now(self) -> datetime:
+        return datetime.now(timezone.utc).astimezone()
+
+    def _select_monitors(self) -> list[Monitor]:
+        if not self._monitors:
+            self._monitors = list_monitors()
+        if self.cfg.capture.all_monitors:
+            return self._monitors
+        return self._monitors[:1]
+
+    def capture_once(self, *, trigger: str = "heartbeat", trigger_data: dict[str, Any] | None = None) -> list[int]:
+        """Run one paired capture. Returns the list of frame_ids written."""
+        if not self.cfg.capture.enabled:
+            return []
+        with self._lock:
+            gap = time.time() - self._last_at
+            if gap < self.cfg.capture.min_capture_gap_seconds:
+                return []
+            self._last_at = time.time()
+
+        hwnd, pid, title = foreground_window()
+        app = foreground_app_name(pid)
+
+        if is_app_excluded(app, self.cfg.filters.ignored_apps):
+            logger.debug("skip: excluded app %r", app)
+            return []
+        if self.cfg.filters.ignore_incognito and is_title_private(title):
+            logger.debug("skip: incognito window %r", title)
+            return []
+        if not self._filter.passes(app, title):
+            logger.debug("skip: filter denied app=%r title=%r", app, title)
+            return []
+
+        signature = f"{app}\x1f{title}\x1f{trigger}"
+        with self._lock:
+            same_as_last = signature == self._last_signature
+            self._last_signature = signature
+        if same_as_last and trigger == "heartbeat":
+            return []
+
+        tree = walk_focused_window(
+            max_depth=self.cfg.a11y.ax_depth,
+            max_nodes=self.cfg.a11y.ax_max_nodes,
+            hwnd=hwnd,
+        ) if self.cfg.a11y.enabled else None
+        browser_url = resolve_browser_url(app, pid=pid, hwnd=hwnd)
+        captured_at = self._now()
+        frame_ids: list[int] = []
+
+        for mon in self._select_monitors():
+            frame_id = self._write_one(
+                monitor=mon,
+                captured_at=captured_at,
+                hwnd=hwnd,
+                pid=pid,
+                app=app,
+                title=title,
+                browser_url=browser_url,
+                tree=tree,
+                trigger=trigger,
+            )
+            if frame_id:
+                frame_ids.append(frame_id)
+        if trigger_data is not None:
+            self.db.insert_ui_event(
+                event_type=f"capture/{trigger}",
+                app_name=app,
+                window_title=title,
+                browser_url=browser_url,
+                data={"frame_ids": frame_ids, **trigger_data},
+            )
+        return frame_ids
+
+    def _write_one(
+        self,
+        *,
+        monitor: Monitor,
+        captured_at: datetime,
+        hwnd: int,
+        pid: int,
+        app: str,
+        title: str,
+        browser_url: str | None,
+        tree: Any,
+        trigger: str,
+    ) -> int | None:
+        snapshot_path: str | None = None
+        width = height = 0
+        if self.cfg.capture.include_screenshot:
+            img = grab_monitor(monitor, max_width=self.cfg.capture.screenshot_max_width)
+            if img is not None:
+                width, height = img.size
+                p = self.snapshot.write(
+                    img, monitor_id=monitor.id, captured_at=captured_at,
+                    quality=self.cfg.capture.screenshot_jpeg_quality,
+                )
+                snapshot_path = str(p)
+        else:
+            img = None
+
+        frame_id = self.db.insert_frame(
+            monitor_id=monitor.id,
+            device_name=monitor.name,
+            app_name=app,
+            window_name=title,
+            browser_url=browser_url,
+            focused=True,
+            snapshot_path=snapshot_path,
+            width=width, height=height,
+            capture_trigger=trigger,
+            timestamp=captured_at.replace(microsecond=0).isoformat(),
+        )
+
+        # OCR (best-effort; never blocks frame insertion above).
+        if img is not None and self.cfg.ocr.engine != "off":
+            try:
+                engine = OcrEngine(self.cfg.ocr.engine)
+                text, words_json, conf = perform_ocr(
+                    img,
+                    engine,
+                    self.cfg.ocr.languages,
+                    tesseract_cmd=self.cfg.ocr.tesseract_cmd,
+                )
+                text = maybe_redact(text, self.cfg) if text else text
+                if text:
+                    self.db.attach_ocr(frame_id, text=text, text_json=words_json, engine=engine.value, confidence=conf)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ocr failed: %s", exc)
+
+        # Accessibility tree.
+        if tree is not None and tree.text:
+            ax_text = maybe_redact(tree.text, self.cfg) if tree.text else tree.text
+            try:
+                self.db.attach_accessibility(
+                    frame_id,
+                    text=ax_text,
+                    focused_role=tree.focused_role,
+                    focused_name=tree.focused_name,
+                    focused_value=maybe_redact(tree.focused_value or "", self.cfg) if tree.focused_value else None,
+                    tree_json=tree.to_json(),
+                    on_screen=1 if tree.on_screen else 0,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("a11y attach failed: %s", exc)
+
+        bus.send(bus.EventType.FRAME_WRITTEN, frame_id=frame_id, monitor_id=monitor.id, app_name=app, window_title=title, trigger=trigger)
+        return frame_id
+
+
+def paired_capture(cfg: Config, db: DatabaseManager, *, trigger: str = "manual") -> list[int]:
+    """One-shot helper. Equivalent of `paired_capture::paired_capture` for ad-hoc calls."""
+    return PairedCapture(cfg, db).capture_once(trigger=trigger)

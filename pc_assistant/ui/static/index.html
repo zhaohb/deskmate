@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pc_assistant</title>
+    <link rel="stylesheet" href="/ui/assets/app.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="logo">pa</div>
+          <div>
+            <h1>pc_assistant</h1>
+            <p>本地 PC 活动记录器</p>
+          </div>
+        </div>
+
+        <nav class="nav">
+          <button class="nav-item active" data-view="overview">总览</button>
+          <button class="nav-item" data-view="search">搜索</button>
+          <button class="nav-item" data-view="timeline">时间线</button>
+          <button class="nav-item" data-view="events">事件</button>
+          <button class="nav-item" data-view="settings">配置</button>
+        </nav>
+
+        <section class="panel compact">
+          <div class="panel-title">录制状态</div>
+          <div class="status-row">
+            <span>HTTP</span>
+            <strong id="healthStatus">连接中</strong>
+          </div>
+          <div class="status-row">
+            <span>帧</span>
+            <strong id="frameCount">-</strong>
+          </div>
+          <div class="status-row">
+            <span>转写</span>
+            <strong id="transcriptCount">-</strong>
+          </div>
+          <div class="status-row">
+            <span>事件</span>
+            <strong id="eventCount">-</strong>
+          </div>
+        </section>
+      </aside>
+
+      <main class="content">
+        <header class="topbar">
+          <div>
+            <h2 id="viewTitle">总览</h2>
+            <p id="viewSubtitle">健康状态、活动参数和最近记录</p>
+          </div>
+          <div class="actions">
+            <button id="captureButton" class="primary">立即捕获</button>
+            <button id="refreshButton">刷新</button>
+          </div>
+        </header>
+
+        <section id="view-overview" class="view active">
+          <div class="grid three">
+            <article class="card">
+              <span class="eyebrow">Health</span>
+              <h3 id="healthMessage">-</h3>
+              <p id="healthDetails">等待 API 返回</p>
+            </article>
+            <article class="card">
+              <span class="eyebrow">ActivityFeed</span>
+              <h3><span id="activityInterval">-</span> ms</h3>
+              <p>建议捕获间隔，来自本地自适应 FPS 策略。</p>
+            </article>
+            <article class="card">
+              <span class="eyebrow">Schema</span>
+              <h3 id="schemaVersion">-</h3>
+              <p>当前 SQLite schema 版本。</p>
+            </article>
+          </div>
+
+          <div class="grid two">
+            <section class="panel">
+              <div class="panel-title">最近帧</div>
+              <div id="recentFrames" class="list empty">暂无数据</div>
+            </section>
+            <section class="panel">
+              <div class="panel-title">最近事件</div>
+              <div id="recentEventsOverview" class="list empty">暂无数据</div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-search" class="view">
+          <form id="searchForm" class="search-bar">
+            <input id="searchInput" placeholder="搜索 OCR / UIA / 音频，例如 Cursor、错误信息、会议内容" />
+            <select id="contentType">
+              <option value="all">全部</option>
+              <option value="ocr">OCR/帧</option>
+              <option value="ui">UI 事件</option>
+              <option value="audio">音频</option>
+            </select>
+            <button class="primary" type="submit">搜索</button>
+          </form>
+          <section class="panel">
+            <div class="panel-title">搜索结果</div>
+            <div id="searchResults" class="list empty">输入关键词后搜索</div>
+          </section>
+        </section>
+
+        <section id="view-timeline" class="view">
+          <div class="timeline-layout">
+            <section class="panel">
+              <div class="panel-title">帧时间线</div>
+              <div id="timelineFrames" class="list empty">暂无数据</div>
+            </section>
+            <section class="panel preview">
+              <div class="panel-title">帧详情</div>
+              <img id="framePreview" alt="frame preview" />
+              <pre id="frameDetails">{}</pre>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-events" class="view">
+          <div class="events-layout">
+            <section class="panel">
+              <div class="panel-title">最近 UI 事件</div>
+              <div id="eventsList" class="list empty">暂无数据</div>
+            </section>
+            <section class="panel">
+              <div class="panel-title">事件详情</div>
+              <pre id="eventDetails">点击左侧事件查看完整详情</pre>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-settings" class="view">
+          <div class="grid two">
+            <section class="panel">
+              <div class="panel-title">配置</div>
+              <pre id="configDump">{}</pre>
+            </section>
+            <section class="panel">
+              <div class="panel-title">监视器</div>
+              <div id="monitorList" class="list empty">暂无数据</div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <template id="itemTemplate">
+      <article class="list-item">
+        <div class="item-main">
+          <strong class="item-title"></strong>
+          <p class="item-subtitle"></p>
+        </div>
+        <button class="item-action">查看</button>
+      </article>
+    </template>
+
+    <script src="/ui/assets/app.js" defer></script>
+  </body>
+</html>

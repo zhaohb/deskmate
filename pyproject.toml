@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pc_assistant"
+version = "0.1.0"
+description = "Local-first PC activity recorder for Windows."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "pc_assistant contributors" }]
+keywords = ["activity", "recorder", "uia", "ocr", "memory", "windows"]
+
+dependencies = [
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "tomli>=2.0; python_version<'3.11'",
+    "mss>=9.0",
+    "Pillow>=10.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "typer>=0.9",
+    "httpx>=0.27",
+    "anyio>=4.2",
+    "pywin32>=306; platform_system=='Windows'",
+    "uiautomation>=2.0; platform_system=='Windows'",
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+ocr-tesseract = ["pytesseract>=0.3.10"]
+ocr-winrt = ["winrt-Windows.Foundation>=2.0; platform_system=='Windows'", "winrt-Windows.Foundation.Collections>=2.0; platform_system=='Windows'", "winrt-Windows.Globalization>=2.0; platform_system=='Windows'", "winrt-Windows.Media.Ocr>=2.0; platform_system=='Windows'", "winrt-Windows.Graphics.Imaging>=2.0; platform_system=='Windows'", "winrt-Windows.Storage.Streams>=2.0; platform_system=='Windows'"]
+audio = ["sounddevice>=0.4.6", "faster-whisper>=1.0", "numpy>=1.26", "soundfile>=0.12", "pyaudiowpatch>=0.2; platform_system=='Windows'"]
+vad = ["silero-vad>=5.1", "torch>=2.0", "numpy>=1.26"]
+speaker = ["pyannote.audio>=3.1", "torch>=2.0", "soundfile>=0.12", "numpy>=1.26"]
+redact-onnx = ["onnxruntime>=1.17", "tokenizers>=0.15", "numpy>=1.26"]
+redact-onnx-dml = ["onnxruntime-directml>=1.17; platform_system=='Windows'", "tokenizers>=0.15", "numpy>=1.26"]
+mcp = ["mcp>=1.0"]
+pipes = ["PyYAML>=6.0"]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+full = [
+    "pytesseract>=0.3.10",
+    "sounddevice>=0.4.6",
+    "faster-whisper>=1.0",
+    "soundfile>=0.12",
+    "pyaudiowpatch>=0.2; platform_system=='Windows'",
+    "silero-vad>=5.1",
+    "onnxruntime>=1.17",
+    "tokenizers>=0.15",
+    "PyYAML>=6.0",
+    "numpy>=1.26",
+]
+
+[project.scripts]
+pc-assistant = "pc_assistant.engine.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pc_assistant*"]
+
+[tool.setuptools.package-data]
+pc_assistant = ["ui/static/*.html", "ui/static/*.css", "ui/static/*.js"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501", "B008"]
