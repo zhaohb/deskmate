@@ -29,7 +29,10 @@ WM_LBUTTONDOWN = 0x0201
 WM_RBUTTONDOWN = 0x0204
 WM_MBUTTONDOWN = 0x0207
 WM_XBUTTONDOWN = 0x020B
+WM_MOUSEWHEEL = 0x020A
 HC_ACTION = 0
+
+_MOVE_THROTTLE_S = 0.25
 
 VK_BACK = 0x08
 VK_TAB = 0x09
@@ -92,11 +95,13 @@ class InputHooks:
         *,
         capture_clicks: bool = True,
         capture_keystrokes: bool = True,
-        debounce_seconds: float = 5.0,
+        capture_mouse_move: bool = False,
+        debounce_seconds: float = 0.3,
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.capture_clicks = capture_clicks
         self.capture_keystrokes = capture_keystrokes
+        self.capture_mouse_move = capture_mouse_move
         self.debounce_seconds = debounce_seconds
         self._on_event = on_event
         self._thread: threading.Thread | None = None
@@ -105,6 +110,7 @@ class InputHooks:
         self._buf: list[str] = []
         self._buf_started_at: float = 0.0
         self._flush_thread: threading.Thread | None = None
+        self._last_move_emit = 0.0
 
     @property
     def available(self) -> bool:
@@ -134,7 +140,8 @@ class InputHooks:
 
         mod = kernel32.GetModuleHandleW(None)
         kproc = HOOKPROC(self._kb_callback) if self.capture_keystrokes else None
-        mproc = HOOKPROC(self._mouse_callback) if self.capture_clicks else None
+        need_mouse = self.capture_clicks or self.capture_mouse_move or self._on_event is not None
+        mproc = HOOKPROC(self._mouse_callback) if need_mouse else None
         self._kproc, self._mproc = kproc, mproc
 
         khook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, kproc, mod, 0) if kproc else None
@@ -160,7 +167,18 @@ class InputHooks:
                 activity_default().record(ActivityKind.KEY_PRESS)
                 kbd = ctypes.cast(lparam, ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
                 vk = int(kbd.vkCode)
-                if vk in _MODIFIERS or vk in _NAV_KEYS:
+                hwnd, pid, title = _foreground_hwnd_pid()
+                app = foreground_app_name(pid)
+                if vk in _NAV_KEYS and self._on_event:
+                    self._on_event({
+                        "event_type": "key",
+                        "key_code": vk,
+                        "app_name": app,
+                        "window_title": title,
+                        "hwnd": hwnd,
+                        "pid": pid,
+                    })
+                if vk in _MODIFIERS:
                     return ctypes.windll.user32.CallNextHookEx(0, ncode, wparam, lparam)  # type: ignore[attr-defined]
                 char = self._vk_to_char(vk)
                 if char:
@@ -175,20 +193,50 @@ class InputHooks:
     def _mouse_callback(self, ncode: int, wparam: int, lparam: int) -> int:
         try:
             if ncode == HC_ACTION:
+                ms = ctypes.cast(lparam, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
+                hwnd, pid, title = _foreground_hwnd_pid()
+                app = foreground_app_name(pid)
                 button = self._wparam_to_button(int(wparam))
                 if button:
                     activity_default().record(ActivityKind.MOUSE_CLICK)
                     self._flush(reason="click")
-                    ms = ctypes.cast(lparam, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
-                    hwnd, pid, title = _foreground_hwnd_pid()
-                    app = foreground_app_name(pid)
                     payload = {"button": button, "x": int(ms.pt.x), "y": int(ms.pt.y),
                                "app_name": app, "window_title": title, "hwnd": hwnd, "pid": pid}
                     bus.send(bus.EventType.CLICK, **payload)
                     if self._on_event:
                         self._on_event({"event_type": "click", **payload})
+                elif int(wparam) == WM_MOUSEWHEEL:
+                    activity_default().record(ActivityKind.SCROLL)
+                    delta = ctypes.c_int16(ms.mouseData >> 16).value
+                    payload = {
+                        "event_type": "scroll",
+                        "x": int(ms.pt.x),
+                        "y": int(ms.pt.y),
+                        "delta_x": 0,
+                        "delta_y": int(delta),
+                        "app_name": app,
+                        "window_title": title,
+                        "hwnd": hwnd,
+                        "pid": pid,
+                    }
+                    if self._on_event:
+                        self._on_event(payload)
+                elif self.capture_mouse_move:
+                    now = time.time()
+                    if now - self._last_move_emit >= _MOVE_THROTTLE_S:
+                        self._last_move_emit = now
+                        activity_default().record(ActivityKind.MOUSE_MOVE)
+                        if self._on_event:
+                            self._on_event({
+                                "event_type": "move",
+                                "x": int(ms.pt.x),
+                                "y": int(ms.pt.y),
+                                "app_name": app,
+                                "window_title": title,
+                                "hwnd": hwnd,
+                                "pid": pid,
+                            })
                 else:
-                    # mouse move / scroll without button: only feed activity feed (no event)
                     activity_default().record(ActivityKind.MOUSE_MOVE)
         except Exception as exc:  # noqa: BLE001
             logger.debug("mouse cb err: %s", exc)
@@ -246,4 +294,4 @@ class InputHooks:
         payload = {"text": text, "reason": reason, "app_name": app, "window_title": title, "hwnd": hwnd, "pid": pid}
         bus.send(bus.EventType.KEY_TEXT, **payload)
         if self._on_event:
-            self._on_event({"event_type": "key_text", **payload})
+            self._on_event({"event_type": "text", **payload})

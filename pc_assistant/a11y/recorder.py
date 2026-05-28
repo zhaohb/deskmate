@@ -20,6 +20,7 @@ class UiRecorder:
         self.input = InputHooks(
             capture_clicks=cfg.capture_clicks,
             capture_keystrokes=cfg.capture_keystrokes,
+            capture_mouse_move=cfg.capture_mouse_move,
             debounce_seconds=cfg.text_input_debounce_seconds,
             on_event=on_event,
         )

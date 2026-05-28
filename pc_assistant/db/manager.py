@@ -211,6 +211,60 @@ class DatabaseManager:
         )
 
     # ─── ui_events ───────────────────────────────────────────────────────────
+    def insert_ui_events_batch(self, events: list[Any]) -> list[int]:
+        """Batch insert UI events."""
+        from ..a11y.ui_event_types import UiEventInsert  # noqa: PLC0415
+
+        if not events:
+            return []
+        row_ids: list[int] = []
+        with self._lock:
+            for ev in events:
+                if isinstance(ev, UiEventInsert):
+                    et, app, title, url, data_json = ev.to_db_row()
+                else:
+                    et = str(ev.get("event_type", "event"))
+                    app = ev.get("app_name")
+                    title = ev.get("window_title")
+                    url = ev.get("browser_url")
+                    data_json = json.dumps(ev.get("data") or {}, ensure_ascii=False)
+                cur = self._conn.execute(
+                    """INSERT INTO ui_events
+                       (timestamp, relative_ms, event_type,
+                        app_name, window_title, browser_url, frame_id,
+                        data_json, element_json)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (
+                        _now_iso(), 0, et, app, title, url, None,
+                        data_json, None,
+                    ),
+                )
+                eid = int(cur.lastrowid)
+                row_ids.append(eid)
+                text_content = ""
+                if et == "text" or et == "clipboard":
+                    try:
+                        payload = json.loads(data_json)
+                        text_content = payload.get("content", "") or ""
+                    except Exception:  # noqa: BLE001
+                        pass
+                self._conn.execute(
+                    """INSERT INTO ui_events_fts
+                       (event_id, timestamp, event_type,
+                        app_name, window_title, text_content)
+                       VALUES (?,?,?,?,?,?)""",
+                    (eid, _now_iso(), et, app or "", title or "", text_content),
+                )
+        return row_ids
+
+    def update_ui_event_frame_id(self, row_id: int, frame_id: int) -> None:
+        """Set frame_id on a UI event row if not already linked."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE ui_events SET frame_id = ? WHERE id = ? AND frame_id IS NULL",
+                (frame_id, row_id),
+            )
+
     def insert_ui_event(
         self,
         *,
@@ -339,6 +393,32 @@ class DatabaseManager:
                 (ended_at or _now_iso(), meeting_id),
             )
 
+    def update_meeting(
+        self,
+        meeting_id: int,
+        *,
+        name: str | None = None,
+        note: str | None = None,
+    ) -> bool:
+        """Patch a meeting's name and/or note. Returns True if a row was updated."""
+        sets: list[str] = []
+        params: list[Any] = []
+        if name is not None:
+            sets.append("name = ?")
+            params.append(name)
+        if note is not None:
+            sets.append("note = ?")
+            params.append(note)
+        if not sets:
+            return False
+        params.append(meeting_id)
+        with self._lock:
+            cur = self._conn.execute(
+                f"UPDATE meetings SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+            return cur.rowcount > 0
+
     def update_meeting_metadata(self, meeting_id: int, metadata: dict[str, Any]) -> None:
         with self._lock:
             row = self._conn.execute(
@@ -414,7 +494,44 @@ class DatabaseManager:
                 (meeting_id,),
             ).fetchall()
 
-    # ─── search ──────────────────────────────────────────────────────────────
+    # ─── search ─────────────────────────────────────────────────────────────
+    def search(
+        self,
+        query: str | None,
+        content_type: str = "all",
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        app_name: str | None = None,
+        window_name: str | None = None,
+        frame_name: str | None = None,
+        browser_url: str | None = None,
+        focused: bool | None = None,
+        min_length: int | None = None,
+        max_length: int | None = None,
+        speaker_ids: list[int] | None = None,
+    ) -> list[Any]:
+        from .search_engine import SearchEngine
+
+        return SearchEngine(self._conn, self._lock).search(
+            query or "",
+            content_type,
+            limit=limit,
+            offset=offset,
+            start_time=start_time,
+            end_time=end_time,
+            app_name=app_name,
+            window_name=window_name,
+            frame_name=frame_name,
+            browser_url=browser_url,
+            focused=focused,
+            min_length=min_length,
+            max_length=max_length,
+            speaker_ids=speaker_ids,
+        )
+
     def search_frames(
         self,
         query: str | None,
@@ -426,76 +543,33 @@ class DatabaseManager:
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        wheres: list[str] = []
-        args: list[Any] = []
-        if query:
-            wheres.append("frames_full_text MATCH ?")
-            args.append(query)
-        if app_name:
-            wheres.append("frames_full_text.app_name LIKE ?")
-            args.append(f"%{app_name}%")
-        if window_name:
-            wheres.append("frames_full_text.window_name LIKE ?")
-            args.append(f"%{window_name}%")
-        if start:
-            wheres.append("frames_full_text.timestamp >= ?")
-            args.append(start)
-        if end:
-            wheres.append("frames_full_text.timestamp <= ?")
-            args.append(end)
-        clause = (" WHERE " + " AND ".join(wheres)) if wheres else ""
-        sql = f"""
-            SELECT frames_full_text.frame_id    AS frame_id,
-                   frames_full_text.timestamp   AS timestamp,
-                   frames_full_text.app_name    AS app_name,
-                   frames_full_text.window_name AS window_name,
-                   frames_full_text.browser_url AS browser_url,
-                   frames_full_text.ocr_text    AS ocr_text,
-                   frames_full_text.accessibility_text AS accessibility_text,
-                   snippet(frames_full_text, -1, '[', ']', '…', 16) AS snippet,
-                   bm25(frames_full_text) AS rank
-              FROM frames_full_text
-              {clause}
-             ORDER BY {"rank" if query else "frames_full_text.timestamp DESC"}
-             LIMIT ? OFFSET ?
-        """
-        args.extend([limit, offset])
-        with self._lock:
-            return self._conn.execute(sql, args).fetchall()
+        from .search_engine import SearchEngine
 
-    def search_transcripts(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
-        with self._lock:
-            return self._conn.execute(
-                """SELECT transcription_id, timestamp, speaker_id,
-                          snippet(audio_transcriptions_fts, -1, '[', ']', '…', 16) AS snippet,
-                          bm25(audio_transcriptions_fts) AS rank
-                     FROM audio_transcriptions_fts
-                    WHERE audio_transcriptions_fts MATCH ?
-                    ORDER BY rank LIMIT ?""",
-                (query, limit),
-            ).fetchall()
+        rows = SearchEngine(self._conn, self._lock)._search_ocr(
+            query or "",
+            limit=limit,
+            offset=offset,
+            start=start,
+            end=end,
+            app_name=app_name,
+            window_name=window_name,
+            frame_name=None,
+            browser_url=None,
+            focused=None,
+            min_length=None,
+            max_length=None,
+        )
+        return rows
 
-    def search_ui_events(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
-        with self._lock:
-            return self._conn.execute(
-                """SELECT event_id, timestamp, event_type, app_name, window_title,
-                          snippet(ui_events_fts, -1, '[', ']', '…', 16) AS snippet,
-                          bm25(ui_events_fts) AS rank
-                     FROM ui_events_fts
-                    WHERE ui_events_fts MATCH ?
-                    ORDER BY rank LIMIT ?""",
-                (query, limit),
-            ).fetchall()
-
-    def recent_frames(self, limit: int = 50) -> list[dict[str, Any]]:
+    def recent_frames(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         with self._lock:
             return self._conn.execute(
                 """SELECT f.*, o.text AS ocr_text, a.text AS accessibility_text
                      FROM frames f
                      LEFT JOIN ocr_text             o ON o.frame_id = f.id
                      LEFT JOIN frame_accessibility  a ON a.frame_id = f.id
-                    ORDER BY f.timestamp DESC LIMIT ?""",
-                (limit,),
+                    ORDER BY f.timestamp DESC LIMIT ? OFFSET ?""",
+                (limit, offset),
             ).fetchall()
 
     def frame_by_id(self, frame_id: int) -> dict[str, Any] | None:
@@ -516,16 +590,16 @@ class DatabaseManager:
         with self._lock:
             self._conn.execute("UPDATE frames SET image_redacted = 1 WHERE id = ?", (frame_id,))
 
-    def recent_events(self, limit: int = 100) -> list[dict[str, Any]]:
+    def recent_events(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         with self._lock:
             return self._conn.execute(
-                "SELECT * FROM ui_events ORDER BY timestamp DESC LIMIT ?", (limit,)
+                "SELECT * FROM ui_events ORDER BY timestamp DESC LIMIT ? OFFSET ?", (limit, offset)
             ).fetchall()
 
-    def recent_transcripts(self, limit: int = 50) -> list[dict[str, Any]]:
+    def recent_transcripts(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         with self._lock:
             return self._conn.execute(
-                "SELECT * FROM audio_transcriptions ORDER BY timestamp DESC LIMIT ?", (limit,)
+                "SELECT * FROM audio_transcriptions ORDER BY timestamp DESC LIMIT ? OFFSET ?", (limit, offset)
             ).fetchall()
 
     # ─── tags / memories ─────────────────────────────────────────────────────

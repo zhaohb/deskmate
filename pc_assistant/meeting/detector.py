@@ -1,8 +1,8 @@
 """Meeting detection and transcript linking.
 
-The design follows screenpipe's meeting detector at a smaller scale: profiles
-identify meeting apps/pages, and active-call signals prefer "leave/hang up"
-controls over weak hints like a mute button.
+The design uses meeting app profiles to identify calls from window titles,
+URLs, and UI signals; active-call detection prefers leave/hang-up controls
+over weak hints like a mute button.
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
 """Local pipe runtime.
 
-This implements the practical subset of screenpipe's pipe lifecycle for
-pc_assistant: durable execution rows, per-run output directories, permission
-context, timeouts and Python/JavaScript subprocess execution.
+This implements the pipe lifecycle for pc_assistant: durable execution rows,
+per-run output directories, permission context, timeouts and Python/JavaScript
+subprocess execution.
 """
 
 from __future__ import annotations

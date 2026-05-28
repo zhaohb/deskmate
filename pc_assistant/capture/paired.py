@@ -65,7 +65,7 @@ class PairedCapture:
             return self._monitors
         return self._monitors[:1]
 
-    def capture_once(self, *, trigger: str = "heartbeat", trigger_data: dict[str, Any] | None = None) -> list[int]:
+    def capture_once(self, *, trigger: str = "idle", trigger_data: dict[str, Any] | None = None) -> list[int]:
         """Run one paired capture. Returns the list of frame_ids written."""
         if not self.cfg.capture.enabled:
             return []
@@ -92,7 +92,7 @@ class PairedCapture:
         with self._lock:
             same_as_last = signature == self._last_signature
             self._last_signature = signature
-        if same_as_last and trigger == "heartbeat":
+        if same_as_last and trigger in ("heartbeat", "idle"):
             return []
 
         tree = walk_focused_window(
@@ -118,14 +118,7 @@ class PairedCapture:
             )
             if frame_id:
                 frame_ids.append(frame_id)
-        if trigger_data is not None:
-            self.db.insert_ui_event(
-                event_type=f"capture/{trigger}",
-                app_name=app,
-                window_title=title,
-                browser_url=browser_url,
-                data={"frame_ids": frame_ids, **trigger_data},
-            )
+        # ui_events.frame_id is linked via FrameLinker — no capture/* rows.
         return frame_ids
 
     def _write_one(

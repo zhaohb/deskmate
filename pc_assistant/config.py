@@ -23,16 +23,25 @@ else:  # pragma: no cover
 
 class CaptureConfig(BaseModel):
     enabled: bool = True
+    # Event-driven capture is the primary path; heartbeat is fallback when disabled.
+    event_driven: bool = True
     heartbeat_seconds: int = 60
     min_capture_gap_seconds: float = 1.0
     debounce_seconds: float = 1.5
+    min_capture_interval_ms: int = 200
+    idle_capture_interval_ms: int = 30_000
+    capture_on_keystroke: bool = False
+    capture_on_clipboard: bool = False
+    record_input_events: bool = True
+    ui_event_batch_size: int = 50
+    ui_event_batch_timeout_ms: int = 1000
+    scroll_stop_delay_ms: int = 300
     include_screenshot: bool = True
     screenshot_max_width: int = 1920
     screenshot_jpeg_quality: int = 80
     all_monitors: bool = False
     pause_extraction_on_input_ms: int = 800
-    # When true, the adaptive FPS loop will never go *below* `heartbeat_seconds`.
-    # When false, ActivityFeed fully controls the capture rate.
+    # Legacy heartbeat when event_driven=false
     adaptive_fps_floor: bool = True
 
 
@@ -40,15 +49,17 @@ class A11yConfig(BaseModel):
     enabled: bool = True
     ax_depth: int = 60
     ax_max_nodes: int = 5000
-    text_input_debounce_seconds: float = 5.0
+    text_input_debounce_seconds: float = 0.3
     capture_clicks: bool = True
     capture_keystrokes: bool = True
     capture_clipboard: bool = True
+    capture_mouse_move: bool = False
 
 
 class OcrConfig(BaseModel):
     engine: Literal["off", "winrt", "tesseract"] = "winrt"
-    languages: list[str] = ["en-US"]
+    # WinRT: zh-CN → zh-Hans; include en-US for mixed UI (bookmarks, URLs)
+    languages: list[str] = ["zh-CN", "en-US"]
     tesseract_cmd: str | None = None
 
 
@@ -58,13 +69,17 @@ class AudioConfig(BaseModel):
     chunk_seconds: int = 30
     loopback: bool = True
     microphone: bool = True
-    whisper_model: str = "base"
+    # Default tier uses large-v3-turbo; small is a balanced default for Chinese
+    whisper_model: str = "small"
     device: str = "cpu"
     compute_type: str = "int8"
     vad_threshold: float = 0.5
-    vad_min_segment_ms: int = 300
+    # Avoid very short clips; 300ms fragments cause Whisper hallucinations
+    vad_min_segment_ms: int = 1000
     vad_padding_ms: int = 200
     speaker_recognition: bool = False
+    # Language codes for transcription (ISO 639-1). [] = auto-detect all languages.
+    languages: list[str] = ["zh"]
 
 
 class RedactConfig(BaseModel):
@@ -90,6 +105,25 @@ class ServerConfig(BaseModel):
     port: int = 3030
 
 
+class OutlookConfig(BaseModel):
+    client_id: str = ""
+    tenant: str = "common"
+    redirect_uri: str | None = None
+    scopes: list[str] = ["offline_access", "User.Read", "Mail.Read", "Mail.Send"]
+
+
+class GmailConfig(BaseModel):
+    client_id: str = ""
+    client_secret: str = ""
+    redirect_uri: str | None = None
+    scopes: list[str] = [
+        "openid",
+        "email",
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.send",
+    ]
+
+
 class RetentionConfig(BaseModel):
     frame_days: int = 30
     audio_days: int = 30
@@ -108,6 +142,8 @@ class Config(BaseSettings):
     redact: RedactConfig = Field(default_factory=RedactConfig)
     filters: FilterConfig = Field(default_factory=FilterConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    outlook: OutlookConfig = Field(default_factory=OutlookConfig)
+    gmail: GmailConfig = Field(default_factory=GmailConfig)
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
 
 
@@ -149,12 +185,14 @@ capture_clipboard = true
 
 [ocr]
 engine = "winrt"     # winrt | tesseract | off
-languages = ["en-US"]
+languages = ["zh-CN", "en-US"]
 
 [audio]
 enabled = false
-whisper_model = "base"
+whisper_model = "small"
 device = "cpu"
+languages = ["zh"]
+vad_min_segment_ms = 1000
 
 [redact]
 enabled = false
@@ -166,6 +204,18 @@ ignore_incognito = true
 [server]
 host = "127.0.0.1"
 port = 3030
+
+[outlook]
+# Register a Microsoft Entra public client and add this redirect URI:
+# http://127.0.0.1:3030/connections/outlook/oauth/callback
+client_id = ""
+tenant = "common"
+
+[gmail]
+# Register a Google OAuth client and add this redirect URI:
+# http://127.0.0.1:3030/connections/gmail/oauth/callback
+client_id = ""
+client_secret = ""
 
 [retention]
 frame_days = 30

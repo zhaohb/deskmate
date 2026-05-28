@@ -161,6 +161,24 @@ def test_winrt_language_mapping() -> None:
     assert _winrt_languages(["chi_sim"]) == ["zh-Hans"]
 
 
+def test_pyaudio_stream_cleanup_tolerates_closed_stream() -> None:
+    from pc_assistant.audio.capture import _close_pyaudio_stream
+
+    class ClosedStream:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def stop_stream(self) -> None:
+            raise OSError("Stream not open")
+
+        def close(self) -> None:
+            self.closed = True
+
+    stream = ClosedStream()
+    _close_pyaudio_stream(stream)
+    assert stream.closed is True
+
+
 def test_transcriber_offsets_vad_segments() -> None:
     from pc_assistant.audio.transcribe import WhisperTranscriber
     from pc_assistant.audio.vad import SpeechSegment
@@ -177,11 +195,21 @@ def test_transcriber_offsets_vad_segments() -> None:
         def __init__(self) -> None:
             self.vad_filters: list[bool] = []
 
-        def transcribe(self, _path: str, *, beam_size: int, vad_filter: bool, word_timestamps: bool):  # noqa: ARG002
+        def transcribe(
+            self,
+            _path: str,
+            *,
+            beam_size: int,
+            vad_filter: bool,
+            word_timestamps: bool,
+            task: str = "transcribe",
+        ):  # noqa: ARG002
             self.vad_filters.append(vad_filter)
+            self.last_task = task
             return [Segment()], Info()
 
     transcriber = WhisperTranscriber.__new__(WhisperTranscriber)
+    transcriber.languages = ["zh"]
     transcriber._available = True
     transcriber._model = Model()
     transcriber._speech_segments = lambda _path: [SpeechSegment(start_s=10.0, end_s=12.0)]
@@ -194,6 +222,18 @@ def test_transcriber_offsets_vad_segments() -> None:
     assert out[0].start_time == 10.25
     assert out[0].end_time == 10.75
     assert transcriber._model.vad_filters == [False]
+    assert transcriber._model.last_task == "transcribe"
+
+
+def test_set_translate() -> None:
+    from pc_assistant.audio.transcribe import WHISPER_TRANSLATE, _set_translate
+
+    assert WHISPER_TRANSLATE is False
+    kwargs: dict = {}
+    _set_translate(kwargs, False)
+    assert kwargs["task"] == "transcribe"
+    _set_translate(kwargs, True)
+    assert kwargs["task"] == "translate"
 
 
 def test_meeting_detector_links_segments(tmp_path: Path) -> None:

@@ -82,6 +82,7 @@ class WinEventWatcher:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._hooks: list[wt.HANDLE] = []
+        self._last_app: str = ""
 
     @property
     def running(self) -> bool:
@@ -132,6 +133,12 @@ class WinEventWatcher:
                     "app_name": app,
                     "window_title": title,
                 }
+                if self._on_event and ev_name == "window_focus":
+                    app_key = (app or "").lower()
+                    if app_key and app_key != self._last_app:
+                        if self._last_app:
+                            self._on_event({"event_type": "app_switch", **payload})
+                        self._last_app = app_key
                 bus.send(bus.EventType.WINDOW_FOCUS if ev_name == "window_focus"
                          else bus.EventType.TITLE_CHANGE if ev_name == "title_change"
                          else bus.EventType.VALUE_CHANGE, **payload)

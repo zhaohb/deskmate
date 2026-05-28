@@ -1,17 +1,59 @@
 const state = {
   health: null,
+  recentFrames: [],
+  recentEvents: [],
+  recentTranscripts: [],
   frames: [],
   events: [],
+  transcripts: [],
+  apps: [],
   config: null,
   monitors: [],
+  email: {
+    gmail: { status: null, instances: [], messages: [], error: null },
+    outlook: { status: null, instances: [], messages: [], error: null },
+  },
+  pages: {
+    frames: 0,
+    events: 0,
+    transcripts: 0,
+  },
 };
 
+const PAGE_SIZE = 20;
+
 const titles = {
-  overview: ["总览", "健康状态、活动参数和最近记录"],
-  search: ["搜索", "跨 OCR、UIA、UI 事件和音频转写检索"],
-  timeline: ["时间线", "浏览最近帧并查看截图与元数据"],
-  events: ["事件", "键鼠、剪贴板、窗口焦点和捕获事件"],
-  settings: ["配置", "当前配置与监视器信息"],
+  overview: ["Home", "Search, review recent activity, and run analysis apps"],
+  timeline: ["Timeline", "Browse recent frames, screenshots, and metadata"],
+  transcripts: ["Transcripts", "Recent audio transcriptions, devices, and segments"],
+  events: ["Events", "Keyboard, mouse, clipboard, window focus, and capture events"],
+  apps: ["My Apps", "Local LLM analysis apps"],
+  email: ["Email", "OAuth mail connections, recent messages, sending, and digest"],
+  settings: ["Settings", "Current config and monitor list"],
+};
+
+const appsUi = {
+  typeFilter: "all",
+  categoryFilter: "all",
+  search: "",
+  selectedApp: null,
+};
+
+const videoExportUi = {
+  preset: "5",
+};
+
+/** Apps that prompt for a look-back window before Run (hours or custom ISO range). */
+const HOURS_RANGE_APPS = {
+  "email-digest": { defaultPreset: "16", title: "Email digest" },
+  "todo-list": { defaultPreset: "16", title: "Todo List Assistant" },
+  "day-recap": { defaultPreset: "16", title: "Day recap" },
+  "ai-habits": { defaultPreset: "24", title: "AI usage habits" },
+};
+
+const appTimeRangeUi = {
+  appName: null,
+  preset: "16",
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -39,12 +81,112 @@ function formatTime(value) {
   return date.toLocaleString();
 }
 
+function parseTimestamp(value) {
+  if (!value) return null;
+  const compact = String(value).match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/);
+  if (compact) {
+    return new Date(
+      `${compact[1]}-${compact[2]}-${compact[3]}T${compact[4]}:${compact[5]}:${compact[6]}`,
+    );
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function timeAgo(value) {
+  const date = parseTimestamp(value);
+  if (!date) return "-";
+  const sec = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
+}
+
+function scheduleLabel(schedule) {
+  if (!schedule || schedule === "manual") return "manual";
+  const m = String(schedule).match(/every\s+(\d+)\s*m/i);
+  if (m) return `${m[1]}min`;
+  const h = String(schedule).match(/every\s+(\d+)\s*h/i);
+  if (h) return `${Number(h[1]) * 60}min`;
+  return schedule;
+}
+
+function isScheduledPipe(app) {
+  const s = app.schedule || "manual";
+  return s !== "manual" && s.trim() !== "";
+}
+
 function textPreview(value, max = 140) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   return text.length > max ? `${text.slice(0, max)}…` : text || "-";
 }
 
-function renderList(target, items, render, emptyText = "暂无数据") {
+function displayValue(value) {
+  if (value == null || value === "") return "-";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function clearElement(el) {
+  el.innerHTML = "";
+  el.classList.remove("muted-detail");
+}
+
+function field(label, value, { full = false } = {}) {
+  const item = document.createElement("div");
+  item.className = `detail-field${full ? " full" : ""}`;
+
+  const labelEl = document.createElement("span");
+  labelEl.className = "detail-label";
+  labelEl.textContent = label;
+
+  const valueEl = document.createElement("div");
+  valueEl.className = "detail-value";
+  valueEl.textContent = displayValue(value);
+
+  item.append(labelEl, valueEl);
+  return item;
+}
+
+function detailHero(kicker, title) {
+  const hero = document.createElement("div");
+  hero.className = "detail-hero";
+
+  const kickerEl = document.createElement("div");
+  kickerEl.className = "detail-kicker";
+  kickerEl.textContent = kicker;
+
+  const titleEl = document.createElement("div");
+  titleEl.className = "detail-title";
+  titleEl.textContent = title || "-";
+
+  hero.append(kickerEl, titleEl);
+  return hero;
+}
+
+function rawBlock(label, data) {
+  const details = document.createElement("details");
+  details.className = "raw-details";
+
+  const summary = document.createElement("summary");
+  summary.textContent = label;
+
+  const pre = document.createElement("pre");
+  pre.textContent = JSON.stringify(data, null, 2);
+
+  details.append(summary, pre);
+  return details;
+}
+
+function bodyBlock(text) {
+  const body = document.createElement("div");
+  body.className = "detail-body";
+  body.textContent = text || "-";
+  return body;
+}
+
+function renderList(target, items, render, emptyText = "No data") {
   const el = $(target);
   el.innerHTML = "";
   el.classList.toggle("empty", items.length === 0);
@@ -57,7 +199,7 @@ function renderList(target, items, render, emptyText = "暂无数据") {
   }
 }
 
-function listItem({ title, subtitle, actionLabel = "查看", onAction }) {
+function listItem({ title, subtitle, actionLabel = "View", onAction }) {
   const tpl = $("#itemTemplate").content.cloneNode(true);
   tpl.querySelector(".item-title").textContent = title;
   tpl.querySelector(".item-subtitle").textContent = subtitle;
@@ -75,66 +217,396 @@ function setView(name) {
   for (const el of document.querySelectorAll(".view")) {
     el.classList.toggle("active", el.id === `view-${name}`);
   }
-  for (const el of document.querySelectorAll(".nav-item")) {
+  for (const el of document.querySelectorAll(".nav-item[data-view]")) {
     el.classList.toggle("active", el.dataset.view === name);
   }
-  $("#viewTitle").textContent = titles[name][0];
-  $("#viewSubtitle").textContent = titles[name][1];
+  const content = document.querySelector(".content");
+  if (content) {
+    content.classList.toggle("pipes-mode", name === "apps");
+    content.classList.toggle("home-mode", name === "overview");
+  }
+  if (name !== "apps" && titles[name]) {
+    $("#viewTitle").textContent = titles[name][0];
+    $("#viewSubtitle").textContent = titles[name][1];
+  }
+  if (name === "email") {
+    refreshEmail().catch(showError);
+  }
 }
 
 async function refreshAll() {
-  const [health, frames, events, config, monitors] = await Promise.all([
+  const [health, recentFrames, recentEvents, recentTranscripts, frames, events, transcripts, appsData, config, monitors] = await Promise.all([
     api("/health"),
-    api("/frames?limit=30"),
-    api("/events/recent?limit=50"),
+    api("/frames?limit=12"),
+    api("/events/recent?limit=12"),
+    api("/audio/list?limit=12"),
+    api(pagedPath("/frames", state.pages.frames)),
+    api(pagedPath("/events/recent", state.pages.events)),
+    api(pagedPath("/audio/list", state.pages.transcripts)),
+    api("/apps").catch(() => ({ data: [] })),
     api("/config"),
     api("/monitors"),
   ]);
   state.health = health;
+  state.recentFrames = recentFrames;
+  state.recentEvents = recentEvents;
+  state.recentTranscripts = recentTranscripts;
   state.frames = frames;
   state.events = events;
+  state.transcripts = transcripts;
+  state.apps = appsData.data || [];
   state.config = config;
   state.monitors = monitors;
   renderHealth();
+  renderHome();
   renderFrames();
   renderEvents();
+  renderTranscripts();
+  renderApps();
+  renderEmail();
   renderSettings();
+}
+
+async function refreshEmail() {
+  await Promise.all([
+    loadEmailProvider("gmail"),
+    loadEmailProvider("outlook"),
+  ]);
+  renderEmail();
+}
+
+async function loadEmailProvider(provider) {
+  const target = state.email[provider];
+  target.error = null;
+  try {
+    const [status, instancesPayload] = await Promise.all([
+      api(`/connections/${provider}/status`).catch((err) => ({ connected: false, error: err.message })),
+      api(`/connections/${provider}/instances`).catch(() => ({ data: [] })),
+    ]);
+    target.status = status;
+    target.instances = instancesPayload.data || [];
+  } catch (err) {
+    target.error = err.message || String(err);
+  }
+}
+
+function renderEmail() {
+  renderEmailProvider("gmail", "Gmail");
+  renderEmailProvider("outlook", "Outlook");
+}
+
+function renderEmailProvider(provider, label) {
+  const data = state.email[provider];
+  const statusEl = $(`#${provider}Status`);
+  const accountsEl = $(`#${provider}Accounts`);
+  const disconnectBtn = $(`#${provider}DisconnectButton`);
+  if (!statusEl || !accountsEl) return;
+  const connected = data.instances.length > 0 || data.status?.connected;
+  statusEl.textContent = data.error || data.status?.error
+    || (connected ? "Connected — ready for email-digest / todo-list / email-compose apps." : "Not connected");
+  statusEl.classList.toggle("connected", Boolean(connected));
+  accountsEl.innerHTML = "";
+  if (!data.instances.length) {
+    accountsEl.textContent = "No accounts";
+  } else {
+    for (const account of data.instances) {
+      const chip = document.createElement("span");
+      chip.className = "email-account-chip";
+      chip.textContent = account.email || account.instance || label;
+      accountsEl.appendChild(chip);
+    }
+  }
+  if (disconnectBtn) {
+    disconnectBtn.style.display = data.instances.length ? "" : "none";
+  }
+}
+
+async function disconnectEmailProvider(provider) {
+  const instances = state.email[provider]?.instances || [];
+  if (!instances.length) return;
+  const instance = instances[0].instance || instances[0].email || "";
+  if (!instance) return;
+  if (!confirm(`Disconnect ${provider} account ${instance}?`)) return;
+  try {
+    await api(`/connections/${provider}/disconnect?instance=${encodeURIComponent(instance)}`, { method: "POST" });
+  } catch (err) {
+    showError(err);
+    return;
+  }
+  await refreshEmail();
+}
+
+function pagedPath(path, page) {
+  const params = new URLSearchParams({
+    limit: String(PAGE_SIZE),
+    offset: String(Math.max(0, page) * PAGE_SIZE),
+  });
+  return `${path}?${params.toString()}`;
 }
 
 function renderHealth() {
   const h = state.health || {};
-  $("#healthStatus").textContent = h.status || "unknown";
+  const ok = h.status === "ok";
+  $("#healthStatus").textContent = ok ? "OK" : "Error";
   $("#frameCount").textContent = h.frames ?? "-";
   $("#transcriptCount").textContent = h.transcripts ?? "-";
   $("#eventCount").textContent = h.events ?? "-";
   $("#healthMessage").textContent = h.message || h.status || "-";
-  $("#healthDetails").textContent = `帧状态: ${h.frame_status || "-"} / 音频状态: ${h.audio_status || "-"}`;
+  $("#healthDetails").textContent = `Frames: ${h.frame_status || "-"} · Audio: ${h.audio_status || "-"}`;
   $("#activityInterval").textContent = h.activity?.recommended_interval_ms ?? "-";
   $("#schemaVersion").textContent = h.schema_version || "-";
+}
+
+function formatUptime(seconds) {
+  if (seconds == null || Number.isNaN(seconds)) return "";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function buildActivityFeed() {
+  const items = [];
+  for (const frame of state.recentFrames || []) {
+    items.push({
+      kind: "screen",
+      ts: frame.timestamp,
+      title: frame.app_name || "unknown",
+      preview: textPreview(frame.window_name || frame.ocr_text, 100),
+      onClick: () => selectFrame(frame.id || frame.frame_id),
+    });
+  }
+  for (const t of state.recentTranscripts || []) {
+    items.push({
+      kind: "audio",
+      ts: t.timestamp,
+      title: t.device || "mic",
+      preview: textPreview(t.transcription || t.redacted_transcription, 100),
+      onClick: () => selectTranscript(t),
+    });
+  }
+  for (const ev of state.recentEvents || []) {
+    items.push({
+      kind: "event",
+      ts: ev.timestamp,
+      title: ev.event_type || "event",
+      preview: textPreview(`${ev.app_name || ""} · ${ev.window_title || ""}`, 100),
+      onClick: () => selectEvent(ev),
+    });
+  }
+  return items
+    .filter((x) => x.ts)
+    .sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime())
+    .slice(0, 15);
+}
+
+function renderHome() {
+  const h = state.health || {};
+  const cfg = state.config || {};
+  const ok = h.status === "ok";
+  const audioOn = cfg.audio?.enabled;
+
+  const indicator = $("#homeRecIndicator");
+  const status = $("#homeRecStatus");
+  if (indicator) {
+    indicator.classList.toggle("live", ok);
+    indicator.classList.toggle("error", !ok && h.status);
+  }
+  if (status) {
+    if (!ok) status.textContent = "Disconnected";
+    else if (h.meeting_status === "active") status.textContent = "Meeting recording";
+    else status.textContent = audioOn ? "Recording" : "Screen only";
+  }
+
+  const stats = $("#homeStatsLine");
+  if (stats) {
+    const parts = [
+      `${h.frames ?? 0} frames`,
+      `${h.transcripts ?? 0} transcripts`,
+      `${h.events ?? 0} events`,
+    ];
+    if (h.uptime_seconds != null) parts.push(`uptime ${formatUptime(h.uptime_seconds)}`);
+    stats.textContent = parts.join(" · ");
+  }
+
+  const meta = $("#homeCaptureMeta");
+  if (meta) {
+    const ms = h.activity?.recommended_interval_ms;
+    meta.textContent = ms
+      ? `Capture interval ${ms}ms${h.activity?.is_typing ? " · typing" : ""}`
+      : "";
+  }
+
+  const feed = $("#homeActivityFeed");
+  if (!feed) return;
+  const items = buildActivityFeed();
+  feed.innerHTML = "";
+  feed.classList.toggle("empty", items.length === 0);
+  if (!items.length) {
+    feed.textContent = ok
+      ? "No activity yet — it will appear here once you start using your computer"
+      : "Cannot connect to local service — make sure pc_assistant is running";
+    return;
+  }
+  for (const item of items) {
+    const row = document.createElement("div");
+    row.className = "activity-row";
+    row.addEventListener("click", item.onClick);
+
+    const type = document.createElement("span");
+    type.className = "activity-type";
+    type.textContent = item.kind;
+
+    const body = document.createElement("div");
+    body.className = "activity-body";
+    const title = document.createElement("div");
+    title.className = "activity-title";
+    title.textContent = item.title;
+    const preview = document.createElement("p");
+    preview.className = "activity-preview";
+    preview.textContent = item.preview;
+    body.append(title, preview);
+
+    const time = document.createElement("span");
+    time.className = "activity-time";
+    time.textContent = timeAgo(item.ts);
+
+    row.append(type, body, time);
+    feed.appendChild(row);
+  }
+}
+
+const HOME_PROMPTS = [
+  { label: "Summarize today", run: "day-recap" },
+  { label: "AI usage habits", run: "ai-habits" },
+  { label: "Export screen video", run: "video-export" },
+  { label: "What was I just doing", ask: "What was I just doing?" },
+  { label: "Apps used today", ask: "What apps did I use today?" },
+];
+
+function initHomePrompts() {
+  const container = $("#homePrompts");
+  if (!container || container.childElementCount) return;
+  for (const prompt of HOME_PROMPTS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "home-prompt-chip";
+    btn.textContent = prompt.label;
+    btn.addEventListener("click", () => {
+      if (prompt.run) {
+        setView("apps");
+        requestRunApp(prompt.run).catch(showError);
+      } else if (prompt.ask) {
+        setView("overview");
+        $("#homeSearchInput").value = prompt.ask;
+        runSearch(new Event("submit")).catch(showError);
+      }
+    });
+    container.appendChild(btn);
+  }
 }
 
 function renderFrames() {
   const frames = state.frames || [];
   const render = (frame) => listItem({
-    title: `${formatTime(frame.timestamp)} · ${frame.app_name || "unknown"}`,
-    subtitle: `${frame.window_name || ""} ${textPreview(frame.ocr_text || frame.accessibility_text, 90)}`,
-    actionLabel: "详情",
+    title: `${frame.app_name || "unknown"} · ${formatTime(frame.timestamp)}`,
+    subtitle: `${textPreview(frame.window_name, 90)}${frame.browser_url ? ` · ${frame.browser_url}` : ""}`,
+    actionLabel: "Details",
     onAction: () => selectFrame(frame.id || frame.frame_id),
   });
-  renderList("#recentFrames", frames.slice(0, 8), render);
   renderList("#timelineFrames", frames, render);
+  renderPagination("frames", frames.length);
+}
+
+function eventListSubtitle(event) {
+  const app = event.app_name || "unknown";
+  if (event.window_title) return `${app} · ${textPreview(event.window_title, 80)}`;
+  if (event.browser_url) return `${app} · ${textPreview(event.browser_url, 80)}`;
+  return `${app} · ${textPreview(rawEventData(event), 80)}`;
 }
 
 function renderEvents() {
   const events = state.events || [];
   const render = (event) => listItem({
-    title: `${formatTime(event.timestamp)} · ${event.event_type || "event"}`,
-    subtitle: `${event.app_name || ""} ${event.window_title || ""} ${textPreview(rawEventData(event), 220)}`,
-    actionLabel: "详情",
+    title: `${event.event_type || "event"} · ${formatTime(event.timestamp)}`,
+    subtitle: eventListSubtitle(event),
+    actionLabel: "Details",
     onAction: () => selectEvent(event),
   });
-  renderList("#recentEventsOverview", events.slice(0, 8), render);
   renderList("#eventsList", events, render);
+  renderPagination("events", events.length);
+}
+
+function renderTranscripts() {
+  const transcripts = state.transcripts || [];
+  const render = (transcript) => listItem({
+    title: `${transcript.device || "audio"} · ${formatTime(transcript.timestamp)}`,
+    subtitle: textPreview(transcript.transcription || transcript.redacted_transcription, 220),
+    actionLabel: "Details",
+    onAction: () => selectTranscript(transcript),
+  });
+  renderList("#transcriptsList", transcripts, render, "No transcripts yet — enable audio and ensure speech is being captured");
+  renderPagination("transcripts", transcripts.length);
+}
+
+function renderPagination(kind, itemCount) {
+  const el = $(`#${kind}Pagination`);
+  if (!el) return;
+  const page = state.pages[kind] || 0;
+  const hasPrevious = page > 0;
+  const hasNext = itemCount === PAGE_SIZE;
+  el.innerHTML = "";
+
+  const label = document.createElement("span");
+  label.textContent = `Page ${page + 1} · ${PAGE_SIZE} per page`;
+
+  const controls = document.createElement("div");
+  controls.className = "pagination-controls";
+
+  const previous = document.createElement("button");
+  previous.type = "button";
+  previous.textContent = "Previous";
+  previous.disabled = !hasPrevious;
+  previous.addEventListener("click", () => changePage(kind, -1));
+
+  const next = document.createElement("button");
+  next.type = "button";
+  next.textContent = "Next";
+  next.disabled = !hasNext;
+  next.addEventListener("click", () => changePage(kind, 1));
+
+  controls.append(previous, next);
+  el.append(label, controls);
+}
+
+async function changePage(kind, delta) {
+  state.pages[kind] = Math.max(0, (state.pages[kind] || 0) + delta);
+  await refreshAll();
+}
+
+function selectTranscript(transcript) {
+  setView("transcripts");
+  const el = $("#transcriptDetails");
+  clearElement(el);
+
+  const text = transcript.redacted_transcription || transcript.transcription || "";
+  const grid = document.createElement("div");
+  grid.className = "detail-grid";
+  grid.append(
+    field("Time", formatTime(transcript.timestamp)),
+    field("Device", transcript.device || "audio"),
+    field("Language", transcript.language),
+    field("Speaker", transcript.speaker_id),
+    field("Audio chunk", transcript.audio_chunk_id),
+    field("Segment", `${displayValue(transcript.start_time)}s → ${displayValue(transcript.end_time)}s`),
+  );
+
+  el.append(
+    detailHero("audio transcript", textPreview(text, 96)),
+    grid,
+    bodyBlock(text),
+    rawBlock("raw transcript", transcript),
+  );
 }
 
 function rawEventData(event) {
@@ -159,15 +631,737 @@ function parsedEventData(event) {
 
 function selectEvent(event) {
   setView("events");
-  $("#eventDetails").textContent = JSON.stringify({
+  const el = $("#eventDetails");
+  clearElement(el);
+  const data = parsedEventData(event);
+  const eventDetail = {
     timestamp: event.timestamp,
     event_type: event.event_type,
     app_name: event.app_name,
     window_title: event.window_title,
     browser_url: event.browser_url,
     frame_id: event.frame_id,
-    data_json: parsedEventData(event),
-  }, null, 2);
+    data_json: data,
+  };
+
+  const grid = document.createElement("div");
+  grid.className = "detail-grid";
+  grid.append(
+    field("Time", formatTime(event.timestamp)),
+    field("Type", event.event_type),
+    field("App", event.app_name),
+    field("Frame", event.frame_id),
+    field("Window", event.window_title, { full: true }),
+    field("URL", event.browser_url, { full: true }),
+  );
+
+  el.append(
+    detailHero("ui event", event.event_type || "event"),
+    grid,
+    bodyBlock(typeof data === "string" ? data : JSON.stringify(data || {}, null, 2)),
+    rawBlock("raw event", eventDetail),
+  );
+}
+
+// ─── pipes (apps) ───────────────────────────────────────────────────────
+
+function filteredApps() {
+  const q = appsUi.search.trim().toLowerCase();
+  return state.apps.filter((app) => {
+    const scheduled = isScheduledPipe(app);
+    if (appsUi.typeFilter === "scheduled" && !scheduled) return false;
+    if (appsUi.typeFilter === "manual" && scheduled) return false;
+    if (q) {
+      const hay = `${app.name} ${app.title || ""} ${app.description || ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function updatePipeCounts() {
+  const scheduled = state.apps.filter(isScheduledPipe).length;
+  const manual = state.apps.length - scheduled;
+  const all = state.apps.length;
+  const el = (id, n) => {
+    const node = document.getElementById(id);
+    if (node) node.textContent = String(n);
+  };
+  el("countScheduled", scheduled);
+  el("countManual", manual);
+  el("countAll", all);
+  el("countAllTypes", all);
+  el("countPersonal", all);
+}
+
+function renderApps() {
+  const container = $("#pipesList");
+  if (!container) return;
+  updatePipeCounts();
+  const items = filteredApps();
+  container.innerHTML = "";
+  container.classList.toggle("empty-state", items.length === 0);
+  if (!items.length) {
+    container.textContent = "No matching apps";
+    return;
+  }
+  for (const app of items) {
+    container.appendChild(createAppRow(app));
+  }
+}
+
+function isDetailPanelOpen() {
+  const out = $("#appOutputPanel");
+  const hist = $("#appHistoryPanel");
+  return (out && out.style.display !== "none") || (hist && hist.style.display !== "none");
+}
+
+function closeAppOutput() {
+  const panel = $("#appOutputPanel");
+  const content = $("#appOutputContent");
+  if (panel) panel.style.display = "none";
+  if (content) content.innerHTML = "";
+}
+
+function closeAppHistory() {
+  const panel = $("#appHistoryPanel");
+  if (panel) panel.style.display = "none";
+}
+
+function closeAppDetails() {
+  closeAppOutput();
+  closeAppHistory();
+  appsUi.selectedApp = null;
+  renderApps();
+}
+
+function createAppRow(app) {
+  const row = document.createElement("div");
+  row.className = "pipe-row";
+  if (appsUi.selectedApp === app.name) row.classList.add("selected");
+
+  const icon = document.createElement("div");
+  icon.className = "pipe-row-icon";
+  icon.setAttribute("aria-hidden", "true");
+
+  const name = document.createElement("div");
+  name.className = "pipe-row-name";
+  name.textContent = app.name;
+
+  const meta = document.createElement("div");
+  meta.className = "pipe-row-meta";
+  const recent = app.recent_outputs?.[0];
+  const duration = document.createElement("span");
+  duration.textContent = scheduleLabel(app.schedule);
+  const ago = document.createElement("span");
+  ago.textContent = recent?.timestamp ? timeAgo(recent.timestamp) : "-";
+  meta.append(duration, ago);
+
+  const actions = document.createElement("div");
+  actions.className = "pipe-row-actions";
+  const runBtn = document.createElement("button");
+  runBtn.className = "primary";
+  runBtn.type = "button";
+  runBtn.textContent = "Run";
+  runBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    requestRunApp(app.name).catch(showError);
+  });
+  const histBtn = document.createElement("button");
+  histBtn.type = "button";
+  histBtn.textContent = "History";
+  histBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (appsUi.selectedApp === app.name && isDetailPanelOpen()) {
+      closeAppDetails();
+      return;
+    }
+    appsUi.selectedApp = app.name;
+    showAppHistory(app.name, app.title || app.name);
+    renderApps();
+  });
+  actions.append(runBtn, histBtn);
+
+  row.addEventListener("click", () => {
+    if (appsUi.selectedApp === app.name && isDetailPanelOpen()) {
+      closeAppDetails();
+      return;
+    }
+    appsUi.selectedApp = app.name;
+    showAppHistory(app.name, app.title || app.name);
+    renderApps();
+  });
+
+  row.append(icon, name, meta, actions);
+  return row;
+}
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+/** Local ISO 8601 with offset (matches pc_assistant frame timestamps). */
+function toLocalIsoString(date) {
+  const offMin = -date.getTimezoneOffset();
+  const sign = offMin >= 0 ? "+" : "-";
+  const abs = Math.abs(offMin);
+  const oh = pad2(Math.floor(abs / 60));
+  const om = pad2(abs % 60);
+  return (
+    `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}` +
+    `T${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}` +
+    `${sign}${oh}:${om}`
+  );
+}
+
+function toDatetimeLocalValue(date) {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function parseDatetimeLocalValue(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatVideoExportRange(startIso, endIso) {
+  return `${formatTime(startIso)} → ${formatTime(endIso)}`;
+}
+
+function videoExportRangeFromPreset(preset) {
+  const end = new Date();
+  const minutes = preset === "custom" ? null : Number(preset);
+  if (!minutes || Number.isNaN(minutes)) {
+    return null;
+  }
+  const start = new Date(end.getTime() - minutes * 60 * 1000);
+  return { startIso: toLocalIsoString(start), endIso: toLocalIsoString(end) };
+}
+
+function readVideoExportCustomRange() {
+  const startInput = $("#videoExportStart");
+  const endInput = $("#videoExportEnd");
+  const start = parseDatetimeLocalValue(startInput?.value);
+  const end = parseDatetimeLocalValue(endInput?.value);
+  if (!start || !end) return { error: "Please enter start and end times" };
+  if (start >= end) return { error: "Start time must be before end time" };
+  return { startIso: toLocalIsoString(start), endIso: toLocalIsoString(end) };
+}
+
+function updateVideoExportSummary() {
+  const summary = $("#videoExportRangeSummary");
+  if (!summary) return;
+  if (videoExportUi.preset === "custom") {
+    const custom = readVideoExportCustomRange();
+    summary.textContent = custom.error
+      ? custom.error
+      : formatVideoExportRange(custom.startIso, custom.endIso);
+    return;
+  }
+  const range = videoExportRangeFromPreset(videoExportUi.preset);
+  summary.textContent = range
+    ? formatVideoExportRange(range.startIso, range.endIso)
+    : "";
+}
+
+function setVideoExportPreset(preset) {
+  videoExportUi.preset = preset;
+  for (const btn of document.querySelectorAll("#videoExportPresets .modal-preset")) {
+    btn.classList.toggle("active", btn.dataset.preset === preset);
+  }
+  const custom = $("#videoExportCustomRange");
+  if (custom) custom.classList.toggle("hidden", preset !== "custom");
+  if (preset === "custom") {
+    const end = new Date();
+    const start = new Date(end.getTime() - 5 * 60 * 1000);
+    const startInput = $("#videoExportStart");
+    const endInput = $("#videoExportEnd");
+    if (startInput) startInput.value = toDatetimeLocalValue(start);
+    if (endInput) endInput.value = toDatetimeLocalValue(end);
+  }
+  updateVideoExportSummary();
+}
+
+function openVideoExportModal() {
+  setVideoExportPreset(videoExportUi.preset || "5");
+  const modal = $("#videoExportModal");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeVideoExportModal() {
+  const modal = $("#videoExportModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function buildVideoExportRunBody() {
+  if (videoExportUi.preset === "custom") {
+    const custom = readVideoExportCustomRange();
+    if (custom.error) throw new Error(custom.error);
+    return { start_time: custom.startIso, end_time: custom.endIso };
+  }
+  const range = videoExportRangeFromPreset(videoExportUi.preset);
+  if (!range) throw new Error("Invalid time preset");
+  return { start_time: range.startIso, end_time: range.endIso };
+}
+
+function initVideoExportModal() {
+  const modal = $("#videoExportModal");
+  if (!modal) return;
+
+  for (const btn of document.querySelectorAll("#videoExportPresets .modal-preset")) {
+    btn.addEventListener("click", () => setVideoExportPreset(btn.dataset.preset || "5"));
+  }
+  for (const input of [$("#videoExportStart"), $("#videoExportEnd")]) {
+    input?.addEventListener("change", updateVideoExportSummary);
+    input?.addEventListener("input", updateVideoExportSummary);
+  }
+  $("#videoExportModalClose")?.addEventListener("click", closeVideoExportModal);
+  $("#videoExportCancel")?.addEventListener("click", closeVideoExportModal);
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) closeVideoExportModal();
+  });
+  $("#videoExportConfirm")?.addEventListener("click", () => {
+    runApp("video-export", buildVideoExportRunBody())
+      .catch(showError)
+      .finally(closeVideoExportModal);
+  });
+}
+
+function hoursRangeFromPreset(presetHours) {
+  const hours = Number(presetHours);
+  if (!hours || Number.isNaN(hours)) return null;
+  const end = new Date();
+  const start = new Date(end.getTime() - hours * 60 * 60 * 1000);
+  return { startIso: toLocalIsoString(start), endIso: toLocalIsoString(end), hours };
+}
+
+function readAppTimeRangeCustomRange() {
+  const startInput = $("#appTimeRangeStart");
+  const endInput = $("#appTimeRangeEnd");
+  const start = parseDatetimeLocalValue(startInput?.value);
+  const end = parseDatetimeLocalValue(endInput?.value);
+  if (!start || !end) return { error: "Please enter start and end times" };
+  if (start >= end) return { error: "Start time must be before end time" };
+  return { startIso: toLocalIsoString(start), endIso: toLocalIsoString(end) };
+}
+
+function updateAppTimeRangeSummary() {
+  const summary = $("#appTimeRangeSummary");
+  if (!summary) return;
+  if (appTimeRangeUi.preset === "custom") {
+    const custom = readAppTimeRangeCustomRange();
+    summary.textContent = custom.error
+      ? custom.error
+      : formatVideoExportRange(custom.startIso, custom.endIso);
+    return;
+  }
+  const range = hoursRangeFromPreset(appTimeRangeUi.preset);
+  summary.textContent = range
+    ? formatVideoExportRange(range.startIso, range.endIso)
+    : "";
+}
+
+function setAppTimeRangePreset(preset) {
+  appTimeRangeUi.preset = preset;
+  for (const btn of document.querySelectorAll("#appTimeRangePresets .modal-preset")) {
+    btn.classList.toggle("active", btn.dataset.preset === preset);
+  }
+  const custom = $("#appTimeRangeCustomRange");
+  if (custom) custom.classList.toggle("hidden", preset !== "custom");
+  if (preset === "custom") {
+    const cfg = HOURS_RANGE_APPS[appTimeRangeUi.appName] || { defaultPreset: "16" };
+    const hours = Number(cfg.defaultPreset) || 16;
+    const end = new Date();
+    const start = new Date(end.getTime() - hours * 60 * 60 * 1000);
+    const startInput = $("#appTimeRangeStart");
+    const endInput = $("#appTimeRangeEnd");
+    if (startInput) startInput.value = toDatetimeLocalValue(start);
+    if (endInput) endInput.value = toDatetimeLocalValue(end);
+  }
+  updateAppTimeRangeSummary();
+}
+
+function openAppTimeRangeModal(appName) {
+  const cfg = HOURS_RANGE_APPS[appName];
+  if (!cfg) return false;
+  appTimeRangeUi.appName = appName;
+  const title = $("#appTimeRangeModalTitle");
+  const desc = $("#appTimeRangeModalDesc");
+  if (title) title.textContent = cfg.title || appName;
+  if (desc) {
+    desc.textContent = "Select how far back to analyze email and on-screen activity for this run.";
+  }
+  setAppTimeRangePreset(cfg.defaultPreset || "16");
+  const modal = $("#appTimeRangeModal");
+  if (modal) modal.classList.remove("hidden");
+  return true;
+}
+
+function closeAppTimeRangeModal() {
+  const modal = $("#appTimeRangeModal");
+  if (modal) modal.classList.add("hidden");
+  appTimeRangeUi.appName = null;
+}
+
+function buildAppTimeRangeRunBody() {
+  if (appTimeRangeUi.preset === "custom") {
+    const custom = readAppTimeRangeCustomRange();
+    if (custom.error) throw new Error(custom.error);
+    return { start_time: custom.startIso, end_time: custom.endIso };
+  }
+  const range = hoursRangeFromPreset(appTimeRangeUi.preset);
+  if (!range) throw new Error("Invalid time preset");
+  return { hours: String(range.hours) };
+}
+
+function initAppTimeRangeModal() {
+  const modal = $("#appTimeRangeModal");
+  if (!modal) return;
+
+  for (const btn of document.querySelectorAll("#appTimeRangePresets .modal-preset")) {
+    btn.addEventListener("click", () => setAppTimeRangePreset(btn.dataset.preset || "16"));
+  }
+  for (const input of [$("#appTimeRangeStart"), $("#appTimeRangeEnd")]) {
+    input?.addEventListener("change", updateAppTimeRangeSummary);
+    input?.addEventListener("input", updateAppTimeRangeSummary);
+  }
+  $("#appTimeRangeModalClose")?.addEventListener("click", closeAppTimeRangeModal);
+  $("#appTimeRangeCancel")?.addEventListener("click", closeAppTimeRangeModal);
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) closeAppTimeRangeModal();
+  });
+  $("#appTimeRangeConfirm")?.addEventListener("click", () => {
+    const appName = appTimeRangeUi.appName;
+    if (!appName) return;
+    runApp(appName, buildAppTimeRangeRunBody())
+      .catch(showError)
+      .finally(closeAppTimeRangeModal);
+  });
+}
+
+function populateEmailComposeAccounts() {
+  const provider = $("#emailComposeProvider")?.value || "gmail";
+  const select = $("#emailComposeAccount");
+  if (!select) return;
+  const instances = state.email[provider]?.instances || [];
+  select.innerHTML = '<option value="">Default account</option>';
+  for (const acc of instances) {
+    const val = acc.instance || acc.email || "";
+    if (!val) continue;
+    const opt = document.createElement("option");
+    opt.value = val;
+    opt.textContent = acc.email || val;
+    select.appendChild(opt);
+  }
+}
+
+function emailComposeInstance() {
+  const provider = $("#emailComposeProvider")?.value || "gmail";
+  const account = $("#emailComposeAccount")?.value?.trim();
+  const instances = state.email[provider]?.instances || [];
+  if (account) return account;
+  const first = instances[0];
+  return first?.instance || first?.email || "";
+}
+
+function formatReplyOptionLabel(msg) {
+  const subject = (msg.subject || msg.snippet || "(no subject)").trim();
+  const from = (msg.from || "").trim();
+  const shortSubject = subject.length > 48 ? `${subject.slice(0, 47)}…` : subject;
+  const shortFrom = from.length > 36 ? `${from.slice(0, 35)}…` : from;
+  return shortFrom ? `${shortSubject} — ${shortFrom}` : shortSubject;
+}
+
+async function loadEmailComposeReplyOptions() {
+  const provider = $("#emailComposeProvider")?.value || "gmail";
+  const select = $("#emailComposeReplyPick");
+  if (!select) return;
+  const instance = emailComposeInstance();
+  select.innerHTML = '<option value="">New email — no reply context</option>';
+  if (!instance) return;
+
+  const loading = document.createElement("option");
+  loading.value = "";
+  loading.disabled = true;
+  loading.textContent = "Loading recent messages…";
+  select.appendChild(loading);
+
+  try {
+    const params = new URLSearchParams({ maxResults: "12" });
+    params.set("instance", instance);
+    const listPayload = await api(`/connections/${provider}/messages?${params}`);
+    const listed = listPayload.data?.messages || listPayload.messages || [];
+    select.innerHTML = '<option value="">New email — no reply context</option>';
+    if (!listed.length) {
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.disabled = true;
+      empty.textContent = "No recent messages found";
+      select.appendChild(empty);
+      return;
+    }
+
+    const details = await Promise.all(
+      listed.slice(0, 10).map(async (item) => {
+        const id = item?.id;
+        if (!id) return null;
+        try {
+          const detailParams = new URLSearchParams({ instance });
+          const detail = await api(
+            `/connections/${provider}/messages/${encodeURIComponent(id)}?${detailParams}`,
+          );
+          return detail.data || detail;
+        } catch {
+          return { id, subject: id.slice(0, 16) + "…" };
+        }
+      }),
+    );
+
+    for (const msg of details) {
+      if (!msg?.id) continue;
+      const opt = document.createElement("option");
+      opt.value = msg.id;
+      opt.textContent = formatReplyOptionLabel(msg);
+      select.appendChild(opt);
+    }
+  } catch (err) {
+    select.innerHTML = '<option value="">New email — no reply context</option>';
+    const fail = document.createElement("option");
+    fail.value = "";
+    fail.disabled = true;
+    fail.textContent = `Could not load messages: ${err.message}`;
+    select.appendChild(fail);
+  }
+}
+
+function resolveEmailComposeReplyTo() {
+  const custom = $("#emailComposeReplyTo")?.value?.trim();
+  if (custom) return custom;
+  return $("#emailComposeReplyPick")?.value?.trim() || "";
+}
+
+function updateEmailComposeHint() {
+  const hint = $("#emailComposeHint");
+  const provider = $("#emailComposeProvider")?.value || "gmail";
+  if (!hint) return;
+  const count = (state.email[provider]?.instances || []).length;
+  hint.textContent = count
+    ? `${count} ${provider} account(s) available. For replies, pick a recent message below — do not paste browser URLs.`
+    : `No ${provider} account connected — connect on the Email tab first.`;
+}
+
+async function openEmailComposeModal() {
+  await refreshEmail();
+  const gmailOk = (state.email.gmail?.instances || []).length > 0;
+  const outlookOk = (state.email.outlook?.instances || []).length > 0;
+  if (!gmailOk && !outlookOk) {
+    throw new Error("No Gmail or Outlook account connected. Open the Email tab and click Connect first.");
+  }
+  const providerSelect = $("#emailComposeProvider");
+  if (providerSelect) {
+    for (const opt of providerSelect.options) {
+      const connected = opt.value === "gmail" ? gmailOk : outlookOk;
+      opt.disabled = !connected;
+    }
+    if (!gmailOk && outlookOk) providerSelect.value = "outlook";
+    else if (gmailOk && !outlookOk) providerSelect.value = "gmail";
+    else if (gmailOk) providerSelect.value = providerSelect.value || "gmail";
+  }
+  populateEmailComposeAccounts();
+  updateEmailComposeHint();
+  const replyInput = $("#emailComposeReplyTo");
+  if (replyInput) replyInput.value = "";
+  await loadEmailComposeReplyOptions();
+  const modal = $("#emailComposeModal");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeEmailComposeModal() {
+  const modal = $("#emailComposeModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function buildEmailComposeRunBody() {
+  const provider = $("#emailComposeProvider")?.value;
+  const to = $("#emailComposeTo")?.value?.trim();
+  const intent = $("#emailComposeIntent")?.value?.trim();
+  const account = $("#emailComposeAccount")?.value?.trim();
+  const replyTo = resolveEmailComposeReplyTo();
+  const hours = $("#emailComposeHours")?.value || "1";
+  const send = Boolean($("#emailComposeSend")?.checked);
+  if (!provider) throw new Error("Select Gmail or Outlook");
+  if (!to) throw new Error("Recipient email (To) is required");
+  if (!intent) throw new Error("Describe what you want to write");
+  const instances = state.email[provider]?.instances || [];
+  if (!instances.length) {
+    throw new Error(`No ${provider} account connected. Connect on the Email tab first.`);
+  }
+  const body = { provider, to, intent, hours: String(hours) };
+  if (account) body.account = account;
+  if (replyTo) body.reply_to = replyTo;
+  if (send) body.send = true;
+  return body;
+}
+
+function initEmailComposeModal() {
+  const modal = $("#emailComposeModal");
+  if (!modal) return;
+
+  $("#emailComposeProvider")?.addEventListener("change", async () => {
+    populateEmailComposeAccounts();
+    updateEmailComposeHint();
+    await loadEmailComposeReplyOptions();
+  });
+  $("#emailComposeAccount")?.addEventListener("change", () => {
+    loadEmailComposeReplyOptions().catch(showError);
+  });
+  $("#emailComposeReplyPick")?.addEventListener("change", () => {
+    const pick = $("#emailComposeReplyPick")?.value?.trim();
+    const custom = $("#emailComposeReplyTo");
+    if (custom && pick) custom.value = "";
+  });
+  $("#emailComposeModalClose")?.addEventListener("click", closeEmailComposeModal);
+  $("#emailComposeCancel")?.addEventListener("click", closeEmailComposeModal);
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) closeEmailComposeModal();
+  });
+  $("#emailComposeConfirm")?.addEventListener("click", () => {
+    runApp("email-compose", buildEmailComposeRunBody())
+      .catch(showError)
+      .finally(closeEmailComposeModal);
+  });
+}
+
+function requestRunApp(appName) {
+  if (appName === "video-export") {
+    openVideoExportModal();
+    return Promise.resolve();
+  }
+  if (appName === "email-compose") {
+    openEmailComposeModal().catch(showError);
+    return Promise.resolve();
+  }
+  if (HOURS_RANGE_APPS[appName]) {
+    openAppTimeRangeModal(appName);
+    return Promise.resolve();
+  }
+  return runApp(appName, {});
+}
+
+async function runApp(appName, runBody = {}) {
+  if (appName === "email-compose" && !runBody.provider) {
+    await openEmailComposeModal().catch(showError);
+    return;
+  }
+
+  const statusEl = $("#appRunStatus");
+  statusEl.style.display = "block";
+  statusEl.className = "app-run-status running";
+  statusEl.textContent = `Running ${appName}… (LLM agent in progress, please wait)`;
+
+  const outputPanel = $("#appOutputPanel");
+  outputPanel.style.display = "none";
+
+  // disable all run buttons
+    for (const btn of document.querySelectorAll(".pipe-row-actions .primary")) {
+      btn.disabled = true;
+    }
+
+  try {
+    const body = { ...runBody };
+    if (appName === "video-export" && !body.start_time) {
+      body.minutes = body.minutes ?? 5;
+    }
+
+    const result = await api(`/apps/${appName}/run`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+
+    if (result.success && result.outputs && result.outputs.length > 0) {
+      const run = result.outputs[0];
+      if (run.report_file) {
+        statusEl.className = "app-run-status success";
+        statusEl.textContent = `${appName} completed successfully`;
+        await showAppOutput(appName, run.run_id, run.report_file);
+      } else {
+        statusEl.className = "app-run-status success";
+        statusEl.textContent = `${appName} finished: ${result.output_path || "no report file"}`;
+      }
+    } else {
+      statusEl.className = "app-run-status error";
+      statusEl.textContent = `${appName} failed: ${result.stderr || "unknown error"}`;
+    }
+  } catch (err) {
+    statusEl.className = "app-run-status error";
+    statusEl.textContent = `Run error: ${err.message}`;
+  } finally {
+    for (const btn of document.querySelectorAll(".pipe-row-actions .primary")) {
+      btn.disabled = false;
+    }
+    await refreshAll();
+  }
+}
+
+async function showAppOutput(appName, runId, filename) {
+  closeAppHistory();
+  const panel = $("#appOutputPanel");
+  const title = $("#appOutputTitle");
+  const content = $("#appOutputContent");
+  appsUi.selectedApp = appName;
+
+  title.textContent = `${appName} / ${runId} / ${filename}`;
+  try {
+    const text = await fetch(`/apps/${appName}/outputs/${runId}/${filename}`).then((r) => r.text());
+    content.innerHTML = simpleMarkdown(text);
+  } catch {
+    content.textContent = "(Unable to load report content)";
+  }
+  panel.style.display = "block";
+  renderApps();
+}
+
+async function showAppHistory(appName, appTitle) {
+  closeAppOutput();
+  const histPanel = $("#appHistoryPanel");
+  const histList = $("#appHistoryList");
+  appsUi.selectedApp = appName;
+  histPanel.style.display = "block";
+
+  try {
+    const result = await api(`/apps/${appName}/outputs`);
+    const runs = result.data || [];
+    histList.innerHTML = "";
+    histList.classList.toggle("empty", runs.length === 0);
+    if (runs.length === 0) {
+      histList.textContent = "No run history yet";
+      return;
+    }
+    for (const run of runs) {
+      const reportFile = run.report_file;
+      const item = listItem({
+        title: `${appTitle} · ${run.timestamp}`,
+        subtitle: `${run.files.length} file(s)${reportFile ? ` · ${reportFile}` : ""}`,
+        actionLabel: reportFile ? "View" : "",
+        onAction: reportFile ? () => showAppOutput(appName, run.run_id, reportFile) : null,
+      });
+      histList.appendChild(item);
+    }
+  } catch (err) {
+    histList.textContent = `Load failed: ${err.message}`;
+  }
+}
+
+function simpleMarkdown(text) {
+  return text
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
+    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
+    .replace(/^# (.+)$/gm, "<h1>$1</h1>")
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/^- (.+)$/gm, "• $1")
+    .replace(/\n/g, "<br>");
 }
 
 function renderSettings() {
@@ -183,7 +1377,7 @@ async function selectFrame(frameId) {
   if (!frameId) return;
   setView("timeline");
   const detail = await api(`/frames/${frameId}`);
-  $("#frameDetails").textContent = JSON.stringify(detail, null, 2);
+  renderFrameDetail(detail);
   const img = $("#framePreview");
   if (detail.snapshot_path) {
     img.src = `/frames/${frameId}/image?ts=${Date.now()}`;
@@ -194,31 +1388,187 @@ async function selectFrame(frameId) {
   }
 }
 
-async function runSearch(event) {
-  event.preventDefault();
-  const q = $("#searchInput").value.trim();
-  const contentType = $("#contentType").value;
-  if (!q) return;
-  const params = new URLSearchParams({ q, content_type: contentType, limit: "50" });
-  const result = await api(`/search?${params.toString()}`);
-  renderSearchResults(result.data || []);
+function renderFrameDetail(detail) {
+  const el = $("#frameDetails");
+  clearElement(el);
+
+  const grid = document.createElement("div");
+  grid.className = "detail-grid";
+  grid.append(
+    field("Time", formatTime(detail.timestamp)),
+    field("App", detail.app_name),
+    field("Trigger", detail.capture_trigger),
+    field("Size", `${displayValue(detail.width)} × ${displayValue(detail.height)}`),
+    field("Window", detail.window_name, { full: true }),
+    field("URL", detail.browser_url, { full: true }),
+  );
+
+  el.append(
+    detailHero("frame", `${detail.app_name || "unknown"} · #${detail.id || detail.frame_id}`),
+    grid,
+  );
+
+  if (detail.accessibility_text) {
+    const ax = document.createElement("div");
+    ax.className = "detail-section";
+    const axLabel = document.createElement("div");
+    axLabel.className = "detail-section-label";
+    axLabel.textContent = "Accessibility text (usually closer to actual window content)";
+    ax.append(axLabel, bodyBlock(detail.accessibility_text));
+    el.append(ax);
+  }
+
+  if (detail.ocr_text) {
+    const ocr = document.createElement("div");
+    ocr.className = "detail-section";
+    const ocrLabel = document.createElement("div");
+    ocrLabel.className = "detail-section-label";
+    ocrLabel.textContent = "OCR (full-screen capture; may include taskbar/watermark noise)";
+    ocr.append(ocrLabel, bodyBlock(textPreview(detail.ocr_text, 8000)));
+    el.append(ocr);
+  }
+
+  if (!detail.accessibility_text && !detail.ocr_text) {
+    el.append(bodyBlock(detail.window_name || "No text"));
+  }
+
+  el.append(rawBlock("raw frame", detail));
 }
 
-function renderSearchResults(items) {
-  renderList("#searchResults", items, (item) => {
-    const content = item.content || {};
-    const title = `${item.type} · ${formatTime(content.timestamp)}`;
-    const subtitle = textPreview(
-      content.text || content.transcription || content.window_title || JSON.stringify(content),
-      180,
-    );
-    return listItem({
-      title,
-      subtitle,
-      actionLabel: content.frame_id ? "帧" : "",
-      onAction: content.frame_id ? () => selectFrame(content.frame_id) : null,
+function setHomeSearchVisible(show) {
+  $("#homeSearchSection")?.classList.toggle("hidden", !show);
+  $("#homeActivitySection")?.classList.toggle("hidden", show);
+  document.querySelector(".home-page")?.classList.toggle("home-page--ask-open", show);
+}
+
+function clearHomeSearch() {
+  const input = $("#homeSearchInput");
+  const stats = $("#homeAskStats");
+  const answer = $("#homeAskAnswer");
+  const toolLog = $("#homeAskToolLog");
+  if (input) input.value = "";
+  if (stats) stats.textContent = "—";
+  if (answer) { answer.innerHTML = ""; answer.classList.add("hidden"); }
+  if (toolLog) { toolLog.innerHTML = ""; toolLog.classList.add("hidden"); }
+  setHomeSearchVisible(false);
+}
+
+async function runSearch(event) {
+  event.preventDefault();
+  const q = $("#homeSearchInput")?.value?.trim();
+  if (!q) {
+    clearHomeSearch();
+    return;
+  }
+  setView("overview");
+  setHomeSearchVisible(true);
+
+  const answer = $("#homeAskAnswer");
+  const toolLog = $("#homeAskToolLog");
+  const stats = $("#homeAskStats");
+
+  if (answer) { answer.innerHTML = '<div class="ask-loading"><span class="ask-spinner"></span>Thinking and searching data…</div>'; answer.classList.remove("hidden"); }
+  if (toolLog) { toolLog.innerHTML = ""; toolLog.classList.add("hidden"); }
+  if (stats) stats.textContent = "Searching…";
+
+  try {
+    const result = await api("/ask", {
+      method: "POST",
+      body: JSON.stringify({ question: q }),
     });
-  }, "没有结果");
+
+    if (stats) {
+      const n = (result.tool_calls || []).length;
+      stats.textContent = n > 0 ? `${n} tool call(s)` : "Answered";
+    }
+
+    if (answer) {
+      answer.innerHTML = markdownToHtml(result.answer || "(No matching data found)");
+      answer.classList.remove("hidden");
+    }
+
+    if (toolLog && result.tool_calls && result.tool_calls.length > 0) {
+      toolLog.innerHTML = renderToolLog(result.tool_calls);
+      toolLog.classList.remove("hidden");
+    }
+  } catch (err) {
+    if (stats) stats.textContent = "Error";
+    if (answer) { answer.innerHTML = `<div class="ask-error">Ask failed: ${escHtml(err.message)}</div>`; answer.classList.remove("hidden"); }
+  }
+}
+
+function cleanAskAnswerText(text) {
+  if (!text) return "";
+  return text
+    .split("\n")
+    .map((line) => {
+      let out = line.replace(
+        /^(\s*(?:\d+[\.\)]\s*)?)((?:\*\*)?(?:摘要|Snippet|Summary|预览)(?:\*\*)?[：:])\s*(?:\.{2,}|…)\s*/iu,
+        "$1$2",
+      );
+      out = out.replace(/^(\s*[-*•]\s*)(?:\.{2,}|…)\s*/u, "$1");
+      out = out.replace(/^(\s*\d+\.\s+)(?:\.{2,}|…)\s*/u, "$1");
+      out = out.replace(/(?:\.{2,}|…)\s*$/u, "");
+      return out;
+    })
+    .join("\n");
+}
+
+function markdownToHtml(md) {
+  let html = escHtml(cleanAskAnswerText(md));
+  html = html.replace(/^### (.+)$/gm, "<h4>$1</h4>");
+  html = html.replace(/^## (.+)$/gm, "<h3>$1</h3>");
+  html = html.replace(/^# (.+)$/gm, "<h2>$1</h2>");
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  html = html.replace(/^- (.+)$/gm, "<li>$1</li>");
+  html = html.replace(/(<li>.*<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`);
+  html = html.replace(/\n{2,}/g, "</p><p>");
+  html = `<p>${html}</p>`;
+  html = html.replace(/<p>\s*<(h[234]|ul)/g, "<$1");
+  html = html.replace(/<\/(h[234]|ul)>\s*<\/p>/g, "</$1>");
+  return html;
+}
+
+function escHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function renderToolLog(calls) {
+  const items = calls.map((c) => {
+    const argsStr = Object.entries(c.args || {}).map(([k,v]) => `${k}=${v}`).join(", ");
+    return `<span class="tool-call-badge">${escHtml(c.tool)}</span> <span class="tool-call-args">${escHtml(argsStr)}</span>`;
+  }).join("");
+  return `<details><summary>Tool calls (${calls.length})</summary><div class="tool-call-list">${items}</div></details>`;
+}
+
+function searchResultAction(item, content) {
+  if (content.frame_id) {
+    return { label: "Frame", handler: () => selectFrame(content.frame_id) };
+  }
+  if (item.type === "Audio") {
+    return {
+      label: "Transcript",
+      handler: () => selectTranscript({
+        id: content.id,
+        audio_chunk_id: content.audio_chunk_id,
+        offset_index: content.offset_index,
+        timestamp: content.timestamp,
+        transcription: content.transcription,
+        device: content.device || content.device_name,
+        language: content.language,
+        speaker_id: content.speaker_id,
+        start_time: content.start_time,
+        end_time: content.end_time,
+        text_length: content.text_length,
+        redacted_transcription: content.redacted_transcription,
+      }),
+    };
+  }
+  return { label: "", handler: null };
 }
 
 async function captureNow() {
@@ -230,21 +1580,82 @@ async function captureNow() {
 }
 
 function wireEvents() {
-  for (const button of document.querySelectorAll(".nav-item")) {
+  for (const button of document.querySelectorAll(".nav-item[data-view]")) {
     button.addEventListener("click", () => setView(button.dataset.view));
   }
-  $("#refreshButton").addEventListener("click", () => refreshAll().catch(showError));
-  $("#captureButton").addEventListener("click", () => captureNow().catch(showError));
-  $("#searchForm").addEventListener("submit", (event) => runSearch(event).catch(showError));
+  for (const btn of document.querySelectorAll("#refreshButton, #topbarRefreshButton, #pipesRefreshButton")) {
+    btn?.addEventListener("click", () => refreshAll().catch(showError));
+  }
+  for (const btn of document.querySelectorAll("#captureButton, #topbarCaptureButton")) {
+    btn?.addEventListener("click", () => captureNow().catch(showError));
+  }
+  $("#homeSearchForm")?.addEventListener("submit", (event) => runSearch(event).catch(showError));
+  $("#homeSearchClear")?.addEventListener("click", clearHomeSearch);
+  for (const chip of document.querySelectorAll(".home-nav-chip")) {
+    chip.addEventListener("click", () => setView(chip.dataset.goto));
+  }
+  initHomePrompts();
+  initVideoExportModal();
+  initAppTimeRangeModal();
+  initEmailComposeModal();
+
+  for (const btn of document.querySelectorAll(".pipes-type-tab")) {
+    btn.addEventListener("click", () => {
+      appsUi.typeFilter = btn.dataset.pipeType;
+      for (const b of document.querySelectorAll(".pipes-type-tab")) {
+        b.classList.toggle("active", b.dataset.pipeType === appsUi.typeFilter);
+      }
+      renderApps();
+    });
+  }
+  for (const btn of document.querySelectorAll(".pipes-filter-tab")) {
+    btn.addEventListener("click", () => {
+      appsUi.categoryFilter = btn.dataset.pipeFilter;
+      for (const b of document.querySelectorAll(".pipes-filter-tab")) {
+        b.classList.toggle("active", b.dataset.pipeFilter === appsUi.categoryFilter);
+      }
+      renderApps();
+    });
+  }
+  $("#pipesSearchInput")?.addEventListener("input", (e) => {
+    appsUi.search = e.target.value;
+    renderApps();
+  });
+  $("#appOutputClose")?.addEventListener("click", closeAppOutput);
+  $("#appHistoryClose")?.addEventListener("click", closeAppHistory);
+  $("#emailRefreshButton")?.addEventListener("click", () => refreshEmail().catch(showError));
+  $("#gmailConnectButton")?.addEventListener("click", () => { window.location.href = "/connections/gmail/connect"; });
+  $("#outlookConnectButton")?.addEventListener("click", () => { window.location.href = "/connections/outlook/connect"; });
+  $("#gmailDisconnectButton")?.addEventListener("click", () => disconnectEmailProvider("gmail"));
+  $("#outlookDisconnectButton")?.addEventListener("click", () => disconnectEmailProvider("outlook"));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && isDetailPanelOpen()) closeAppDetails();
+  });
+
+  const deviceBtn = $("#deviceSelector");
+  const deviceDropdown = $("#deviceDropdown");
+  deviceBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (deviceDropdown) deviceDropdown.hidden = !deviceDropdown.hidden;
+  });
+  document.addEventListener("click", () => {
+    if (deviceDropdown) deviceDropdown.hidden = true;
+  });
+  $("#connectionsBtn")?.addEventListener("click", () => setView("settings"));
 }
 
 function showError(error) {
   console.error(error);
-  $("#healthStatus").textContent = "错误";
-  $("#healthMessage").textContent = "API 调用失败";
+  $("#healthStatus").textContent = "Error";
+  $("#healthMessage").textContent = "API request failed";
   $("#healthDetails").textContent = error.message || String(error);
+  const indicator = $("#homeRecIndicator");
+  const status = $("#homeRecStatus");
+  if (indicator) indicator.classList.add("error");
+  if (status) status.textContent = "Disconnected";
 }
 
 wireEvents();
+setView("overview");
 refreshAll().catch(showError);
 setInterval(() => refreshAll().catch(showError), 10_000);

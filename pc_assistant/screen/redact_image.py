@@ -1,8 +1,7 @@
 """Pixel-level OCR region redaction.
 
 Regions are derived from OCR word boxes whose text overlaps regex PII spans.
-Redaction uses solid black rectangles, following screenpipe's current image
-redaction policy that avoids reversible blur.
+Redaction uses solid black rectangles (avoids reversible blur).
 """
 
 from __future__ import annotations

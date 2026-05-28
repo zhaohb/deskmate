@@ -10,8 +10,8 @@ This is a lightweight pipes engine. We implement:
 - a permissions check based on the same `PipePermissions` shape (read_db /
   trigger_capture / etc.).
 
-We do **not** ship screenpipe's Pi/LLM agent. Pipes can still call the local API
-or DB according to the context passed in environment variables.
+Pipes can call the local API or DB according to the context passed in
+environment variables.
 
 The on-disk format is intentionally simple so users can write pipes by hand.
 """
