@@ -26,10 +26,12 @@ After starting `pc-assistant serve`, open `/connections/gmail/connect` to author
 - UI Automation text + OCR indexing (WinRT or Tesseract)
 - Keyboard, mouse, clipboard, and window-focus events
 - Optional local audio transcription (Whisper + VAD)
-- Full-text search and natural-language **Ask** (Ollama + tool calling)
+- **Video-call detection** (Teams, Zoom, Meet, Webex, …) with per-meeting transcripts
+- Full-text search and natural-language **Ask** (Ollama + 6 tool calls: search, activity, meetings, email)
+- **Gmail / Outlook OAuth** for real mailbox search in Ask and apps (not OCR-only)
 - Built-in browser UI — no Node build step
 - MCP server for agent integrations
-- Local LLM apps (day recap, habits, meeting summary, video export)
+- Local LLM apps (day recap, standup, time breakdown, meeting summary, **todo-list**, email digest, …)
 
 ## Requirements
 
@@ -74,7 +76,7 @@ pc-assistant ui --no-run-daemon  # view existing data only
 | Timeline | Browse frames and screenshots |
 | Events | Keyboard, mouse, clipboard, focus events |
 | Transcripts | Audio transcriptions |
-| My Apps | Run local LLM analysis apps |
+| My Apps | Run LLM apps (todo-list, email-digest, meeting-summary, …); connect Gmail/Outlook in Settings |
 | Settings | Config and monitors |
 
 ### CLI
@@ -96,11 +98,35 @@ pc-assistant serve --no-run-daemon
 
 ### Ask
 
-Home search bar sends questions to `POST /ask`. The agent calls `activity_summary` and `search` against your local data, then summarizes the answer. Requires Ollama running locally.
+Home search bar sends questions to `POST /ask`. Ollama runs an agent loop (up to 8 rounds) with these tools:
+
+| Tool | Use for |
+|------|---------|
+| `search` | Keyword search over OCR, UI events, audio transcripts |
+| `activity_summary` | “What was I doing?” — apps, windows, timeline, snippets (not video meetings) |
+| `list_meetings` | Video calls detected in the recording window (Teams / Zoom / Meet / …) |
+| `meeting_transcript` | Full transcript + action items for one meeting id |
+| `email_search` | Connected Gmail / Outlook messages (empty query = latest mail) |
+| `email_read` | Full body of one message by id |
+
+Meeting questions (e.g. “今天开了什么会”) should use `list_meetings` first — not browser tab titles from `activity_summary`. Email questions need Gmail or Outlook connected (see above). Requires Ollama running locally.
 
 ### LLM Apps
 
-Apps live in `apps/` and run from the **My Apps** page or CLI. See [apps/README.md](apps/README.md) for details. Requires Ollama + the pc_assistant API.
+Apps live in `apps/` and run from the **My Apps** page or CLI. See [apps/README.md](apps/README.md) for every app and example commands.
+
+Highlights:
+
+| App | Purpose |
+|-----|---------|
+| `todo-list` | Unified checkbox todos from **email + meetings** (OAuth + OCR) |
+| `meeting-summary` | Summarize the meeting that just ended; patch note on disk |
+| `email-digest` | Inbox overview (OAuth + mail-client screen time) |
+| `email-compose` | Draft / reply via Gmail or Outlook (`--send` optional) |
+| `standup-update` | Yesterday / Today / Blockers (~150 words) |
+| `day-recap` / `time-breakdown` / `ai-habits` | Day recap, time split, AI tool usage |
+
+Requires Ollama + the pc_assistant API. Apps use the same HTTP API as Ask but run their own Ollama orchestration (prefetch + single-shot or tool loops per `pipe.md`).
 
 ## Configuration
 
@@ -141,9 +167,18 @@ GET  /frames?limit=20
 GET  /frames/{id}/image
 POST /capture
 POST /ask
+
+GET  /meetings
+GET  /meetings/{id}
+GET  /meetings/{id}/transcript
+POST /meetings/start
+POST /meetings/stop
+
+GET  /connections/gmail/messages
+GET  /connections/outlook/messages
 ```
 
-Full endpoint list is in the running server's OpenAPI docs at `/docs`.
+Full endpoint list is in the running server's OpenAPI docs at `/docs` (or `GET /api`).
 
 ## License
 
