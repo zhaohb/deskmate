@@ -10,22 +10,138 @@ supplied time range:
   their transcripts, so action items spoken in a call become todos too.
 
 Both evidence blocks are handed to a single-shot extraction that emits a
-markdown checklist (`- [ ] ...`) tagging each item's source, written to
-``~/.pc_assistant/apps/todo-list/output/<timestamp>/todo-list.md``.
+markdown checklist (`- [ ] ...`) tagging each item's source. The markdown is
+written to ``~/.pc_assistant/apps/todo-list/output/<timestamp>/todo-list.md``
+AND parsed into structured rows persisted to the ``todos`` table via
+``POST /todos`` so the Todos page can show and check them off.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import re
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
-from agent import run_agent  # noqa: E402
-from common import add_agent_time_args, agent_time_kwargs_from_args, output_dir, write_markdown  # noqa: E402
+from agent import _http_post, run_agent  # noqa: E402
+from common import (  # noqa: E402
+    add_agent_time_args,
+    agent_time_kwargs_from_args,
+    api_base,
+    output_dir,
+    write_markdown,
+)
 
 APP_NAME = "todo-list"
 PIPE_MD = Path(__file__).with_name("pipe.md")
+
+_CHECKBOX_RE = re.compile(r"^\s*[-*]\s*\[([ xX])\]\s*(.+?)\s*$")
+_SPLIT_RE = re.compile(r"\s+[—–]\s+|\s{1,}-\s{1,}")
+_PRIORITY_MAP = {
+    "high": "H", "medium": "M", "low": "L",
+    "h": "H", "m": "M", "l": "L",
+    "紧急": "H", "高": "H", "中": "M", "低": "L",
+}
+
+
+def _strip_md(text: str) -> str:
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"`(.+?)`", r"\1", text)
+    return text.strip()
+
+
+def _field(segments: list[str], key: str) -> str:
+    for seg in segments:
+        low = seg.strip().lower()
+        if low.startswith(key):
+            return seg.strip()[len(key):].strip().lstrip(":").strip()
+    return ""
+
+
+def parse_todos(markdown: str) -> list[dict[str, Any]]:
+    """Parse the generated checklist into structured todo dicts."""
+    todos: list[dict[str, Any]] = []
+    for line in markdown.splitlines():
+        m = _CHECKBOX_RE.match(line)
+        if not m:
+            continue
+        checked = m.group(1).lower() == "x"
+        rest = _strip_md(m.group(2))
+        if not rest:
+            continue
+        segments = _SPLIT_RE.split(rest)
+        task = _strip_md(segments[0]) if segments else rest
+        if not task:
+            continue
+        meta = segments[1:]
+        source_ref = _field(meta, "from ")
+        due = _field(meta, "due ")
+        source_detail = _field(meta, "source")
+        priority_raw = _field(meta, "priority").lower()
+
+        priority = _PRIORITY_MAP.get(priority_raw, "")
+        source = ""
+        if source_detail:
+            source = source_detail.split(":", 1)[0].strip().lower()
+        if source not in ("email", "meeting", "manual"):
+            source = "meeting" if "meeting" in source_detail.lower() else (
+                "email" if "email" in source_detail.lower() else ""
+            )
+
+        dedup_seed = f"{source_detail}|{task}".lower()
+        dedup_key = "todo-list:" + hashlib.md5(dedup_seed.encode("utf-8")).hexdigest()
+
+        todos.append({
+            "text": task,
+            "status": "done" if checked else "open",
+            "source": source,
+            "source_ref": source_ref,
+            "source_detail": source_detail,
+            "priority": priority,
+            "due": due,
+            "origin_app": APP_NAME,
+            "dedup_key": dedup_key,
+        })
+    return todos
+
+
+def evidence_window_from_args(args: argparse.Namespace) -> tuple[str, str]:
+    """Resolve the activity window used for this extraction run."""
+    kwargs = agent_time_kwargs_from_args(args)
+    if "start_time" in kwargs:
+        return str(kwargs["start_time"]), str(kwargs["end_time"])
+    hours = float(kwargs["hours"])
+    end = datetime.now().astimezone().replace(microsecond=0)
+    start = end - timedelta(hours=hours)
+    return start.isoformat(), end.isoformat()
+
+
+def _persist_todos(
+    todos: list[dict[str, Any]],
+    *,
+    evidence_start: str = "",
+    evidence_end: str = "",
+    verbose: bool = False,
+) -> int:
+    if not todos:
+        return 0
+    for item in todos:
+        item.setdefault("evidence_start", evidence_start)
+        item.setdefault("evidence_end", evidence_end)
+    try:
+        resp = _http_post(f"{api_base()}/todos", {"todos": todos})
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(f"  [todo-list] could not persist todos: {exc}", file=sys.stderr)
+        return 0
+    count = int(resp.get("count", 0)) if isinstance(resp, dict) else 0
+    if verbose:
+        print(f"  [todo-list] persisted {count} structured todo(s) to /todos", file=sys.stderr)
+    return count
 
 
 def main() -> int:
@@ -34,6 +150,11 @@ def main() -> int:
     )
     add_agent_time_args(parser, default_hours=24)
     parser.add_argument("--model", type=str, default=None, help="Ollama model override.")
+    parser.add_argument(
+        "--no-store",
+        action="store_true",
+        help="Only write markdown; do not persist structured todos to the database.",
+    )
     parser.add_argument("--verbose", action="store_true", help="Print agent rounds to stderr.")
     args = parser.parse_args()
 
@@ -45,6 +166,17 @@ def main() -> int:
 
     out = output_dir(APP_NAME)
     write_markdown(out / "todo-list.md", report)
+
+    if not args.no_store:
+        ev_start, ev_end = evidence_window_from_args(args)
+        todos = parse_todos(report)
+        _persist_todos(
+            todos,
+            evidence_start=ev_start,
+            evidence_end=ev_end,
+            verbose=args.verbose,
+        )
+
     print(out / "todo-list.md")
     return 0
 

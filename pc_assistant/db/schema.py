@@ -7,7 +7,7 @@ historical migration. `_pca_migrations` stores the active schema version.
 from __future__ import annotations
 
 # Bumped whenever the consolidated schema changes.
-SCHEMA_VERSION = "20260520180000"
+SCHEMA_VERSION = "20260602100000"
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -193,6 +193,29 @@ CREATE TABLE IF NOT EXISTS meeting_transcript_segments (
     FOREIGN KEY (speaker_id) REFERENCES speakers(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_segments_meeting ON meeting_transcript_segments(meeting_id);
+
+-- ─── todos (structured action items extracted from email + meetings) ────────
+CREATE TABLE IF NOT EXISTS todos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',        -- open | done
+    source TEXT NOT NULL DEFAULT '',            -- email | meeting | manual
+    source_ref TEXT NOT NULL DEFAULT '',        -- sender / meeting display name
+    source_detail TEXT NOT NULL DEFAULT '',     -- email:<tool> | meeting:<name>
+    meeting_id INTEGER,
+    priority TEXT NOT NULL DEFAULT '',          -- H | M | L
+    due TEXT NOT NULL DEFAULT '',
+    origin_app TEXT NOT NULL DEFAULT '',        -- app that created the todo
+    evidence_start TEXT NOT NULL DEFAULT '',    -- activity window used at extraction
+    evidence_end TEXT NOT NULL DEFAULT '',
+    dedup_key TEXT NOT NULL DEFAULT '',         -- stable key for upsert dedup
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT,
+    FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_todos_status  ON todos(status);
+CREATE INDEX IF NOT EXISTS idx_todos_created ON todos(created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_todos_dedup ON todos(dedup_key) WHERE dedup_key <> '';
 
 -- ─── tags ──────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS tags (

@@ -41,6 +41,22 @@ class DatabaseManager:
         with self._lock:
             self._conn.executescript(SCHEMA)
             self._record_migration(SCHEMA_VERSION)
+            self._ensure_todo_columns()
+
+    def _ensure_todo_columns(self) -> None:
+        """Add columns introduced after first install (CREATE IF NOT EXISTS is not enough)."""
+        cols = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(todos)").fetchall()
+        }
+        if "evidence_start" not in cols:
+            self._conn.execute(
+                "ALTER TABLE todos ADD COLUMN evidence_start TEXT NOT NULL DEFAULT ''"
+            )
+        if "evidence_end" not in cols:
+            self._conn.execute(
+                "ALTER TABLE todos ADD COLUMN evidence_end TEXT NOT NULL DEFAULT ''"
+            )
 
     # ─── migrations ──────────────────────────────────────────────────────────
     def _record_migration(self, version: str) -> None:
@@ -493,6 +509,139 @@ class DatabaseManager:
                     ORDER BY s.start_time ASC, s.id ASC""",
                 (meeting_id,),
             ).fetchall()
+
+    # ─── todos ───────────────────────────────────────────────────────────────
+    def upsert_todo(
+        self,
+        *,
+        text: str,
+        source: str = "",
+        source_ref: str = "",
+        source_detail: str = "",
+        meeting_id: int | None = None,
+        priority: str = "",
+        due: str = "",
+        origin_app: str = "",
+        evidence_start: str = "",
+        evidence_end: str = "",
+        dedup_key: str = "",
+        status: str = "open",
+    ) -> int:
+        """Insert a todo, or update the existing one with the same dedup_key.
+
+        Updating an existing row preserves its id and status so that re-running
+        an extraction does not re-open a todo the user already completed.
+        """
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("todo text is required")
+        with self._lock:
+            if dedup_key:
+                existing = self._conn.execute(
+                    "SELECT id FROM todos WHERE dedup_key = ?", (dedup_key,)
+                ).fetchone()
+                if existing:
+                    todo_id = int(existing["id"])
+                    self._conn.execute(
+                        """UPDATE todos
+                              SET text = ?, source = ?, source_ref = ?,
+                                  source_detail = ?, meeting_id = ?, priority = ?,
+                                  due = ?, origin_app = ?,
+                                  evidence_start = ?, evidence_end = ?
+                            WHERE id = ?""",
+                        (text, source, source_ref, source_detail, meeting_id,
+                         priority, due, origin_app, evidence_start, evidence_end,
+                         todo_id),
+                    )
+                    return todo_id
+            cur = self._conn.execute(
+                """INSERT INTO todos
+                       (text, status, source, source_ref, source_detail,
+                        meeting_id, priority, due, origin_app,
+                        evidence_start, evidence_end, dedup_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (text, status, source, source_ref, source_detail, meeting_id,
+                 priority, due, origin_app, evidence_start, evidence_end, dedup_key),
+            )
+            return int(cur.lastrowid)
+
+    def list_todos(
+        self,
+        *,
+        status: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """List todos, optionally filtered to an activity/evidence time window.
+
+        When ``since`` / ``until`` are set, rows match if their stored
+        ``evidence_start``/``evidence_end`` overlap the range, or (legacy rows)
+        if ``created_at`` falls inside the range.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if since and until:
+            clauses.append(
+                """(
+                    (evidence_start <> '' AND evidence_end <> ''
+                     AND evidence_start <= ? AND evidence_end >= ?)
+                    OR
+                    (evidence_start = '' AND evidence_end = ''
+                     AND created_at >= ? AND created_at <= ?)
+                )"""
+            )
+            params.extend([until, since, since, until])
+        elif since:
+            clauses.append(
+                """(
+                    (evidence_end <> '' AND evidence_end >= ?)
+                    OR (evidence_end = '' AND created_at >= ?)
+                )"""
+            )
+            params.extend([since, since])
+        elif until:
+            clauses.append(
+                """(
+                    (evidence_start <> '' AND evidence_start <= ?)
+                    OR (evidence_start = '' AND created_at <= ?)
+                )"""
+            )
+            params.extend([until, until])
+        where = " AND ".join(clauses) if clauses else "1=1"
+        order = (
+            "ORDER BY (status = 'done'), "
+            "CASE priority WHEN 'H' THEN 0 WHEN 'M' THEN 1 WHEN 'L' THEN 2 ELSE 3 END, "
+            "created_at DESC"
+        )
+        sql = f"SELECT * FROM todos WHERE {where} {order} LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            return self._conn.execute(sql, params).fetchall()
+
+    def todo_by_id(self, todo_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM todos WHERE id = ?", (todo_id,)
+            ).fetchone()
+
+    def set_todo_status(self, todo_id: int, status: str) -> bool:
+        status = "done" if status == "done" else "open"
+        completed = _now_iso() if status == "done" else None
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE todos SET status = ?, completed_at = ? WHERE id = ?",
+                (status, completed, todo_id),
+            )
+            return cur.rowcount > 0
+
+    def delete_todo(self, todo_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+            return cur.rowcount > 0
 
     # ─── search ─────────────────────────────────────────────────────────────
     def search(

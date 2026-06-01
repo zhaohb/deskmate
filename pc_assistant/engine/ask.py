@@ -11,20 +11,23 @@ Flow (mirrors the agentic Ask pattern):
 
 from __future__ import annotations
 
-import http.client
 import json
 import os
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 
-OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3_8b_ov:v1")
+from . import llm
+from .llm import http_get as _http_get
+from .llm import http_post as _http_post
+from .llm import strip_thinking as _strip_thinking
+
+OLLAMA_BASE = os.environ.get("OLLAMA_BASE", llm.DEFAULT_OLLAMA_BASE)
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", llm.DEFAULT_OLLAMA_MODEL)
 MAX_ROUNDS = 8
 
-_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 _TRUNC_TAIL_RE = re.compile(r"(?:\.{2,}|…)\s*$")
 _TRUNC_LEAD_RE = re.compile(r"^\s*(?:\.{2,}|…)\s*")
 _SUMMARY_LEAD_RE = re.compile(
@@ -186,41 +189,6 @@ ASK_TOOLS = [
         },
     },
 ]
-
-
-def _raw_request(
-    method: str, url: str, body: bytes | None = None,
-    headers: dict[str, str] | None = None, timeout: int = 60,
-) -> Any:
-    parsed = urlparse(url)
-    conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=timeout)
-    path = parsed.path or "/"
-    if parsed.query:
-        path += "?" + parsed.query
-    conn.request(method, path, body=body, headers=headers or {})
-    resp = conn.getresponse()
-    data = resp.read().decode("utf-8")
-    conn.close()
-    if resp.status >= 400:
-        raise RuntimeError(f"HTTP {resp.status}: {data[:500]}")
-    return json.loads(data)
-
-
-def _http_get(url: str, timeout: int = 15) -> Any:
-    return _raw_request("GET", url, timeout=timeout)
-
-
-def _http_post(url: str, body: dict, timeout: int = 120) -> Any:
-    return _raw_request(
-        "POST", url,
-        body=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        timeout=timeout,
-    )
-
-
-def _strip_thinking(text: str) -> str:
-    return _THINK_RE.sub("", text).strip()
 
 
 def _normalize_iso(ts: str | None) -> str | None:
@@ -773,17 +741,13 @@ def _chat_ollama(
     model: str | None = None,
     num_predict: int = 4096,
 ) -> dict:
-    body: dict[str, Any] = {
-        "model": model or OLLAMA_MODEL,
-        "messages": messages,
-        "stream": False,
-        "think": False,
-        "options": {"temperature": 0.3, "num_predict": num_predict},
-    }
-    if tools:
-        body["tools"] = tools
-    result = _http_post(f"{OLLAMA_BASE}/api/chat", body, timeout=180)
-    return result.get("message", {})
+    return llm.chat_ollama(
+        messages,
+        tools,
+        base=OLLAMA_BASE,
+        model=model or OLLAMA_MODEL,
+        num_predict=num_predict,
+    )
 
 
 def run_ask(

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>pc_assistant</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260601-activity-compact" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260602-todo-dark-fix" />
   </head>
   <body>
     <div class="app-shell">
@@ -33,6 +33,8 @@
         </nav>
 
         <nav class="nav nav-secondary">
+          <button class="nav-item" data-view="todos" type="button"><span>Todos</span></button>
+          <button class="nav-item" data-view="meetings" type="button"><span>Meetings</span></button>
           <button class="nav-item" data-view="transcripts" type="button"><span>Transcripts</span></button>
           <button class="nav-item" data-view="events" type="button"><span>Events</span></button>
           <button class="nav-item" data-view="settings" type="button"><span>Settings</span></button>
@@ -300,6 +302,73 @@
           </div>
         </section>
 
+        <section id="view-todos" class="view">
+          <div class="todos-page">
+            <section class="panel">
+              <div class="detail-panel-header">
+                <div class="panel-title">Todos <span id="todosOpenCount" class="todos-count"></span></div>
+                <div class="todos-actions">
+                  <select id="todoFilter" aria-label="Filter todos">
+                    <option value="open">Open</option>
+                    <option value="all">All</option>
+                    <option value="done">Done</option>
+                  </select>
+                  <button type="button" id="todoGoAppsBtn">在 Apps 中生成</button>
+                  <button type="button" id="todoRefreshBtn">Refresh</button>
+                </div>
+              </div>
+              <p class="muted-copy">
+                查看并勾选已生成的待办。要从邮件和会议提取新待办，请前往
+                <strong>Apps → Todo List Assistant</strong> 运行（可选择时间范围）。
+              </p>
+              <div class="todo-range-toolbar">
+                <span class="todo-range-label">时间范围</span>
+                <div class="modal-presets todo-range-presets" id="todoRangePresets">
+                  <button type="button" class="modal-preset" data-preset="1">1 小时</button>
+                  <button type="button" class="modal-preset" data-preset="8">8 小时</button>
+                  <button type="button" class="modal-preset active" data-preset="16">16 小时</button>
+                  <button type="button" class="modal-preset" data-preset="24">24 小时</button>
+                  <button type="button" class="modal-preset" data-preset="168">7 天</button>
+                  <button type="button" class="modal-preset" data-preset="all">全部</button>
+                  <button type="button" class="modal-preset" data-preset="custom">自定义</button>
+                </div>
+              </div>
+              <div id="todoCustomRange" class="modal-custom-range todo-custom-range hidden">
+                <label class="modal-field">
+                  <span>开始</span>
+                  <input type="datetime-local" id="todoRangeStart" />
+                </label>
+                <label class="modal-field">
+                  <span>结束</span>
+                  <input type="datetime-local" id="todoRangeEnd" />
+                </label>
+              </div>
+              <p class="todo-range-summary" id="todoRangeSummary">—</p>
+              <div id="todosList" class="todos-list list empty">No todos yet</div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-meetings" class="view">
+          <div class="details-layout">
+            <section class="panel list-panel">
+              <div class="detail-panel-header">
+                <div class="panel-title">Meetings</div>
+                <button type="button" id="meetingsRefreshBtn">Refresh</button>
+              </div>
+              <div id="meetingsList" class="list empty">No meetings</div>
+            </section>
+            <section class="panel detail-panel">
+              <div class="detail-panel-header">
+                <div class="panel-title" id="meetingDetailTitle">Meeting details</div>
+                <button type="button" id="meetingSummarizeBtn" class="primary" style="display:none">Summarize</button>
+              </div>
+              <div id="meetingRunStatus" class="app-run-status" style="display:none"></div>
+              <div id="meetingDetails" class="detail-card muted-detail">Select a meeting to view its transcript and summary</div>
+            </section>
+          </div>
+        </section>
+
         <section id="view-settings" class="view">
           <div class="grid two">
             <section class="panel">
@@ -449,6 +518,6 @@
       </article>
     </template>
 
-    <script src="/ui/assets/app.js?v=20260601-todo-list" defer></script>
+    <script src="/ui/assets/app.js?v=20260602-todos-view-only" defer></script>
   </body>
 </html>

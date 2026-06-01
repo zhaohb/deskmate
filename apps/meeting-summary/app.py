@@ -29,7 +29,14 @@ def main() -> int:
         "--hours",
         type=float,
         default=None,
-        help="Ignored (My Apps / run API may pass this). Meeting scope comes from the latest meeting record.",
+        help="Ignored (My Apps / run API may pass this). Meeting scope comes from the meeting record.",
+    )
+    parser.add_argument(
+        "--meeting-id",
+        dest="meeting_id",
+        type=int,
+        default=None,
+        help="Summarize this specific meeting (default: the most recent meeting).",
     )
     args = parser.parse_args()
 
@@ -39,7 +46,7 @@ def main() -> int:
 
     # The meeting-summary agent ignores the time window (it scopes to the
     # meeting record itself), but run_agent requires a range — pass 24h.
-    report = run_agent(PIPE_MD, hours=24, verbose=args.verbose)
+    report = run_agent(PIPE_MD, hours=24, meeting_id=args.meeting_id, verbose=args.verbose)
 
     out = output_dir(APP_NAME)
     write_markdown(out / "meeting-summary.md", report)

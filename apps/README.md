@@ -54,10 +54,13 @@ python apps\ai-habits\app.py --hours 24 --verbose
 Finds the meeting that just ended, summarizes its transcript (key topics,
 decisions, action items), and patches the summary back onto the meeting record
 (appends under a `## Summary` heading in the note, and refreshes a generic
-title). Skips the write-back when there is nothing worth saving.
+title). Skips the write-back when there is nothing worth saving. Pass
+`--meeting-id <id>` to summarize a specific meeting instead of the latest — this
+is what the **Meetings** page "Summarize" button uses.
 
 ```cmd
 python apps\meeting-summary\app.py --verbose
+python apps\meeting-summary\app.py --meeting-id 42 --verbose
 ```
 
 ### standup-update
@@ -117,6 +120,12 @@ Output is GitHub-style checkboxes
 grouped by source, ending with a `Suggested Next Action`. Deduplicates a task
 that shows up in both an email and a meeting. Does **not** require a search
 keyword — scans the whole time window automatically.
+
+Besides the markdown report, the app parses each checkbox into a structured
+row and persists it to the `todos` table via `POST /todos` (deduplicated by a
+stable key, so re-runs update rather than duplicate). These show up on the
+**Todos** page in the UI, where you can check items off or delete them. Pass
+`--no-store` to skip database persistence and only write the markdown.
 
 ```cmd
 python apps\todo-list\app.py --hours 24 --verbose
@@ -185,3 +194,9 @@ model generates final report (markdown)
 
 The `pipe.md` is a prompt; the agent runner manages the tool-calling loop, and
 the model autonomously decides what data to query and how to present it.
+
+Both the app runner (`apps/agent.py`) and the in-app **Ask** agent
+(`pc_assistant/engine/ask.py`) share one engine, `pc_assistant/engine/llm.py`,
+for the proxy-bypassing HTTP transport and the `/api/chat` call. Each agent
+keeps its own orchestration and its own `OLLAMA_BASE` / `OLLAMA_MODEL` module
+settings (so `--model` still works by overriding `agent.OLLAMA_MODEL`).

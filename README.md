@@ -76,6 +76,8 @@ pc-assistant ui --no-run-daemon  # view existing data only
 | Timeline | Browse frames and screenshots |
 | Events | Keyboard, mouse, clipboard, focus events |
 | Transcripts | Audio transcriptions |
+| Todos | Structured action items from email + meetings — check off, delete, or regenerate |
+| Meetings | Detected video calls, transcripts, and one-click summary |
 | My Apps | Run LLM apps (todo-list, email-digest, meeting-summary, …); connect Gmail/Outlook in Settings |
 | Settings | Config and monitors |
 
@@ -173,6 +175,11 @@ GET  /meetings/{id}
 GET  /meetings/{id}/transcript
 POST /meetings/start
 POST /meetings/stop
+
+GET    /todos
+POST   /todos
+PATCH  /todos/{id}
+DELETE /todos/{id}
 
 GET  /connections/gmail/messages
 GET  /connections/outlook/messages

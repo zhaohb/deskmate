@@ -10,7 +10,6 @@ the results to the model.
 
 from __future__ import annotations
 
-import http.client
 import json
 import os
 import re
@@ -19,12 +18,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from pc_assistant.engine import llm  # noqa: E402
 from pc_assistant.engine.activity_summary import format_summary_for_agent  # noqa: E402
 from pc_assistant.engine.day_recap_context import format_search_items, format_ts_local  # noqa: E402
 
@@ -151,15 +151,14 @@ EMAIL_TOOL_TARGETS: dict[str, dict[str, Any]] = {
     },
 }
 
-OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3_8b_ov:v1")
+OLLAMA_BASE = os.environ.get("OLLAMA_BASE", llm.DEFAULT_OLLAMA_BASE)
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", llm.DEFAULT_OLLAMA_MODEL)
 API_BASE = os.environ.get("PC_ASSISTANT_API", "http://127.0.0.1:3030")
 MAX_TOOL_ROUNDS = int(os.environ.get("MAX_TOOL_ROUNDS", "8"))
 
 SKILL_PATH = Path(__file__).with_name("SKILL.md")
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
-_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 # Regex to extract "for each tool separately: X, Y, Z" from pipe.md
 _APP_FILTER_RE = re.compile(
@@ -232,42 +231,11 @@ TOOLS = [
 
 # ── HTTP helpers (http.client to bypass proxy) ───────────────────────────
 
-def _raw_request(method: str, url: str, body: bytes | None = None,
-                 headers: dict[str, str] | None = None, timeout: int = 60) -> Any:
-    parsed = urlparse(url)
-    conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=timeout)
-    path = parsed.path or "/"
-    if parsed.query:
-        path += "?" + parsed.query
-    conn.request(method, path, body=body, headers=headers or {})
-    resp = conn.getresponse()
-    data = resp.read().decode("utf-8")
-    conn.close()
-    if resp.status >= 400:
-        raise RuntimeError(f"HTTP {resp.status}: {data[:500]}")
-    return json.loads(data)
-
-
-def _http_get(url: str, timeout: int = 15) -> Any:
-    return _raw_request("GET", url, timeout=timeout)
-
-
-def _http_post(url: str, body: dict, timeout: int = 120) -> Any:
-    return _raw_request(
-        "POST", url,
-        body=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        timeout=timeout,
-    )
-
-
-def _http_patch(url: str, body: dict, timeout: int = 60) -> Any:
-    return _raw_request(
-        "PATCH", url,
-        body=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        timeout=timeout,
-    )
+# Transport primitives are shared with the Ask agent via the engine module.
+_raw_request = llm.raw_request
+_http_get = llm.http_get
+_http_post = llm.http_post
+_http_patch = llm.http_patch
 
 
 # ── tool-driven session (model chooses API calls) ─────────────────────────
@@ -963,10 +931,19 @@ def _fetch_gmail_oauth_messages(verbose: bool = False) -> tuple[str, bool]:
     return "\n\n".join(sections), any_messages
 
 
+def _cap_prefetch_text(text: str, max_chars: int = 12000) -> str:
+    """Keep single-shot LLM prompts within a size local models can finish in time."""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n\n...(prefetch truncated for model time budget)"
+
+
 def _do_email_digest_prefetch(
     start: str,
     end: str,
     verbose: bool = False,
+    *,
+    limit_per_tool: int = 5,
 ) -> tuple[str, list[str]]:
     """Per email-tool search; mirror of `_do_ai_habits_prefetch` for email apps.
 
@@ -996,14 +973,17 @@ def _do_email_digest_prefetch(
                 continue
             tried.append(proc)
             items.extend(
-                _do_content_search(start, end, limit=5, app_name=proc, verbose=verbose)
+                _do_content_search(
+                    start, end, limit=limit_per_tool, app_name=proc, verbose=verbose,
+                )
             )
         kw = target.get("q_fallback")
         if kw:
             tried.append(f"q={kw}")
-            raw = _do_content_search(start, end, limit=8, q=kw, verbose=verbose)
+            kw_limit = min(8, max(limit_per_tool + 2, limit_per_tool))
+            raw = _do_content_search(start, end, limit=kw_limit, q=kw, verbose=verbose)
             items.extend(it for it in raw if _keyword_in_item(it, kw))
-        lines = format_search_items(items, max_text=450)
+        lines = format_search_items(items, max_text=350 if limit_per_tool <= 3 else 450)
         span = _items_time_span(items)
         if verbose:
             print(
@@ -1042,6 +1022,16 @@ def _fetch_latest_meeting(verbose: bool = False) -> dict[str, Any] | None:
     if isinstance(meetings, list) and meetings:
         return meetings[0]
     return None
+
+
+def _fetch_meeting_by_id(meeting_id: int, verbose: bool = False) -> dict[str, Any] | None:
+    try:
+        data = _http_get(f"{API_BASE}/meetings/{meeting_id}")
+    except Exception as exc:
+        if verbose:
+            print(f"  [meeting] fetch id={meeting_id} error: {exc}", file=sys.stderr)
+        return None
+    return data.get("meeting") if isinstance(data, dict) else None
 
 
 def _fetch_meeting_transcript(meeting_id: int, verbose: bool = False) -> tuple[str, list[dict[str, Any]]]:
@@ -1126,7 +1116,13 @@ def _do_meeting_todos_prefetch(
         start = m.get("started_at") or ""
         end = m.get("ended_at") or "(ongoing)"
         transcript_text, segments = _fetch_meeting_transcript(int(mid), verbose=verbose) if mid is not None else ("", [])
+        # Keep only the tail of long transcripts so todo extraction stays fast.
+        if len(segments) > 60:
+            segments = segments[-60:]
         formatted = _format_meeting_segments(segments)
+        if len(formatted) > 4000:
+            formatted = formatted[-4000:]
+            formatted = "...(transcript tail)\n" + formatted
         header = f"### Meeting: {name} (id={mid}) — {start} to {end}"
         if formatted.strip():
             with_transcript.append(name)
@@ -1148,15 +1144,21 @@ def _do_meeting_summary(
     skill_text: str,
     context_header: str,
     pipe_body: str,
+    meeting_id: int | None = None,
     verbose: bool = False,
 ) -> str:
-    """Find the meeting that just ended, summarize it, and PATCH it back.
+    """Summarize a meeting transcript and PATCH the summary back onto it.
 
-    Python performs the find / transcript / PATCH calls (the local model
-    transcript / PATCH calls (the local model can't run curl), the LLM only
-    writes the summary. Skips the PATCH when there is nothing worth saving.
+    When ``meeting_id`` is given (e.g. the Meetings page "Summarize" button)
+    that exact meeting is used; otherwise the most recent meeting is picked
+    (the auto ``meeting_ended`` flow). Python performs the find / transcript /
+    PATCH calls (the local model can't run curl), the LLM only writes the
+    summary. Skips the PATCH when there is nothing worth saving.
     """
-    meeting = _fetch_latest_meeting(verbose=verbose)
+    if meeting_id is not None:
+        meeting = _fetch_meeting_by_id(int(meeting_id), verbose=verbose)
+    else:
+        meeting = _fetch_latest_meeting(verbose=verbose)
     if not meeting:
         return "No meeting found to summarize. Start a meeting first, then run this app."
 
@@ -1312,8 +1314,7 @@ def parse_pipe_md(path: Path) -> tuple[dict[str, Any], str]:
     return fm, body
 
 
-def strip_thinking(text: str) -> str:
-    return _THINK_RE.sub("", text).strip()
+strip_thinking = llm.strip_thinking
 
 
 # ── Ollama chat ───────────────────────────────────────────────────────────
@@ -1323,18 +1324,18 @@ def chat_ollama(
     tools: list[dict] | None = None,
     *,
     num_predict: int = 4096,
+    timeout: int | None = None,
 ) -> dict:
-    body: dict[str, Any] = {
-        "model": OLLAMA_MODEL,
-        "messages": messages,
-        "stream": False,
-        "think": False,
-        "options": {"temperature": 0.3, "num_predict": num_predict},
-    }
-    if tools:
-        body["tools"] = tools
-    result = _http_post(f"{OLLAMA_BASE}/api/chat", body, timeout=180)
-    return result.get("message", {})
+    # Reads module-level OLLAMA_MODEL at call time so apps can override it
+    # via ``agent.OLLAMA_MODEL = args.model`` before running.
+    return llm.chat_ollama(
+        messages,
+        tools,
+        base=OLLAMA_BASE,
+        model=OLLAMA_MODEL,
+        num_predict=num_predict,
+        timeout=timeout,
+    )
 
 
 # ── main agent loop ───────────────────────────────────────────────────────
@@ -1345,6 +1346,7 @@ def run_agent(
     hours: float | None = None,
     start_time: str | None = None,
     end_time: str | None = None,
+    meeting_id: int | None = None,
     verbose: bool = False,
 ) -> str:
     """Run one pipe through the full agent loop.
@@ -1391,6 +1393,7 @@ def run_agent(
             skill_text=skill_text,
             context_header=context_header,
             pipe_body=pipe_body,
+            meeting_id=meeting_id,
             verbose=verbose,
         )
 
@@ -1467,7 +1470,9 @@ def run_agent(
     if pipe_md_path.parent.name == "todo-list":
         if verbose:
             print("  [agent] todo-list → email + meeting prefetch + single-shot todolist", file=sys.stderr)
-        email_text, verified_email = _do_email_digest_prefetch(start_iso, end_iso, verbose=verbose)
+        email_text, verified_email = _do_email_digest_prefetch(
+            start_iso, end_iso, verbose=verbose, limit_per_tool=3,
+        )
         meeting_text, verified_meetings = _do_meeting_todos_prefetch(start_iso, end_iso, verbose=verbose)
         data_text = (
             f"## Email evidence\n\n{email_text}\n\n"
@@ -1517,6 +1522,8 @@ def run_agent(
             verbose=verbose,
             extra_rules=extra,
             start_heading="## Todolist",
+            num_predict=4096,
+            max_data_chars=10000,
         )
 
     # Email compose: the local app.py has already baked the verified compose
@@ -2133,6 +2140,8 @@ def _single_shot_report(
     verbose: bool = False,
     extra_rules: str = "",
     start_heading: str = "## Summary",
+    num_predict: int = 6144,
+    max_data_chars: int = 12000,
 ) -> str:
     """Python prefetched all data → model writes report in ONE call (no tools).
 
@@ -2155,9 +2164,10 @@ def _single_shot_report(
         rules += f"9. {extra_rules}\n"
     system_prompt = f"{rules}\n{skill_text}\n"
 
+    capped = _cap_prefetch_text(data_text, max_data_chars)
     user_prompt = (
         f"{context_header}\n"
-        f"## Search Results (pre-fetched by agent)\n\n{data_text}\n\n"
+        f"## Search Results (pre-fetched by agent)\n\n{capped}\n\n"
         f"---\n\n"
         f"## Report Instructions\n\n{pipe_body}\n\n"
         f"REMINDER: Every fact in your report MUST reference data above. "
@@ -2166,15 +2176,27 @@ def _single_shot_report(
     )
 
     if verbose:
-        data_lines = data_text.count("\n")
-        print(f"  [single-shot] prompt lines={data_lines}, sending to LLM...", file=sys.stderr)
+        data_lines = capped.count("\n")
+        print(
+            f"  [single-shot] prompt chars={len(capped)} lines={data_lines}, "
+            f"num_predict={num_predict}, timeout={llm.DEFAULT_CHAT_TIMEOUT}s",
+            file=sys.stderr,
+        )
 
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
 
-    response = chat_ollama(messages, tools=None, num_predict=6144)
+    chat_timeout = llm.DEFAULT_CHAT_TIMEOUT
+    try:
+        response = chat_ollama(messages, tools=None, num_predict=num_predict, timeout=chat_timeout)
+    except TimeoutError:
+        raise RuntimeError(
+            f"Ollama did not respond within {chat_timeout}s. "
+            "Try a shorter time window (--hours 8), set OLLAMA_CHAT_TIMEOUT=900, "
+            "or use a faster model."
+        ) from None
     content = strip_thinking(response.get("content", ""))
 
     if not content.startswith("##"):
@@ -2183,7 +2205,13 @@ def _single_shot_report(
             "role": "user",
             "content": f"Start directly with {start_heading}. Only use data from Search Results above.",
         })
-        response = chat_ollama(messages, tools=None, num_predict=6144)
+        try:
+            response = chat_ollama(messages, tools=None, num_predict=num_predict, timeout=chat_timeout)
+        except TimeoutError:
+            raise RuntimeError(
+                f"Ollama did not respond within {chat_timeout}s on the retry pass. "
+                "Try --hours 8 or increase OLLAMA_CHAT_TIMEOUT."
+            ) from None
         content = strip_thinking(response.get("content", ""))
 
     return content

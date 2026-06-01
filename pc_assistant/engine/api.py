@@ -901,6 +901,75 @@ def create_app(cfg: Config | None = None, db: DatabaseManager | None = None) -> 
         )
         return {"ok": updated, "meeting": db.meeting_by_id(meeting_id)}
 
+    # ─── todos ────────────────────────────────────────────────────────────
+    @app.get("/todos")
+    def list_todos(
+        status: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        rows = db.list_todos(status=status, since=since, until=until, limit=limit)
+        open_count = sum(1 for r in rows if r.get("status") != "done")
+        return {"data": rows, "total": len(rows), "open": open_count}
+
+    @app.post("/todos")
+    async def create_todos(request: Request) -> dict[str, Any]:
+        body = await request.json()
+        if isinstance(body, dict) and isinstance(body.get("todos"), list):
+            items = body["todos"]
+        elif isinstance(body, list):
+            items = body
+        elif isinstance(body, dict) and body.get("text"):
+            items = [body]
+        else:
+            raise HTTPException(status_code=400, detail="provide 'text' or a 'todos' list")
+
+        ids: list[int] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            text = str(it.get("text") or "").strip()
+            if not text:
+                continue
+            raw_mid = it.get("meeting_id")
+            try:
+                meeting_id = int(raw_mid) if raw_mid not in (None, "") else None
+            except (TypeError, ValueError):
+                meeting_id = None
+            todo_id = db.upsert_todo(
+                text=text,
+                source=str(it.get("source") or ""),
+                source_ref=str(it.get("source_ref") or ""),
+                source_detail=str(it.get("source_detail") or ""),
+                meeting_id=meeting_id,
+                priority=str(it.get("priority") or ""),
+                due=str(it.get("due") or ""),
+                origin_app=str(it.get("origin_app") or ""),
+                evidence_start=str(it.get("evidence_start") or ""),
+                evidence_end=str(it.get("evidence_end") or ""),
+                dedup_key=str(it.get("dedup_key") or ""),
+            )
+            ids.append(todo_id)
+        return {"ok": True, "ids": ids, "count": len(ids)}
+
+    @app.patch("/todos/{todo_id}")
+    async def update_todo(todo_id: int, request: Request) -> dict[str, Any]:
+        if not db.todo_by_id(todo_id):
+            raise HTTPException(status_code=404, detail="todo not found")
+        body = await request.json()
+        status = str(body.get("status") or "").strip().lower()
+        if status not in ("open", "done"):
+            raise HTTPException(status_code=400, detail="status must be 'open' or 'done'")
+        db.set_todo_status(todo_id, status)
+        return {"ok": True, "todo": db.todo_by_id(todo_id)}
+
+    @app.delete("/todos/{todo_id}")
+    def remove_todo(todo_id: int) -> dict[str, Any]:
+        if not db.delete_todo(todo_id):
+            raise HTTPException(status_code=404, detail="todo not found")
+        return {"ok": True}
+
     # ─── monitors ─────────────────────────────────────────────────────────
     @app.get("/monitors")
     def monitors() -> list[dict[str, Any]]:
@@ -1254,8 +1323,11 @@ def create_app(cfg: Config | None = None, db: DatabaseManager | None = None) -> 
             else:
                 cmd_args += ["--hours", compose_hours]
         elif app_name == "meeting-summary":
-            # Scopes to the latest meeting record, not a look-back window.
-            pass
+            # Scopes to a meeting record, not a look-back window. The Meetings
+            # page may pass a specific meeting_id; otherwise the latest is used.
+            meeting_id = body.get("meeting_id") or body.get("meetingId")
+            if meeting_id is not None:
+                cmd_args += ["--meeting-id", str(meeting_id)]
         elif start_time and end_time:
             cmd_args += ["--start", str(start_time), "--end", str(end_time)]
         elif start_time or end_time:
@@ -1300,6 +1372,7 @@ def create_app(cfg: Config | None = None, db: DatabaseManager | None = None) -> 
                 "/audio/list", "/audio/device/status", "/events/recent", "/events/stream",
                 "/speakers/search", "/speakers/{id}/name", "/meetings",
                 "/meetings/status", "/meetings/{id}", "/meetings/{id}/transcript",
+                "/todos", "/todos/{id}",
                 "/tags/vision/batch", "/tags/{content_type}/{id}", "/memories",
                 "/memories/{id}", "/monitors",
                 "/pipes", "/pipes/{name}/run", "/pipes/{name}/executions",

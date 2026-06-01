@@ -2011,3 +2011,201 @@ a:hover {
     font-size: 0.8125rem;
   }
 }
+
+/* ── Todos & Meetings ──────────────────────────────────────────────────── */
+#view-todos .detail-panel-header,
+#view-meetings .detail-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+
+.todos-page {
+  padding: 0.25rem 0;
+}
+
+.todos-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.todo-range-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin: 0.75rem 0 0.35rem;
+}
+
+.todo-range-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--muted, #8a94a6);
+}
+
+.todo-range-presets {
+  flex: 1;
+  min-width: 0;
+}
+
+.todo-custom-range {
+  margin-top: 0.5rem;
+}
+
+.todo-range-summary {
+  font-size: 0.8125rem;
+  color: var(--muted, #8a94a6);
+  margin: 0.25rem 0 0.75rem;
+}
+
+.todos-count {
+  font-weight: 500;
+  font-size: 0.8125rem;
+  color: var(--muted, #8a94a6);
+}
+
+.todos-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.todos-list.empty {
+  padding: 1.25rem;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  font-size: 0.8rem;
+}
+
+.todo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.todo-row:hover {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+
+.todo-row.done {
+  opacity: 0.65;
+}
+
+.todo-row.done .todo-text {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.todo-check {
+  margin-top: 0.15rem;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  flex: none;
+}
+
+.todo-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.todo-text {
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.todo-meta {
+  margin-top: 0.2rem;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.todo-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: none;
+}
+
+.todo-priority {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.todo-priority.p-H { background: #fde2e1; color: #b42318; }
+.todo-priority.p-M { background: #fef0c7; color: #b54708; }
+.todo-priority.p-L { background: #e6f4ea; color: #1a7f37; }
+
+.todo-del {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+
+.todo-del:hover {
+  color: #f87171;
+}
+
+.meeting-meta {
+  font-size: 0.8125rem;
+  color: var(--muted, #8a94a6);
+  margin-bottom: 0.6rem;
+}
+
+.meeting-subhead {
+  font-weight: 600;
+  font-size: 0.8125rem;
+  margin: 0.8rem 0 0.4rem;
+}
+
+.meeting-note {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  padding: 0.6rem 0.75rem;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 0.4rem;
+  color: var(--text);
+}
+
+.meeting-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.meeting-seg {
+  word-break: break-word;
+}
+
+.seg-speaker {
+  font-weight: 600;
+  color: var(--muted);
+}
