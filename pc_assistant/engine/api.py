@@ -1341,7 +1341,12 @@ def create_app(cfg: Config | None = None, db: DatabaseManager | None = None) -> 
         proc = await _aio.create_subprocess_exec(
             sys.executable, str(app_py), *cmd_args,
             stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.PIPE,
-            env={**dict(os.environ), "PC_ASSISTANT_API": f"http://{cfg.server.host}:{cfg.server.port}"},
+            env={
+                **dict(os.environ),
+                "PC_ASSISTANT_API": f"http://{cfg.server.host}:{cfg.server.port}",
+                "PC_ASSISTANT_HOME": str(paths.root()),
+                "PC_ASSISTANT_DB": str(db.path),
+            },
         )
         stdout_b, stderr_b = await proc.communicate()
         stdout_text = stdout_b.decode("utf-8", errors="replace").strip()

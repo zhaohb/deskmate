@@ -128,19 +128,50 @@ def _persist_todos(
     verbose: bool = False,
 ) -> int:
     if not todos:
+        if verbose:
+            print("  [todo-list] no checkbox lines parsed — nothing to store", file=sys.stderr)
         return 0
     for item in todos:
         item.setdefault("evidence_start", evidence_start)
         item.setdefault("evidence_end", evidence_end)
+
+    # Prefer writing the same SQLite file the API server uses (no HTTP hop).
+    try:
+        from pc_assistant.db.manager import DatabaseManager  # noqa: WPS433
+
+        db = DatabaseManager()
+        count = 0
+        for item in todos:
+            db.upsert_todo(
+                text=str(item["text"]),
+                status=str(item.get("status") or "open"),
+                source=str(item.get("source") or ""),
+                source_ref=str(item.get("source_ref") or ""),
+                source_detail=str(item.get("source_detail") or ""),
+                meeting_id=item.get("meeting_id"),
+                priority=str(item.get("priority") or ""),
+                due=str(item.get("due") or ""),
+                origin_app=str(item.get("origin_app") or APP_NAME),
+                evidence_start=str(item.get("evidence_start") or ""),
+                evidence_end=str(item.get("evidence_end") or ""),
+                dedup_key=str(item.get("dedup_key") or ""),
+            )
+            count += 1
+        if verbose:
+            print(f"  [todo-list] stored {count} todo(s) in {db.path}", file=sys.stderr)
+        return count
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(f"  [todo-list] direct DB store failed ({exc}), trying API…", file=sys.stderr)
+
     try:
         resp = _http_post(f"{api_base()}/todos", {"todos": todos})
     except Exception as exc:  # noqa: BLE001
-        if verbose:
-            print(f"  [todo-list] could not persist todos: {exc}", file=sys.stderr)
+        print(f"  [todo-list] ERROR: could not persist todos: {exc}", file=sys.stderr)
         return 0
     count = int(resp.get("count", 0)) if isinstance(resp, dict) else 0
     if verbose:
-        print(f"  [todo-list] persisted {count} structured todo(s) to /todos", file=sys.stderr)
+        print(f"  [todo-list] persisted {count} structured todo(s) via /todos", file=sys.stderr)
     return count
 
 
@@ -170,12 +201,20 @@ def main() -> int:
     if not args.no_store:
         ev_start, ev_end = evidence_window_from_args(args)
         todos = parse_todos(report)
-        _persist_todos(
+        stored = _persist_todos(
             todos,
             evidence_start=ev_start,
             evidence_end=ev_end,
             verbose=args.verbose,
         )
+        if not todos and "## Todolist" in report:
+            print(
+                "  [todo-list] WARNING: report generated but no '- [ ]' lines parsed for DB",
+                file=sys.stderr,
+            )
+        elif todos and stored == 0:
+            print("  [todo-list] ERROR: parsed todos but none were stored", file=sys.stderr)
+            return 1
 
     print(out / "todo-list.md")
     return 0

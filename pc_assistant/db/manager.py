@@ -25,6 +25,22 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().replace(microsecond=0).isoformat()
 
 
+def _ts_for_filter(ts: str | None) -> str | None:
+    """Normalize timestamps for SQLite string comparisons (local ``YYYY-MM-DD HH:MM:SS``)."""
+    if not ts:
+        return None
+    text = str(ts).strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text[:19].replace("T", " ") if len(text) >= 10 else text
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return dt.astimezone().replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _dict_factory(cursor: sqlite3.Cursor, row: tuple) -> dict[str, Any]:
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
@@ -57,6 +73,15 @@ class DatabaseManager:
             self._conn.execute(
                 "ALTER TABLE todos ADD COLUMN evidence_end TEXT NOT NULL DEFAULT ''"
             )
+        # Legacy rows: empty evidence + ISO-ish filter broke list queries; anchor to created_at.
+        self._conn.execute(
+            """UPDATE todos
+                  SET evidence_start = created_at,
+                      evidence_end = created_at
+                WHERE (evidence_start = '' OR evidence_start IS NULL)
+                  AND (evidence_end = '' OR evidence_end IS NULL)
+                  AND created_at <> ''"""
+        )
 
     # ─── migrations ──────────────────────────────────────────────────────────
     def _record_migration(self, version: str) -> None:
@@ -535,6 +560,8 @@ class DatabaseManager:
         text = (text or "").strip()
         if not text:
             raise ValueError("todo text is required")
+        evidence_start = _ts_for_filter(evidence_start) or evidence_start
+        evidence_end = _ts_for_filter(evidence_end) or evidence_end
         with self._lock:
             if dedup_key:
                 existing = self._conn.execute(
@@ -584,33 +611,35 @@ class DatabaseManager:
         if status:
             clauses.append("status = ?")
             params.append(status)
-        if since and until:
+        since_s = _ts_for_filter(since)
+        until_s = _ts_for_filter(until)
+        if since_s and until_s:
             clauses.append(
                 """(
                     (evidence_start <> '' AND evidence_end <> ''
                      AND evidence_start <= ? AND evidence_end >= ?)
                     OR
-                    (evidence_start = '' AND evidence_end = ''
+                    ((evidence_start = '' OR evidence_end = '')
                      AND created_at >= ? AND created_at <= ?)
                 )"""
             )
-            params.extend([until, since, since, until])
-        elif since:
+            params.extend([until_s, since_s, since_s, until_s])
+        elif since_s:
             clauses.append(
                 """(
                     (evidence_end <> '' AND evidence_end >= ?)
-                    OR (evidence_end = '' AND created_at >= ?)
+                    OR ((evidence_start = '' OR evidence_end = '') AND created_at >= ?)
                 )"""
             )
-            params.extend([since, since])
-        elif until:
+            params.extend([since_s, since_s])
+        elif until_s:
             clauses.append(
                 """(
                     (evidence_start <> '' AND evidence_start <= ?)
-                    OR (evidence_start = '' AND created_at <= ?)
+                    OR ((evidence_start = '' OR evidence_end = '') AND created_at <= ?)
                 )"""
             )
-            params.extend([until, until])
+            params.extend([until_s, until_s])
         where = " AND ".join(clauses) if clauses else "1=1"
         order = (
             "ORDER BY (status = 'done'), "

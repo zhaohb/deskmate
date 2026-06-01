@@ -61,7 +61,7 @@ const appTimeRangeUi = {
 };
 
 const todosUi = { filter: "open" };
-const todoTimeRangeUi = { preset: "16" };
+const todoTimeRangeUi = { preset: "all" };
 const meetingsUi = { selectedId: null };
 
 const $ = (selector) => document.querySelector(selector);
@@ -1702,8 +1702,8 @@ function renderTodos(payload) {
       ? ""
       : " for the selected time range";
     list.textContent = todosUi.filter === "open"
-      ? `当前时段没有未完成的待办${rangeHint}。请前往 Apps → Todo List Assistant 生成。`
-      : `当前没有待办${rangeHint}。请前往 Apps → Todo List Assistant 生成。`;
+      ? `当前没有未完成的待办${rangeHint}。请前往 Apps → Todo List Assistant 生成，或将时间范围改为「全部」。`
+      : `当前没有待办${rangeHint}。请前往 Apps → Todo List Assistant 生成，或将时间范围改为「全部」。`;
     return;
   }
   list.classList.remove("empty");
