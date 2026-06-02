@@ -2,6 +2,9 @@
 
 Reads `~/.pc_assistant/config.toml` (auto-created with defaults on first run).
 Environment variables prefixed with `PCA_` override file values.
+
+Ollama settings for Ask / pipe apps live under ``[ollama]``; ``OLLAMA_BASE``,
+``OLLAMA_MODEL``, and ``OLLAMA_CHAT_TIMEOUT`` still override the file when set.
 """
 
 from __future__ import annotations
@@ -100,6 +103,14 @@ class FilterConfig(BaseModel):
     ignore_incognito: bool = True
 
 
+class OllamaConfig(BaseModel):
+    """Local Ollama endpoint for Ask and pipe apps."""
+
+    base: str = "http://127.0.0.1:11434"
+    model: str = "qwen3_8b_ov:v1"
+    chat_timeout: int = 600
+
+
 class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 3030
@@ -141,6 +152,7 @@ class Config(BaseSettings):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     redact: RedactConfig = Field(default_factory=RedactConfig)
     filters: FilterConfig = Field(default_factory=FilterConfig)
+    ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     outlook: OutlookConfig = Field(default_factory=OutlookConfig)
     gmail: GmailConfig = Field(default_factory=GmailConfig)
@@ -200,6 +212,12 @@ enabled = false
 [filters]
 ignored_apps  = ["1password", "bitwarden", "keepassxc", "lastpass", "lockapp", "logonui"]
 ignore_incognito = true
+
+[ollama]
+# Used by Ask and apps/agent.py. OLLAMA_* env vars override these values.
+base = "http://127.0.0.1:11434"
+model = "qwen3_8b_ov:v1"
+chat_timeout = 600
 
 [server]
 host = "127.0.0.1"

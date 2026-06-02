@@ -151,8 +151,7 @@ EMAIL_TOOL_TARGETS: dict[str, dict[str, Any]] = {
     },
 }
 
-OLLAMA_BASE = os.environ.get("OLLAMA_BASE", llm.DEFAULT_OLLAMA_BASE)
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", llm.DEFAULT_OLLAMA_MODEL)
+OLLAMA_BASE, OLLAMA_MODEL, _OLLAMA_CHAT_TIMEOUT = llm.resolve_ollama_settings()
 API_BASE = os.environ.get("PC_ASSISTANT_API", "http://127.0.0.1:3030")
 MAX_TOOL_ROUNDS = int(os.environ.get("MAX_TOOL_ROUNDS", "8"))
 
@@ -1656,7 +1655,7 @@ def run_agent(
         response = chat_ollama(messages, tools=TOOLS, num_predict=predict)
         messages.append(response)
 
-        tool_calls = response.get("tool_calls")
+        tool_calls = llm.extract_tool_calls(response)
         if not tool_calls:
             return strip_thinking(response.get("content", ""))
 
@@ -1664,11 +1663,17 @@ def run_agent(
             fn = tc.get("function", {})
             fn_name = fn.get("name", "")
             fn_args = fn.get("arguments", {})
+            tool_call_id = tc.get("id") or f"call_{round_idx}_{len(messages)}"
             if verbose:
                 print(f"  [tool]  {fn_name}({json.dumps(fn_args, ensure_ascii=False)[:200]})", file=sys.stderr)
             fn_args = _parse_tool_arguments(fn_args)
             tool_result = execute_tool(fn_name, fn_args)
-            messages.append({"role": "tool", "content": tool_result})
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "tool_name": fn_name,
+                "content": tool_result,
+            })
 
     final = chat_ollama(messages, tools=None, num_predict=4096)
     return strip_thinking(final.get("content", ""))
@@ -2179,7 +2184,7 @@ def _single_shot_report(
         data_lines = capped.count("\n")
         print(
             f"  [single-shot] prompt chars={len(capped)} lines={data_lines}, "
-            f"num_predict={num_predict}, timeout={llm.DEFAULT_CHAT_TIMEOUT}s",
+            f"num_predict={num_predict}, timeout={_OLLAMA_CHAT_TIMEOUT}s",
             file=sys.stderr,
         )
 
@@ -2188,7 +2193,7 @@ def _single_shot_report(
         {"role": "user", "content": user_prompt},
     ]
 
-    chat_timeout = llm.DEFAULT_CHAT_TIMEOUT
+    chat_timeout = _OLLAMA_CHAT_TIMEOUT
     try:
         response = chat_ollama(messages, tools=None, num_predict=num_predict, timeout=chat_timeout)
     except TimeoutError:
@@ -2348,7 +2353,7 @@ def _run_tool_driven_agent(
             )
         response = chat_ollama(messages, tools=TOOLS, num_predict=predict)
         messages.append(response)
-        tool_calls = response.get("tool_calls")
+        tool_calls = llm.extract_tool_calls(response)
         if not tool_calls:
             content = strip_thinking(response.get("content", ""))
             if _meets_minimum_tools(session, cfg) and content.startswith("##"):
@@ -2365,6 +2370,7 @@ def _run_tool_driven_agent(
         for tc in tool_calls:
             fn = tc.get("function", {})
             fn_name = fn.get("name", "")
+            tool_call_id = tc.get("id") or f"call_{round_idx}_{len(messages)}"
             fn_args = _parse_tool_arguments(fn.get("arguments", {}))
             if verbose:
                 print(
@@ -2372,7 +2378,12 @@ def _run_tool_driven_agent(
                     file=sys.stderr,
                 )
             tool_result = execute_tool(fn_name, fn_args, session=session)
-            messages.append({"role": "tool", "content": tool_result})
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "tool_name": fn_name,
+                "content": tool_result,
+            })
 
         if not _meets_minimum_tools(session, cfg):
             messages.append({

@@ -55,6 +55,62 @@ const HOURS_RANGE_APPS = {
   "ai-habits": { defaultPreset: "24", title: "AI usage habits" },
 };
 
+const APP_RUN_LABELS = {
+  "video-export": "Export screen video",
+  "email-compose": "Compose email",
+  "meeting-summary": "Meeting summary",
+  "standup-update": "Standup update",
+  "time-breakdown": "Time breakdown",
+  "ai-prompt-journal": "AI prompt journal",
+  ...Object.fromEntries(
+    Object.entries(HOURS_RANGE_APPS).map(([k, v]) => [k, v.title]),
+  ),
+};
+
+function appRunLabel(appName) {
+  return APP_RUN_LABELS[appName] || appName;
+}
+
+function focusAppRunStatus() {
+  $("#appRunStatus")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function resetModalConfirmButton(button, defaultLabel) {
+  if (!button) return;
+  button.disabled = false;
+  button.textContent = defaultLabel;
+}
+
+/** Shared wiring: overlay click / Cancel / × close; primary button submits then closes. */
+function initRunnableModal({
+  overlay,
+  close,
+  confirmButton,
+  confirmDefaultLabel,
+  onSubmit,
+}) {
+  if (!overlay) return;
+
+  const closeHandlers = [
+    overlay.querySelector(".modal-close"),
+    overlay.querySelector("[id$='Cancel']"),
+  ].filter(Boolean);
+
+  for (const btn of closeHandlers) {
+    btn.addEventListener("click", close);
+  }
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  if (confirmButton) {
+    resetModalConfirmButton(confirmButton, confirmDefaultLabel);
+    confirmButton.addEventListener("click", () => {
+      if (confirmButton.disabled) return;
+      onSubmit();
+    });
+  }
+}
+
 const appTimeRangeUi = {
   appName: null,
   preset: "16",
@@ -899,6 +955,7 @@ function setVideoExportPreset(preset) {
 
 function openVideoExportModal() {
   setVideoExportPreset(videoExportUi.preset || "5");
+  resetModalConfirmButton($("#videoExportConfirm"), "Start export");
   const modal = $("#videoExportModal");
   if (modal) modal.classList.remove("hidden");
 }
@@ -906,6 +963,7 @@ function openVideoExportModal() {
 function closeVideoExportModal() {
   const modal = $("#videoExportModal");
   if (modal) modal.classList.add("hidden");
+  resetModalConfirmButton($("#videoExportConfirm"), "Start export");
 }
 
 function buildVideoExportRunBody() {
@@ -930,15 +988,12 @@ function initVideoExportModal() {
     input?.addEventListener("change", updateVideoExportSummary);
     input?.addEventListener("input", updateVideoExportSummary);
   }
-  $("#videoExportModalClose")?.addEventListener("click", closeVideoExportModal);
-  $("#videoExportCancel")?.addEventListener("click", closeVideoExportModal);
-  modal.addEventListener("click", (e) => {
-    if (e.target === modal) closeVideoExportModal();
-  });
-  $("#videoExportConfirm")?.addEventListener("click", () => {
-    runApp("video-export", buildVideoExportRunBody())
-      .catch(showError)
-      .finally(closeVideoExportModal);
+  initRunnableModal({
+    overlay: modal,
+    close: closeVideoExportModal,
+    confirmButton: $("#videoExportConfirm"),
+    confirmDefaultLabel: "Start export",
+    onSubmit: () => submitModalRun("video-export", buildVideoExportRunBody, closeVideoExportModal),
   });
 }
 
@@ -1007,6 +1062,7 @@ function openAppTimeRangeModal(appName) {
     desc.textContent = "Select how far back to analyze email and on-screen activity for this run.";
   }
   setAppTimeRangePreset(cfg.defaultPreset || "16");
+  resetModalConfirmButton($("#appTimeRangeConfirm"), "Run");
   const modal = $("#appTimeRangeModal");
   if (modal) modal.classList.remove("hidden");
   return true;
@@ -1016,6 +1072,7 @@ function closeAppTimeRangeModal() {
   const modal = $("#appTimeRangeModal");
   if (modal) modal.classList.add("hidden");
   appTimeRangeUi.appName = null;
+  resetModalConfirmButton($("#appTimeRangeConfirm"), "Run");
 }
 
 function buildAppTimeRangeRunBody() {
@@ -1040,17 +1097,16 @@ function initAppTimeRangeModal() {
     input?.addEventListener("change", updateAppTimeRangeSummary);
     input?.addEventListener("input", updateAppTimeRangeSummary);
   }
-  $("#appTimeRangeModalClose")?.addEventListener("click", closeAppTimeRangeModal);
-  $("#appTimeRangeCancel")?.addEventListener("click", closeAppTimeRangeModal);
-  modal.addEventListener("click", (e) => {
-    if (e.target === modal) closeAppTimeRangeModal();
-  });
-  $("#appTimeRangeConfirm")?.addEventListener("click", () => {
-    const appName = appTimeRangeUi.appName;
-    if (!appName) return;
-    runApp(appName, buildAppTimeRangeRunBody())
-      .catch(showError)
-      .finally(closeAppTimeRangeModal);
+  initRunnableModal({
+    overlay: modal,
+    close: closeAppTimeRangeModal,
+    confirmButton: $("#appTimeRangeConfirm"),
+    confirmDefaultLabel: "Run",
+    onSubmit: () => {
+      const appName = appTimeRangeUi.appName;
+      if (!appName) return;
+      submitModalRun(appName, buildAppTimeRangeRunBody, closeAppTimeRangeModal);
+    },
   });
 }
 
@@ -1187,6 +1243,7 @@ async function openEmailComposeModal() {
   const replyInput = $("#emailComposeReplyTo");
   if (replyInput) replyInput.value = "";
   await loadEmailComposeReplyOptions();
+  resetModalConfirmButton($("#emailComposeConfirm"), "Draft email");
   const modal = $("#emailComposeModal");
   if (modal) modal.classList.remove("hidden");
 }
@@ -1194,6 +1251,7 @@ async function openEmailComposeModal() {
 function closeEmailComposeModal() {
   const modal = $("#emailComposeModal");
   if (modal) modal.classList.add("hidden");
+  resetModalConfirmButton($("#emailComposeConfirm"), "Draft email");
 }
 
 function buildEmailComposeRunBody() {
@@ -1235,15 +1293,12 @@ function initEmailComposeModal() {
     const custom = $("#emailComposeReplyTo");
     if (custom && pick) custom.value = "";
   });
-  $("#emailComposeModalClose")?.addEventListener("click", closeEmailComposeModal);
-  $("#emailComposeCancel")?.addEventListener("click", closeEmailComposeModal);
-  modal.addEventListener("click", (e) => {
-    if (e.target === modal) closeEmailComposeModal();
-  });
-  $("#emailComposeConfirm")?.addEventListener("click", () => {
-    runApp("email-compose", buildEmailComposeRunBody())
-      .catch(showError)
-      .finally(closeEmailComposeModal);
+  initRunnableModal({
+    overlay: modal,
+    close: closeEmailComposeModal,
+    confirmButton: $("#emailComposeConfirm"),
+    confirmDefaultLabel: "Draft email",
+    onSubmit: () => submitModalRun("email-compose", buildEmailComposeRunBody, closeEmailComposeModal),
   });
 }
 
@@ -1263,6 +1318,21 @@ function requestRunApp(appName) {
   return runApp(appName, {});
 }
 
+function submitModalRun(appName, buildBody, closeModal) {
+  let body;
+  try {
+    body = buildBody();
+  } catch (err) {
+    showError(err);
+    return;
+  }
+
+  closeModal();
+  setView("apps");
+  focusAppRunStatus();
+  runApp(appName, body).catch(showError);
+}
+
 async function runApp(appName, runBody = {}) {
   if (appName === "email-compose" && !runBody.provider) {
     await openEmailComposeModal().catch(showError);
@@ -1272,15 +1342,16 @@ async function runApp(appName, runBody = {}) {
   const statusEl = $("#appRunStatus");
   statusEl.style.display = "block";
   statusEl.className = "app-run-status running";
-  statusEl.textContent = `Running ${appName}… (LLM agent in progress, please wait)`;
+  const label = appRunLabel(appName);
+  statusEl.textContent = `Started ${label}. Running in the background… You can keep using pc_assistant.`;
+  focusAppRunStatus();
 
   const outputPanel = $("#appOutputPanel");
   outputPanel.style.display = "none";
 
-  // disable all run buttons
-    for (const btn of document.querySelectorAll(".pipe-row-actions .primary")) {
-      btn.disabled = true;
-    }
+  for (const btn of document.querySelectorAll(".pipe-row-actions .primary")) {
+    btn.disabled = true;
+  }
 
   try {
     const body = { ...runBody };
@@ -1297,15 +1368,15 @@ async function runApp(appName, runBody = {}) {
       const run = result.outputs[0];
       if (run.report_file) {
         statusEl.className = "app-run-status success";
-        statusEl.textContent = `${appName} completed successfully`;
+        statusEl.textContent = `${appRunLabel(appName)} completed successfully`;
         await showAppOutput(appName, run.run_id, run.report_file);
       } else {
         statusEl.className = "app-run-status success";
-        statusEl.textContent = `${appName} finished: ${result.output_path || "no report file"}`;
+        statusEl.textContent = `${appRunLabel(appName)} finished: ${result.output_path || "no report file"}`;
       }
     } else {
       statusEl.className = "app-run-status error";
-      statusEl.textContent = `${appName} failed: ${result.stderr || "unknown error"}`;
+      statusEl.textContent = `${appRunLabel(appName)} failed: ${result.stderr || "unknown error"}`;
     }
   } catch (err) {
     statusEl.className = "app-run-status error";
@@ -1899,7 +1970,8 @@ async function summarizeMeeting(id) {
   const btn = $("#meetingSummarizeBtn");
   statusEl.style.display = "block";
   statusEl.className = "app-run-status running";
-  statusEl.textContent = "Summarizing meeting… (LLM agent in progress, please wait)";
+  statusEl.textContent = `Started ${appRunLabel("meeting-summary")}. Running in the background…`;
+  statusEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
   if (btn) btn.disabled = true;
   try {
     const result = await api("/apps/meeting-summary/run", {

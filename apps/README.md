@@ -164,14 +164,34 @@ python apps\email-compose\app.py --provider outlook --to a@b.com --intent "我�
 
 ## Configuration
 
-| Env variable | Default | Description |
-|---|---|---|
-| `OLLAMA_BASE` | `http://127.0.0.1:11434` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `qwen3_8b_ov:v1` | Model to use |
-| `PC_ASSISTANT_API` | `http://127.0.0.1:3030` | pc_assistant API base |
-| `MAX_TOOL_ROUNDS` | `12` | Max tool-calling rounds per run |
+Ollama settings can live in `~/.pc_assistant/config.toml` (or `%USERPROFILE%\.pc_assistant\config.toml` on Windows):
 
-Override the model per run: `python apps\day-recap\app.py --model other-model:tag`
+```toml
+[ollama]
+base = "http://127.0.0.1:11434"
+model = "qwen3.5_4b_ov:v1"
+chat_timeout = 600
+```
+
+| Setting | Default | Description |
+|---|---|---|
+| `[ollama].base` | `http://127.0.0.1:11434` | Ollama API endpoint |
+| `[ollama].model` | `qwen3_8b_ov:v1` | Model to use |
+| `[ollama].chat_timeout` | `600` | `/api/chat` timeout (seconds) |
+
+Environment overrides (take precedence over the file):
+
+| Env variable | Same as |
+|---|---|
+| `OLLAMA_BASE` | `[ollama].base` |
+| `OLLAMA_MODEL` | `[ollama].model` |
+| `OLLAMA_CHAT_TIMEOUT` | `[ollama].chat_timeout` |
+| `PC_ASSISTANT_API` | — (default `http://127.0.0.1:3030`) |
+| `MAX_TOOL_ROUNDS` | — (default `12`) |
+
+Pydantic env form: `PCA_ollama__model=my-model:tag` (also overrides the file).
+
+Override the model for one run: `python apps\day-recap\app.py --model other-model:tag`
 
 ## Architecture
 

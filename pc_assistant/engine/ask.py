@@ -15,6 +15,7 @@ import json
 import os
 import re
 from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -24,8 +25,7 @@ from .llm import http_get as _http_get
 from .llm import http_post as _http_post
 from .llm import strip_thinking as _strip_thinking
 
-OLLAMA_BASE = os.environ.get("OLLAMA_BASE", llm.DEFAULT_OLLAMA_BASE)
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", llm.DEFAULT_OLLAMA_MODEL)
+OLLAMA_BASE, OLLAMA_MODEL, _OLLAMA_CHAT_TIMEOUT = llm.resolve_ollama_settings()
 MAX_ROUNDS = 8
 
 _TRUNC_TAIL_RE = re.compile(r"(?:\.{2,}|…)\s*$")
@@ -158,6 +158,20 @@ ASK_TOOLS = [
                         "type": "string",
                         "enum": ["gmail", "outlook", "all"],
                         "description": "Which mailbox to search. Default 'all' connected accounts.",
+                    },
+                    "start_time": {
+                        "type": "string",
+                        "description": (
+                            "ISO 8601 start of the received/sent time range. Required for "
+                            "date-relative email questions like today, yesterday, recent, this week."
+                        ),
+                    },
+                    "end_time": {
+                        "type": "string",
+                        "description": (
+                            "ISO 8601 end of the received/sent time range. Required for "
+                            "date-relative email questions like today, yesterday, recent, this week."
+                        ),
                     },
                     "limit": {"type": "integer", "description": "Max messages to return (default 8)."},
                 },
@@ -460,6 +474,87 @@ def _email_preview_text(msg: dict[str, Any], *, max_chars: int = 8000) -> str:
     return text
 
 
+def _parse_email_datetime(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    try:
+        dt = parsedate_to_datetime(raw)
+    except Exception:
+        dt = None
+
+    if dt is None:
+        normalized = raw.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(normalized)
+        except ValueError:
+            dt = None
+
+    if dt is None:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(raw, fmt)
+                break
+            except ValueError:
+                continue
+
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return dt.astimezone()
+
+
+def _email_in_range(msg: dict[str, Any], start_time: str | None, end_time: str | None) -> bool:
+    if not start_time and not end_time:
+        return True
+
+    msg_dt = _parse_email_datetime(msg.get("date"))
+    if msg_dt is None:
+        return False
+
+    start_dt = _parse_email_datetime(start_time) if start_time else None
+    end_dt = _parse_email_datetime(end_time) if end_time else None
+    if start_dt and msg_dt < start_dt:
+        return False
+    if end_dt and msg_dt >= end_dt:
+        return False
+    return True
+
+
+def _gmail_range_query(start_time: str | None, end_time: str | None) -> str:
+    """Build Gmail date query terms. Gmail dates are day-granularity; before is exclusive."""
+    parts: list[str] = []
+    start_dt = _parse_email_datetime(start_time) if start_time else None
+    end_dt = _parse_email_datetime(end_time) if end_time else None
+    if start_dt:
+        parts.append(f"after:{start_dt.strftime('%Y/%m/%d')}")
+    if end_dt:
+        end_date = end_dt.date()
+        if end_dt.time() != datetime.min.time():
+            end_date += timedelta(days=1)
+        parts.append(f"before:{end_date.strftime('%Y/%m/%d')}")
+    return " ".join(parts)
+
+
+def _infer_question_time_range(question: str, now: datetime) -> tuple[str, str] | None:
+    q = question.lower()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if "昨天" in question or "yesterday" in q:
+        start = today_start - timedelta(days=1)
+        end = today_start
+    elif "今天" in question or "今日" in question or "today" in q:
+        start = today_start
+        end = now
+    elif any(token in question for token in ("刚才", "最近", "近期")) or "recent" in q:
+        start = now - timedelta(minutes=30)
+        end = now
+    else:
+        return None
+    return start.isoformat(), end.isoformat()
+
+
 def _clean_answer_display(text: str) -> str:
     """Remove ellipsis artifacts from the final answer shown in the UI."""
     lines: list[str] = []
@@ -473,7 +568,43 @@ def _clean_answer_display(text: str) -> str:
 
 
 def _finalize_answer(text: str) -> str:
-    return _clean_answer_display(_strip_thinking(text))
+    return _clean_answer_display(llm.strip_tool_call_markup(text))
+
+
+def _no_data_answer(
+    tool_log: list[dict[str, Any]],
+    *,
+    api_base: str,
+    question: str,
+) -> str:
+    if not tool_log:
+        return (
+            "未能执行数据查询：模型返回了工具调用，但未被识别。"
+            "若使用 Ollama OpenVINO + Qwen3.5，请更新 pc_assistant 到最新版本后重试。"
+        )
+    try:
+        health = _http_get(f"{api_base}/health")
+    except Exception:
+        health = {}
+    uptime = int(health.get("uptime_seconds") or 0)
+    frames = int(health.get("frames") or 0)
+    q = question.lower()
+    asks_history = any(
+        token in question or token in q
+        for token in ("昨天", "昨日", "前天", "上周", "yesterday", "last week", "last month")
+    )
+    if asks_history and uptime < 86_400:
+        minutes = max(1, uptime // 60)
+        return (
+            f"当前录制仅运行约 {minutes} 分钟（共 {frames} 条画面），"
+            "还没有「昨天」或更早的屏幕记录。"
+            "请保持 pc_assistant 在后台持续录制后再问历史问题；"
+            "若只想看最近活动，可问「刚才在做什么」或「今天用了哪些应用」。"
+        )
+    return (
+        "在所查询的时间范围内没有找到匹配的录屏数据。"
+        "请确认录制未暂停，或换一个更近的时间范围再试。"
+    )
 
 
 def _connected_instances(api_base: str, provider: str) -> list[str]:
@@ -493,14 +624,23 @@ def _connected_instances(api_base: str, provider: str) -> list[str]:
 
 
 def _email_search_provider(
-    api_base: str, provider: str, query: str | None, limit: int,
+    api_base: str,
+    provider: str,
+    query: str | None,
+    limit: int,
+    start_time: str | None = None,
+    end_time: str | None = None,
 ) -> list[dict[str, Any]]:
     """Search one provider's mailbox and return normalized message dicts."""
     results: list[dict[str, Any]] = []
     for instance in _connected_instances(api_base, provider):
         params = [f"instance={quote(instance)}"]
-        if query:
-            params.append(f"q={quote(query)}")
+        provider_query = query
+        if provider == "gmail":
+            range_query = _gmail_range_query(start_time, end_time)
+            provider_query = " ".join(part for part in (query, range_query) if part).strip() or None
+        if provider_query:
+            params.append(f"q={quote(provider_query)}")
         if provider == "gmail":
             params.append(f"maxResults={limit}")
         else:
@@ -552,7 +692,7 @@ def _email_search_provider(
                     "date": msg.get("date") or "",
                     "preview": _email_preview_text(msg),
                 })
-    return results
+    return [m for m in results if m.get("error") or _email_in_range(m, start_time, end_time)]
 
 
 # Words the LLM tends to invent as a "query" when it really means "latest".
@@ -574,6 +714,8 @@ def _execute_email_search(arguments: dict[str, Any], api_base: str) -> str:
     query = str(query).strip() if query else None
     if query and query.lower() in _RECENCY_NOISE:
         query = None
+    start_time = _normalize_iso(str(arguments.get("start_time"))) if arguments.get("start_time") else None
+    end_time = _normalize_iso(str(arguments.get("end_time"))) if arguments.get("end_time") else None
     try:
         limit = int(arguments.get("limit") or 8)
     except (TypeError, ValueError):
@@ -599,11 +741,12 @@ def _execute_email_search(arguments: dict[str, Any], api_base: str) -> str:
     messages: list[dict[str, Any]] = []
     for p in providers:
         if connected.get(p):
-            messages.extend(_email_search_provider(api_base, p, query, limit))
+            messages.extend(_email_search_provider(api_base, p, query, limit, start_time, end_time))
 
     real = [m for m in messages if m.get("id") and not m.get("error")]
     return _json_for_llm({
         "query": query,
+        "range": {"start_time": start_time, "end_time": end_time},
         "providers_searched": [p for p in providers if connected.get(p)],
         "result_count": len(real),
         "messages": messages[: limit * len(providers)],
@@ -765,9 +908,23 @@ def run_ask(
         skill_text = SKILL_PATH.read_text(encoding="utf-8")
 
     now = datetime.now().astimezone()
+    inferred_email_range = _infer_question_time_range(question, now)
+    recording_note = ""
+    try:
+        health = _http_get(f"{api_base}/health")
+        uptime = int(health.get("uptime_seconds") or 0)
+        frames = int(health.get("frames") or 0)
+        recording_note = (
+            f"Recording uptime: {uptime}s ({max(1, uptime // 60)} min), "
+            f"frames captured: {frames}. "
+            "If uptime is short, historical questions (yesterday / last week) will have no data.\n"
+        )
+    except Exception:
+        pass
     context = (
         f"Current time: {now.isoformat()}\n"
         f"Timezone: {now.tzname()}\n"
+        f"{recording_note}"
         f"Today: {now.strftime('%Y-%m-%d %A')}\n"
     )
 
@@ -797,9 +954,11 @@ def run_ask(
         "read meeting_transcript first; if a meeting has no transcript, say so and summarize from "
         "metadata only — never fabricate dialogue or todos. Format action items as a checklist "
         "with owner + task when the transcript makes them clear.\n"
-        "3. Mailbox questions => email_search (real Gmail/Outlook over OAuth). To list recent "
-        "mail, call email_search with an EMPTY query. For a topic like NVIDIA, call email_search "
-        "with query='NVIDIA'.\n"
+        "3. Mailbox questions => email_search (real Gmail/Outlook over OAuth). For date-relative "
+        "mailbox questions (today, yesterday, recent, this week), ALWAYS pass start_time/end_time "
+        "to email_search. To list recent mail, call email_search with an EMPTY query plus the "
+        "time range. For a topic like NVIDIA, call email_search with query='NVIDIA' plus the "
+        "time range if the user mentioned one.\n"
         "4. Do NOT answer mailbox or meeting questions using activity_summary window titles.\n"
         "5. Always pass start_time/end_time as ISO 8601 WITH timezone offset "
         f"(e.g. {now.strftime('%Y-%m-%d')}T10:00:00{now.strftime('%z')[:3]}:{now.strftime('%z')[3:]}).\n"
@@ -832,7 +991,7 @@ def run_ask(
         response = _chat_ollama(messages, tools=ASK_TOOLS, model=model)
         messages.append(response)
 
-        tool_calls = response.get("tool_calls")
+        tool_calls = llm.extract_tool_calls(response)
         if not tool_calls:
             answer = _finalize_answer(response.get("content", ""))
             if answer:
@@ -846,17 +1005,26 @@ def run_ask(
                     ),
                 })
                 continue
-            return {"answer": _finalize_answer(answer) if answer else "(No matching data found)", "tool_calls": tool_log, "error": None}
+            empty = _no_data_answer(tool_log, api_base=api_base, question=question)
+            return {"answer": _finalize_answer(answer) if answer else empty, "tool_calls": tool_log, "error": None}
 
         for tc in tool_calls:
             fn = tc.get("function", {})
             fn_name = fn.get("name", "")
             fn_args = fn.get("arguments", {})
+            tool_call_id = tc.get("id") or f"call_{len(tool_log)}"
             if isinstance(fn_args, str):
                 try:
                     fn_args = json.loads(fn_args) if fn_args.strip() else {}
                 except json.JSONDecodeError:
                     fn_args = {}
+            if (
+                fn_name == "email_search"
+                and inferred_email_range
+                and not fn_args.get("start_time")
+                and not fn_args.get("end_time")
+            ):
+                fn_args["start_time"], fn_args["end_time"] = inferred_email_range
 
             tool_result = _execute_tool(fn_name, fn_args, api_base)
             tool_log.append({
@@ -864,7 +1032,12 @@ def run_ask(
                 "args": fn_args,
                 "result_length": len(tool_result),
             })
-            messages.append({"role": "tool", "content": tool_result})
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "tool_name": fn_name,
+                "content": tool_result,
+            })
 
     messages.append({
         "role": "user",
@@ -872,4 +1045,5 @@ def run_ask(
     })
     final = _chat_ollama(messages, tools=None, model=model)
     answer = _finalize_answer(final.get("content", ""))
-    return {"answer": answer or "(No matching data found)", "tool_calls": tool_log, "error": None}
+    empty = _no_data_answer(tool_log, api_base=api_base, question=question)
+    return {"answer": answer or empty, "tool_calls": tool_log, "error": None}

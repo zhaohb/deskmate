@@ -119,6 +119,27 @@ def test_config_load_writes_default(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     cfg = load()
     assert (tmp_path / "config.toml").exists()
     assert cfg.server.port == 3030
+    assert cfg.ollama.model == "qwen3_8b_ov:v1"
+
+
+def test_ollama_resolve_from_config_and_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PC_ASSISTANT_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[ollama]\nmodel = "from-toml:tag"\nbase = "http://127.0.0.1:11435"\n',
+        encoding="utf-8",
+    )
+    from pc_assistant.engine import llm
+
+    base, model, _timeout = llm.resolve_ollama_settings()
+    assert model == "from-toml:tag"
+    assert base == "http://127.0.0.1:11435"
+
+    monkeypatch.setenv("OLLAMA_MODEL", "from-env:tag")
+    base2, model2, _timeout2 = llm.resolve_ollama_settings()
+    assert model2 == "from-env:tag"
+    assert base2 == "http://127.0.0.1:11435"
 
 
 def test_activity_feed_curve() -> None:

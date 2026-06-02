@@ -23,15 +23,161 @@ from urllib.parse import urlparse
 
 DEFAULT_OLLAMA_BASE = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "qwen3_8b_ov:v1"
-# Local OpenVINO / small models can exceed 3 min on large single-shot prompts.
-DEFAULT_CHAT_TIMEOUT = int(os.environ.get("OLLAMA_CHAT_TIMEOUT", "600"))
+DEFAULT_CHAT_TIMEOUT = 600
+
+
+def resolve_ollama_settings() -> tuple[str, str, int]:
+    """Resolve Ollama base URL, model name, and chat timeout.
+
+    Priority (highest first): ``OLLAMA_*`` env vars, then ``~/.pc_assistant/config.toml``
+    ``[ollama]`` (and ``PCA_ollama__*`` env), then module defaults.
+    """
+    try:
+        from ..config import load as load_config
+
+        ollama = load_config().ollama
+        base = ollama.base
+        model = ollama.model
+        timeout = ollama.chat_timeout
+    except Exception:
+        base = DEFAULT_OLLAMA_BASE
+        model = DEFAULT_OLLAMA_MODEL
+        timeout = DEFAULT_CHAT_TIMEOUT
+
+    if v := os.environ.get("OLLAMA_BASE"):
+        base = v
+    if v := os.environ.get("OLLAMA_MODEL"):
+        model = v
+    if v := os.environ.get("OLLAMA_CHAT_TIMEOUT"):
+        timeout = int(v)
+    return base, model, timeout
+
+
+_OLLAMA_BASE, _OLLAMA_MODEL, _CHAT_TIMEOUT = resolve_ollama_settings()
 
 THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+_TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL | re.IGNORECASE)
+_FUNCTION_BLOCK_RE = re.compile(
+    r"<function=([^>\s]+)\s*>(.*?)(?:</function>|(?=<tool_call>)|$)",
+    re.DOTALL | re.IGNORECASE,
+)
+_PARAMETER_RE = re.compile(
+    r"<parameter=([^>\s]+)\s*>(.*?)</parameter>",
+    re.DOTALL | re.IGNORECASE,
+)
+_MISTRAL_TOOL_CALLS_RE = re.compile(
+    r"\[TOOL_CALLS\]\s*(\[.*?\])\s*\[/TOOL_CALLS\]",
+    re.DOTALL,
+)
 
 
 def strip_thinking(text: str) -> str:
     """Remove ``<think>...</think>`` reasoning blocks and trim whitespace."""
     return THINK_RE.sub("", text or "").strip()
+
+
+def strip_tool_call_markup(text: str) -> str:
+    """Remove tool-call XML/JSON blocks from assistant text."""
+    cleaned = _TOOL_CALL_BLOCK_RE.sub("", text or "")
+    cleaned = _MISTRAL_TOOL_CALLS_RE.sub("", cleaned)
+    return strip_thinking(cleaned).strip()
+
+
+def parse_tool_calls_from_text(content: str) -> list[dict[str, Any]]:
+    """Parse tool calls embedded in model text (Qwen3.5 XML, Qwen JSON, Mistral)."""
+    calls: list[dict[str, Any]] = []
+    if not content:
+        return calls
+
+    for block in _TOOL_CALL_BLOCK_RE.finditer(content):
+        inner = block.group(1).strip()
+        if not inner:
+            continue
+        if inner.startswith("{"):
+            try:
+                obj = json.loads(inner)
+            except json.JSONDecodeError:
+                continue
+            name = obj.get("name")
+            if name:
+                call_idx = len(calls)
+                calls.append({
+                    "id": f"call_{call_idx}",
+                    "type": "function",
+                    "function": {
+                        "index": call_idx,
+                        "name": name,
+                        "arguments": obj.get("arguments") or {},
+                    },
+                })
+            continue
+
+        for fn_match in _FUNCTION_BLOCK_RE.finditer(inner):
+            name = fn_match.group(1).strip()
+            fn_body = fn_match.group(2)
+            args: dict[str, Any] = {}
+            for param in _PARAMETER_RE.finditer(fn_body):
+                args[param.group(1).strip()] = param.group(2).strip()
+            call_idx = len(calls)
+            calls.append({
+                "id": f"call_{call_idx}",
+                "type": "function",
+                "function": {"index": call_idx, "name": name, "arguments": args},
+            })
+
+    mistral = _MISTRAL_TOOL_CALLS_RE.search(content)
+    if mistral and not calls:
+        try:
+            items = json.loads(mistral.group(1))
+        except json.JSONDecodeError:
+            items = []
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict) and item.get("name"):
+                    call_idx = len(calls)
+                    calls.append({
+                        "id": f"call_{call_idx}",
+                        "type": "function",
+                        "function": {
+                            "index": call_idx,
+                            "name": item["name"],
+                            "arguments": item.get("arguments") or {},
+                        },
+                    })
+    return calls
+
+
+def extract_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return structured tool calls from ``tool_calls`` or parsed assistant content."""
+    existing = message.get("tool_calls")
+    if existing:
+        return list(existing)
+    return parse_tool_calls_from_text(message.get("content") or "")
+
+
+def normalize_assistant_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Fill ``tool_calls`` when the model returned Qwen-style XML in ``content``."""
+    msg = dict(message)
+    calls = extract_tool_calls(msg)
+    if calls:
+        msg["tool_calls"] = normalize_tool_calls(calls)
+        msg["content"] = strip_tool_call_markup(msg.get("content") or "")
+    return msg
+
+
+def normalize_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure tool calls have IDs and the shape Ollama accepts in chat history."""
+    normalized: list[dict[str, Any]] = []
+    for idx, tc in enumerate(tool_calls):
+        fn = dict(tc.get("function") or {})
+        fn.setdefault("index", idx)
+        fn.setdefault("arguments", {})
+        normalized.append({
+            "id": tc.get("id") or f"call_{idx}",
+            "type": tc.get("type") or "function",
+            "function": fn,
+        })
+    return normalized
 
 
 def raw_request(
@@ -99,7 +245,7 @@ def chat_ollama(
 ) -> dict:
     """Call Ollama ``/api/chat`` (non-streaming) and return the message dict."""
     if timeout is None:
-        timeout = DEFAULT_CHAT_TIMEOUT
+        timeout = _CHAT_TIMEOUT
     body: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -110,4 +256,4 @@ def chat_ollama(
     if tools:
         body["tools"] = tools
     result = http_post(f"{base}/api/chat", body, timeout=timeout)
-    return result.get("message", {})
+    return normalize_assistant_message(result.get("message", {}))
