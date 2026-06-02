@@ -8,14 +8,14 @@ icon: "📋"
 featured: true
 ---
 
-Analyze my screen and audio recordings from today (last 16 hours only).
+Analyze my screen and audio recordings from the Context time range (see start/end in Context).
 
 Read pc_assistant skill first.
 
 Use this exact format:
 
 ## Summary
-One sentence: what I mainly did today.
+One sentence: what I mainly did in this time range.
 
 ## Accomplishments
 - Top 3 things I finished, with timestamps (e.g. "2:30 PM")

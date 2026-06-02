@@ -16,12 +16,20 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from agent import _is_prompt_noise, run_agent  # noqa: E402
-from common import normalize_capture_text, output_dir, pc_assistant_home, write_markdown  # noqa: E402
+from common import (  # noqa: E402
+    add_agent_time_args,
+    agent_time_kwargs_from_args,
+    normalize_capture_text,
+    output_dir,
+    pc_assistant_home,
+    write_markdown,
+)
 
 APP_NAME = "ai-prompt-journal"
 PIPE_MD = Path(__file__).with_name("pipe.md")
@@ -33,6 +41,7 @@ _BLOCK_RE = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 _BLOCKQUOTE_LINE_RE = re.compile(r"^>\s?", re.MULTILINE)
+_HEADER_DATE_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<rest>.+)$")
 
 
 def _journal_dir() -> Path:
@@ -45,15 +54,78 @@ def _today_journal() -> Path:
     return _journal_dir() / f"{datetime.now().date().isoformat()}.md"
 
 
-def _ensure_journal_header(path: Path) -> None:
+def _journal_for_date(day: date) -> Path:
+    return _journal_dir() / f"{day.isoformat()}.md"
+
+
+def _parse_iso_datetime(iso: str) -> datetime | None:
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            return dt.astimezone().replace(microsecond=0)
+        return dt.replace(microsecond=0)
+    except ValueError:
+        return None
+
+
+def _evidence_window_from_args(args: argparse.Namespace) -> tuple[str, str]:
+    """Return (start_iso, end_iso) for the run, mirroring todo-list."""
+    kwargs: dict[str, Any] = agent_time_kwargs_from_args(args)
+    if "start_time" in kwargs:
+        return str(kwargs["start_time"]), str(kwargs["end_time"])
+    hours = float(kwargs["hours"])
+    end = datetime.now().astimezone().replace(microsecond=0)
+    start = end - timedelta(hours=hours)
+    return start.isoformat(), end.isoformat()
+
+
+def _has_custom_range(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "start_time", None) and getattr(args, "end_time", None))
+
+
+def _window_calendar_days(start_iso: str, end_iso: str) -> list[date]:
+    start_dt = _parse_iso_datetime(start_iso)
+    end_dt = _parse_iso_datetime(end_iso)
+    if not start_dt or not end_dt:
+        return [datetime.now().date()]
+    start_d, end_d = start_dt.date(), end_dt.date()
+    if end_d < start_d:
+        start_d, end_d = end_d, start_d
+    days: list[date] = []
+    cur = start_d
+    while cur <= end_d:
+        days.append(cur)
+        cur += timedelta(days=1)
+    return days
+
+
+def _range_spans_multiple_days(start_iso: str, end_iso: str) -> bool:
+    days = _window_calendar_days(start_iso, end_iso)
+    return len(days) > 1
+
+
+def _ensure_journal_header(path: Path, day: date | None = None) -> None:
     if path.exists():
         return
+    journal_date = (day or datetime.now().date()).isoformat()
     header = (
-        f"---\ndate: {datetime.now().date().isoformat()}\n"
+        f"---\ndate: {journal_date}\n"
         f"tags: [ai-prompts, pc_assistant]\n---\n\n"
-        f"# AI Prompts — {datetime.now().date().isoformat()}\n\n"
+        f"# AI Prompts — {journal_date}\n\n"
     )
     path.write_text(header, encoding="utf-8")
+
+
+def _header_journal_date(header: str) -> date | None:
+    m = _HEADER_DATE_RE.match(header.strip())
+    if not m:
+        return None
+    try:
+        return date.fromisoformat(m.group("date"))
+    except ValueError:
+        return None
 
 
 def _prompt_key(body: str) -> str:
@@ -148,6 +220,75 @@ def _append_new_blocks(journal_path: Path, blocks: list[tuple[str, str]]) -> int
     return appended
 
 
+def _append_blocks_by_date(
+    blocks: list[tuple[str, str]],
+    *,
+    fallback_day: date | None = None,
+) -> int:
+    """Append blocks to per-day journal files (header may include ``YYYY-MM-DD``)."""
+    if not blocks:
+        return 0
+    default_day = fallback_day or datetime.now().date()
+    by_day: dict[date, list[tuple[str, str]]] = {}
+    for header, body in blocks:
+        day = _header_journal_date(header) or default_day
+        by_day.setdefault(day, []).append((header, body))
+    total = 0
+    for day, day_blocks in by_day.items():
+        total += _append_new_blocks(_journal_for_date(day), day_blocks)
+    return total
+
+
+def _wrap_range_display(start_iso: str, end_iso: str, body: str) -> str:
+    days = _window_calendar_days(start_iso, end_iso)
+    start_d, end_d = days[0], days[-1]
+    if start_d == end_d:
+        title = f"# AI Prompts — {start_d.isoformat()}"
+        fm_date = start_d.isoformat()
+    else:
+        title = f"# AI Prompts — {start_d.isoformat()} … {end_d.isoformat()}"
+        fm_date = f"{start_d.isoformat()} … {end_d.isoformat()}"
+    header = (
+        f"---\ndate: {fm_date}\n"
+        f"tags: [ai-prompts, pc_assistant]\n"
+        f"window_start: {start_iso}\n"
+        f"window_end: {end_iso}\n---\n\n"
+        f"{title}\n\n"
+    )
+    return header + body.strip() + "\n"
+
+
+def _merge_journals_in_range(start_iso: str, end_iso: str) -> str:
+    """Collect blocks from daily journal files inside the selected window."""
+    merged: dict[str, tuple[str, str]] = {}
+    for day in _window_calendar_days(start_iso, end_iso):
+        path = _journal_for_date(day)
+        if not path.exists():
+            continue
+        for header, body in _split_blocks(path.read_text(encoding="utf-8")):
+            metadata_stripped = "\n".join(
+                ln for ln in body.splitlines() if not ln.startswith("**Category**")
+            )
+            key = _prompt_key(metadata_stripped)
+            if key:
+                merged[key] = (header, body)
+    if not merged:
+        return "_该时间范围内未捕获到 AI 提示词。_\n"
+    parts: list[str] = []
+    for header, body in merged.values():
+        parts.append(f"## {header}\n{body}\n\n---\n\n")
+    return "".join(parts)
+
+
+def _build_range_display(start_iso: str, end_iso: str, report: str) -> str:
+    """Show prompts for the user-selected window, not only today's journal file."""
+    if report.strip() != "NO_NEW_PROMPTS":
+        body = report.strip() + "\n"
+    else:
+        body = _merge_journals_in_range(start_iso, end_iso)
+    return _wrap_range_display(start_iso, end_iso, body)
+
+
 def _block_body_text(body: str) -> str:
     """Return the prompt body text with blockquote markers and metadata stripped."""
     lines = [ln for ln in body.splitlines() if not ln.startswith("**Category**")]
@@ -192,7 +333,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Capture prompts sent to AI tools and append them to a daily journal."
     )
-    parser.add_argument("--hours", type=float, default=1, help="Look back this many hours (default: 1).")
+    add_agent_time_args(parser, default_hours=1)
     parser.add_argument("--model", type=str, default=None, help="Ollama model override.")
     parser.add_argument("--verbose", action="store_true", help="Print agent rounds to stderr.")
     parser.add_argument(
@@ -206,38 +347,71 @@ def main() -> int:
         import agent
         agent.OLLAMA_MODEL = args.model
 
-    journal_path = _today_journal()
-    if args.rebuild and journal_path.exists():
-        journal_path.unlink()
-    pruned = _prune_noise_from_journal(journal_path)
-    if pruned and args.verbose:
-        print(f"  [prompt-journal] pruned {pruned} stale noise block(s) from journal", file=sys.stderr)
+    start_iso, end_iso = _evidence_window_from_args(args)
+    custom_range = _has_custom_range(args)
+    multi_day = _range_spans_multiple_days(start_iso, end_iso)
 
-    report = run_agent(PIPE_MD, hours=args.hours, verbose=args.verbose)
+    journal_path = _today_journal()
+    if args.rebuild:
+        if custom_range or multi_day:
+            for day in _window_calendar_days(start_iso, end_iso):
+                p = _journal_for_date(day)
+                if p.exists():
+                    p.unlink()
+        elif journal_path.exists():
+            journal_path.unlink()
+
+    for day in _window_calendar_days(start_iso, end_iso):
+        pruned = _prune_noise_from_journal(_journal_for_date(day))
+        if pruned and args.verbose:
+            print(
+                f"  [prompt-journal] pruned {pruned} stale noise block(s) from {day}",
+                file=sys.stderr,
+            )
+
+    report = run_agent(PIPE_MD, verbose=args.verbose, **agent_time_kwargs_from_args(args))
 
     appended = 0
     if report.strip() != "NO_NEW_PROMPTS":
         blocks = _split_blocks(report)
-        appended = _append_new_blocks(journal_path, blocks)
+        if custom_range or multi_day:
+            window_days = _window_calendar_days(start_iso, end_iso)
+            fallback = window_days[0] if len(window_days) == 1 else None
+            appended = _append_blocks_by_date(blocks, fallback_day=fallback)
+        else:
+            appended = _append_new_blocks(journal_path, blocks)
 
-    # The report the UI displays is the *cumulative* journal for today plus a
-    # short status footer, so the user always sees their captured prompts —
-    # even when the current hourly run had nothing new to add.
-    if journal_path.exists():
-        journal_text = journal_path.read_text(encoding="utf-8")
+    # Default (rolling hours, same-day): show today's cumulative journal.
+    # Custom --start/--end or multi-day window: show this run's window report.
+    if custom_range or multi_day:
+        window_note = (
+            f"\n\n---\n_时间窗：{start_iso} → {end_iso}；"
+            f"本 run 追加 **{appended}** 条新提示。_\n"
+        )
+        display = _build_range_display(start_iso, end_iso, report).rstrip() + window_note
     else:
-        journal_text = "_no prompts captured yet today._\n"
-    footer = f"\n\n---\n_Appended **{appended}** new prompt(s) this run._\n"
-    display = journal_text.rstrip() + footer
+        if journal_path.exists():
+            journal_text = journal_path.read_text(encoding="utf-8")
+        else:
+            journal_text = "_no prompts captured yet today._\n"
+        window_note = f"\n\n---\n_Appended **{appended}** new prompt(s) this run._\n"
+        display = journal_text.rstrip() + window_note
 
     out = output_dir(APP_NAME)
     write_markdown(out / "ai-prompt-journal.md", display)
 
     print(out / "ai-prompt-journal.md")
-    print(
-        f"journal: {journal_path} (appended {appended} new prompt block(s))",
-        file=sys.stderr,
-    )
+    if custom_range or multi_day:
+        print(
+            f"journal: {_journal_dir()} ({start_iso} → {end_iso}, "
+            f"appended {appended} new prompt block(s))",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"journal: {journal_path} (appended {appended} new prompt block(s))",
+            file=sys.stderr,
+        )
     return 0
 
 

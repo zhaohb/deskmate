@@ -35,15 +35,21 @@ from common import (  # noqa: E402
     output_dir,
     write_markdown,
 )
+from pc_assistant.engine.day_recap_context import range_spans_calendar_days  # noqa: E402
 
 APP_NAME = "todo-list"
 PIPE_MD = Path(__file__).with_name("pipe.md")
 
-_CHECKBOX_RE = re.compile(r"^\s*[-*]\s*\[([ xX])\]\s*(.+?)\s*$")
+# Tolerate the formatting variants a small model emits for a checkbox:
+#   "- [ ]", "* [x]", "- []", "- [ x ]", "-  [X]  task".
+# Capturing an optional x/✓ and ignoring surrounding spaces avoids silently
+# dropping (and therefore never storing) otherwise valid todo lines.
+_CHECKBOX_RE = re.compile(r"^\s*[-*]\s*\[\s*([xX✓✔])?\s*\]\s*(.+?)\s*$")
 _SPLIT_RE = re.compile(r"\s+[—–]\s+|\s{1,}-\s{1,}")
 _PRIORITY_MAP = {
     "high": "H", "medium": "M", "low": "L",
     "h": "H", "m": "M", "l": "L",
+    "urgent": "H", "critical": "H", "normal": "M",
     "紧急": "H", "高": "H", "中": "M", "低": "L",
 }
 
@@ -69,7 +75,7 @@ def parse_todos(markdown: str) -> list[dict[str, Any]]:
         m = _CHECKBOX_RE.match(line)
         if not m:
             continue
-        checked = m.group(1).lower() == "x"
+        checked = bool(m.group(1))
         rest = _strip_md(m.group(2))
         if not rest:
             continue
@@ -92,7 +98,7 @@ def parse_todos(markdown: str) -> list[dict[str, Any]]:
                 "email" if "email" in source_detail.lower() else ""
             )
 
-        dedup_seed = f"{source_detail}|{task}".lower()
+        dedup_seed = f"{source_detail}|{source_ref}|{task}".lower()
         dedup_key = "todo-list:" + hashlib.md5(dedup_seed.encode("utf-8")).hexdigest()
 
         todos.append({
@@ -107,6 +113,10 @@ def parse_todos(markdown: str) -> list[dict[str, Any]]:
             "dedup_key": dedup_key,
         })
     return todos
+
+
+def _has_custom_range(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "start_time", None) and getattr(args, "end_time", None))
 
 
 def evidence_window_from_args(args: argparse.Namespace) -> tuple[str, str]:
@@ -193,13 +203,16 @@ def main() -> int:
         import agent
         agent.OLLAMA_MODEL = args.model
 
+    ev_start, ev_end = evidence_window_from_args(args)
     report = run_agent(PIPE_MD, verbose=args.verbose, **agent_time_kwargs_from_args(args))
+
+    if _has_custom_range(args) or range_spans_calendar_days(ev_start, ev_end):
+        report = report.rstrip() + f"\n\n---\n_时间窗：{ev_start} → {ev_end}_\n"
 
     out = output_dir(APP_NAME)
     write_markdown(out / "todo-list.md", report)
 
     if not args.no_store:
-        ev_start, ev_end = evidence_window_from_args(args)
         todos = parse_todos(report)
         stored = _persist_todos(
             todos,

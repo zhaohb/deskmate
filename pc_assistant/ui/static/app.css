@@ -1028,8 +1028,12 @@ a:hover {
   margin-top: 1rem;
   max-height: min(34vh, 380px);
   overflow: hidden;
-  display: flex;
+  display: none;
   flex-direction: column;
+}
+
+.pipes-detail-panel.is-visible {
+  display: flex;
 }
 
 /* Match home Recent activity / Ask open: give run output room to scroll without CSS ellipsis */
@@ -1075,9 +1079,16 @@ a:hover {
 
 .pipes-detail-panel .app-output-content,
 .pipes-detail-panel .list {
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   flex: 1 1 auto;
   min-height: 0;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.pipes-page--detail-open .pipes-detail-panel.is-visible {
+  min-height: min(42vh, 480px);
 }
 
 /* ─── home (center + activity feed) ──────────────────────────────────── */

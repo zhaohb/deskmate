@@ -16,6 +16,7 @@ import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -31,7 +32,39 @@ from common import normalize_capture_text  # noqa: E402
 
 from pc_assistant.engine import llm  # noqa: E402
 from pc_assistant.engine.activity_summary import format_summary_for_agent  # noqa: E402
-from pc_assistant.engine.day_recap_context import format_search_items, format_ts_local  # noqa: E402
+from pc_assistant.engine.day_recap_context import (  # noqa: E402
+    calendar_days_in_range,
+    format_search_items,
+    format_ts_local,
+    range_spans_calendar_days,
+)
+
+
+def _todo_list_email_evidence(
+    start_iso: str,
+    end_iso: str,
+    *,
+    verbose: bool = False,
+    limit_per_tool: int = 3,
+) -> tuple[str, list[str]]:
+    """Email prefetch for todo-list; per-day sections when range spans multiple days."""
+    if not range_spans_calendar_days(start_iso, end_iso):
+        text, verified = _do_email_digest_prefetch(
+            start_iso, end_iso, verbose=verbose, limit_per_tool=limit_per_tool,
+        )
+        return text, verified
+
+    blocks: list[str] = []
+    verified_all: list[str] = []
+    for day, day_start, day_end in calendar_days_in_range(start_iso, end_iso):
+        day_text, verified = _do_email_digest_prefetch(
+            day_start, day_end, verbose=verbose, limit_per_tool=limit_per_tool,
+        )
+        blocks.append(f"### {day.isoformat()} ({day_start} → {day_end})\n\n{day_text}")
+        for v in verified:
+            if v not in verified_all:
+                verified_all.append(v)
+    return "\n\n".join(blocks), verified_all
 
 @dataclass(frozen=True)
 class PipeToolConfig:
@@ -54,7 +87,7 @@ PIPE_TOOL_CONFIG: dict[str, PipeToolConfig] = {
         min_search_before_report=6,
         num_predict=4096,
     ),
-    # standup-update: aligned with screenpipe — LLM calls activity_summary once
+    # standup-update: activity_summary first, then limited follow-up searches.
     # then at most 2 follow-up searches (limit=5) to confirm blockers / tasks.
     "standup-update": PipeToolConfig(
         max_search=2,
@@ -65,7 +98,7 @@ PIPE_TOOL_CONFIG: dict[str, PipeToolConfig] = {
         min_search_before_report=0,
         num_predict=2048,
     ),
-    # time-breakdown: aligned with screenpipe — activity_summary first, then
+    # time-breakdown: activity_summary first, then
     # up to 4 follow-up searches (limit=5) to disambiguate app categories/topics.
     "time-breakdown": PipeToolConfig(
         max_search=4,
@@ -453,6 +486,8 @@ def _do_per_tool_searches(
     end: str,
     limit_per_search: int = 5,
     verbose: bool = False,
+    *,
+    include_date: bool = False,
 ) -> str:
     """Execute one /search per tool name and format results.
 
@@ -488,7 +523,7 @@ def _do_per_tool_searches(
             continue
 
         max_text = 450 if limit_per_search >= 10 else 200
-        lines = format_search_items(items, max_text=max_text)
+        lines = format_search_items(items, max_text=max_text, include_date=include_date)
 
         sections.append(
             f"### Search: app_name={tool_name}\n"
@@ -544,6 +579,15 @@ def _do_frames_export(start: str, end: str, verbose: bool = False) -> str:
         lines.append(f"- reason: {reason}")
     lines.append(f"- time_range: {start} to {end}")
     lines.append(f"- fps: 1.0")
+    try:
+        frame_count_int = int(frame_count)
+    except (TypeError, ValueError):
+        frame_count_int = 0
+    if frame_count_int > 500:
+        lines.append(
+            "- suggestion: Large export detected; use a shorter --minutes range "
+            "or lower fps (for example 0.5) to reduce file size."
+        )
 
     return "\n".join(lines)
 
@@ -649,11 +693,35 @@ def _recap_project_keywords(summary: dict[str, Any]) -> list[str]:
 
 def _do_day_recap_prefetch(start: str, end: str, verbose: bool = False) -> str:
     """Rich prefetch: activity-summary + up to 5 supplemental /search calls."""
+    multi_day = range_spans_calendar_days(start, end)
+    include_date = multi_day
+
     summary = _fetch_activity_summary(start, end, verbose=verbose, rich=True)
     if not summary:
         return "(Failed to fetch activity data from pc_assistant API.)"
 
-    sections = [format_summary_for_agent(summary)]
+    sections: list[str] = []
+    if multi_day:
+        day_slices = calendar_days_in_range(start, end)
+        sections.append(
+            f"### Multi-day range ({len(day_slices)} calendar day(s))\n"
+            f"Report MUST use one `## YYYY-MM-DD` section per day below.\n"
+            f"Timestamps in this bundle include the calendar date."
+        )
+        sections.append(
+            "### Range-wide activity (totals across all days)\n\n"
+            + format_summary_for_agent(summary, include_date=True)
+        )
+        for day, day_start, day_end in day_slices:
+            day_summary = _fetch_activity_summary(day_start, day_end, verbose=verbose, rich=True)
+            if not day_summary:
+                continue
+            sections.append(
+                f"### Day {day.isoformat()} ({day_start} → {day_end})\n\n"
+                + format_summary_for_agent(day_summary, include_date=True)
+            )
+    else:
+        sections.append(format_summary_for_agent(summary, include_date=include_date))
 
     apps = sorted(
         summary.get("apps") or [],
@@ -673,32 +741,49 @@ def _do_day_recap_prefetch(start: str, end: str, verbose: bool = False) -> str:
             top_apps[:n], start, end,
             limit_per_search=search_limit,
             verbose=verbose,
+            include_date=include_date,
         )
         if extra.strip():
             sections.append("### Supplemental searches (top apps by minutes)\n\n" + extra)
         searches_left -= n
 
     if searches_left > 0:
-        broad = _do_content_search(
-            start, end, limit=25, verbose=verbose,
-        )
-        lines = format_search_items(broad, max_text=500)
-        if verbose:
-            print(f"  [day-recap] broad search: {len(lines)} substantive", file=sys.stderr)
-        if lines:
-            sections.append(
-                "### Broad search (all apps, substantive content only)\n"
-                f"Results: {len(broad)} raw, {len(lines)} kept.\n"
-                + "\n".join(lines)
+        if multi_day:
+            for day, day_start, day_end in calendar_days_in_range(start, end):
+                if searches_left <= 0:
+                    break
+                broad = _do_content_search(
+                    day_start, day_end, limit=12, verbose=verbose,
+                )
+                lines = format_search_items(broad, max_text=450, include_date=True)
+                if lines:
+                    sections.append(
+                        f"### Broad search — {day.isoformat()}\n"
+                        f"Results: {len(broad)} raw, {len(lines)} kept.\n"
+                        + "\n".join(lines)
+                    )
+                searches_left -= 1
+        else:
+            broad = _do_content_search(
+                start, end, limit=25, verbose=verbose,
             )
-        searches_left -= 1
+            lines = format_search_items(broad, max_text=500, include_date=include_date)
+            if verbose:
+                print(f"  [day-recap] broad search: {len(lines)} substantive", file=sys.stderr)
+            if lines:
+                sections.append(
+                    "### Broad search (all apps, substantive content only)\n"
+                    f"Results: {len(broad)} raw, {len(lines)} kept.\n"
+                    + "\n".join(lines)
+                )
+            searches_left -= 1
 
     keywords = _recap_project_keywords(summary)
     for kw in keywords:
         if searches_left <= 0:
             break
         items = _do_content_search(start, end, limit=10, q=kw, verbose=verbose)
-        lines = format_search_items(items, max_text=400)
+        lines = format_search_items(items, max_text=400, include_date=include_date)
         if lines:
             sections.append(
                 f"### Topic search: {kw}\n"
@@ -708,7 +793,7 @@ def _do_day_recap_prefetch(start: str, end: str, verbose: bool = False) -> str:
 
     if verbose:
         print(
-            f"  [day-recap] context sections={len(sections)} "
+            f"  [day-recap] context sections={len(sections)} multi_day={multi_day} "
             f"timeline={len(summary.get('timeline') or [])} "
             f"key_texts={len(summary.get('key_texts') or [])}",
             file=sys.stderr,
@@ -904,6 +989,17 @@ def _items_time_span(items: list[dict[str, Any]]) -> str:
     return f"{first}–{last}" if first != last else first
 
 
+def _usage_intensity(hit_count: int) -> str:
+    """Coarse AI-tool usage strength from substantive evidence count."""
+    if hit_count <= 0:
+        return "none"
+    if hit_count <= 3:
+        return "light"
+    if hit_count <= 10:
+        return "moderate"
+    return "heavy"
+
+
 def _do_ai_habits_prefetch(
     start: str,
     end: str,
@@ -948,7 +1044,11 @@ def _do_ai_habits_prefetch(
             )
         if lines:
             verified.append(label)
-            header = f"### {label} | substantive_hits={len(lines)}"
+            hit_count = len(lines)
+            header = (
+                f"### {label} | substantive_hits={hit_count} "
+                f"| usage_intensity={_usage_intensity(hit_count)}"
+            )
             if span:
                 header += f" | active window: {span}"
             sections.append(header + "\n" + "\n".join(lines))
@@ -959,7 +1059,63 @@ def _do_ai_habits_prefetch(
     return "\n\n".join(sections), verified
 
 
-def _fetch_outlook_oauth_messages(verbose: bool = False) -> tuple[str, bool]:
+def _days_since(since_iso: str | None) -> int:
+    """Whole days from ``since_iso`` to now, floored at 1 (for Gmail newer_than)."""
+    dt = _parse_iso_loose(since_iso) if since_iso else None
+    if not dt:
+        return 1
+    delta = datetime.now().astimezone() - dt
+    return max(1, int(delta.total_seconds() // 86400) + 1)
+
+
+def _parse_msg_datetime(date_str: str | None) -> datetime | None:
+    """Parse a message date from ISO 8601 (Graph) or RFC 2822 (Gmail)."""
+    raw = (date_str or "").strip()
+    if not raw or raw == "(no date)":
+        return None
+    dt = _parse_iso_loose(raw)
+    if dt is None:
+        try:
+            dt = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return dt
+
+
+def _msg_date_within(
+    date_str: str | None,
+    since_iso: str | None,
+    until_iso: str | None = None,
+) -> bool:
+    """True if ``date_str`` falls in [since_iso, until_iso] when bounds are set.
+
+    Unparseable or missing dates are KEPT (return True) so a parsing quirk never
+    silently drops a real message.
+    """
+    dt = _parse_msg_datetime(date_str)
+    if dt is None:
+        return True
+    if since_iso:
+        floor = _parse_iso_loose(since_iso)
+        if floor and dt < floor:
+            return False
+    if until_iso:
+        ceiling = _parse_iso_loose(until_iso)
+        if ceiling and dt > ceiling:
+            return False
+    return True
+
+
+def _fetch_outlook_oauth_messages(
+    verbose: bool = False,
+    *,
+    since_iso: str | None = None,
+    until_iso: str | None = None,
+) -> tuple[str, bool]:
     """Fetch Microsoft Graph messages from connected Outlook accounts."""
     try:
         instances_payload = _http_get(f"{API_BASE}/connections/outlook/instances")
@@ -995,10 +1151,12 @@ def _fetch_outlook_oauth_messages(verbose: bool = False) -> tuple[str, bool]:
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
+            date = msg.get("date") or "(no date)"
+            if not _msg_date_within(date, since_iso, until_iso):
+                continue
             message_count += 1
             subject = msg.get("subject") or "(no subject)"
             sender = msg.get("from") or "(unknown sender)"
-            date = msg.get("date") or "(no date)"
             snippet = msg.get("snippet") or ""
             lines.append(f"- {date} | From: {sender} | Subject: {subject}")
             if snippet:
@@ -1017,7 +1175,12 @@ def _fetch_outlook_oauth_messages(verbose: bool = False) -> tuple[str, bool]:
     return "\n\n".join(sections), any_messages
 
 
-def _fetch_gmail_oauth_messages(verbose: bool = False) -> tuple[str, bool]:
+def _fetch_gmail_oauth_messages(
+    verbose: bool = False,
+    *,
+    since_iso: str | None = None,
+    until_iso: str | None = None,
+) -> tuple[str, bool]:
     """Fetch Gmail API messages from connected Gmail accounts."""
     try:
         instances_payload = _http_get(f"{API_BASE}/connections/gmail/instances")
@@ -1029,6 +1192,11 @@ def _fetch_gmail_oauth_messages(verbose: bool = False) -> tuple[str, bool]:
     accounts = instances_payload.get("data", []) if isinstance(instances_payload, dict) else []
     sections: list[str] = []
     any_messages = False
+    # Constrain the Gmail query to the activity window so a stale inbox does not
+    # surface weeks-old mail as if it were today's activity.
+    date_filter = ""
+    if since_iso:
+        date_filter = f"&q={quote(f'newer_than:{_days_since(since_iso)}d')}"
     for account in accounts:
         if not isinstance(account, dict):
             continue
@@ -1038,7 +1206,7 @@ def _fetch_gmail_oauth_messages(verbose: bool = False) -> tuple[str, bool]:
         try:
             listed = _http_get(
                 f"{API_BASE}/connections/gmail/messages"
-                f"?maxResults=10&instance={quote(str(instance))}"
+                f"?maxResults=10&instance={quote(str(instance))}{date_filter}"
             )
         except Exception as exc:
             sections.append(
@@ -1064,10 +1232,12 @@ def _fetch_gmail_oauth_messages(verbose: bool = False) -> tuple[str, bool]:
             msg = detail.get("data", {}) if isinstance(detail, dict) else {}
             if not isinstance(msg, dict):
                 continue
+            date = msg.get("date") or "(no date)"
+            if not _msg_date_within(date, since_iso, until_iso):
+                continue
             message_count += 1
             subject = msg.get("subject") or "(no subject)"
             sender = msg.get("from") or "(unknown sender)"
-            date = msg.get("date") or "(no date)"
             snippet = msg.get("snippet") or ""
             lines.append(f"- {date} | From: {sender} | Subject: {subject}")
             if snippet:
@@ -1110,12 +1280,16 @@ def _do_email_digest_prefetch(
     """
     sections: list[str] = []
     verified: list[str] = []
-    gmail_oauth_text, has_gmail_oauth_messages = _fetch_gmail_oauth_messages(verbose=verbose)
+    gmail_oauth_text, has_gmail_oauth_messages = _fetch_gmail_oauth_messages(
+        verbose=verbose, since_iso=start, until_iso=end,
+    )
     if gmail_oauth_text:
         sections.append(gmail_oauth_text)
     if has_gmail_oauth_messages:
         verified.append("Gmail (OAuth)")
-    oauth_text, has_oauth_messages = _fetch_outlook_oauth_messages(verbose=verbose)
+    oauth_text, has_oauth_messages = _fetch_outlook_oauth_messages(
+        verbose=verbose, since_iso=start, until_iso=end,
+    )
     if oauth_text:
         sections.append(oauth_text)
     if has_oauth_messages:
@@ -1163,8 +1337,18 @@ def _do_email_digest_prefetch(
 
 _GENERIC_MEETING_TITLES = frozenset({
     "", "untitled", "untitled meeting", "meeting", "manual meeting",
-    "zoom", "teams", "meet", "google meet",
+    "zoom", "teams", "meet", "google meet", "new meeting",
+    "standup", "daily standup", "weekly standup", "scrum",
+    "1:1", "1-1", "one-on-one", "one on one",
+    "sync", "weekly sync", "team sync", "planning", "retro",
+    "retrospective", "checkpoint",
 })
+
+
+def _is_generic_meeting_title(title: str) -> bool:
+    """True for auto/default meeting titles safe to replace with a summary title."""
+    normalized = " ".join((title or "").strip().lower().split())
+    return normalized in _GENERIC_MEETING_TITLES
 
 
 def _fetch_latest_meeting(verbose: bool = False) -> dict[str, Any] | None:
@@ -1383,7 +1567,7 @@ def _do_meeting_summary(
 
     # Decide whether to refresh the title.
     title_to_set: str | None = None
-    if new_title and current_title.lower() in _GENERIC_MEETING_TITLES:
+    if new_title and _is_generic_meeting_title(current_title):
         title_to_set = new_title
 
     # Append the summary to the existing note under a "## Summary" heading.
@@ -1563,9 +1747,11 @@ def run_agent(
                 f"ONLY these AI tools have recorded usage: {', '.join(verified)}. "
                 f"List ONLY these tools in 'AI Tools Used' and every other section. "
                 f"NEVER mention any AI tool not in this list. Estimate each tool's "
-                f"time from its 'active window' span and hit count shown in the data "
-                f"— do NOT assign the same round number to every tool, and if a tool "
-                f"has only 1 hit say '~few min'."
+                f"time from its active window, substantive_hits, and usage_intensity "
+                f"shown in the data. Treat light usage as '~few min' unless the active "
+                f"window clearly spans longer; moderate/heavy usage can use a larger "
+                f"share of the active window. Do NOT assign the same round number to "
+                f"every tool."
             )
         else:
             extra = (
@@ -1625,14 +1811,27 @@ def run_agent(
     if pipe_md_path.parent.name == "todo-list":
         if verbose:
             print("  [agent] todo-list → email + meeting prefetch + single-shot todolist", file=sys.stderr)
-        email_text, verified_email = _do_email_digest_prefetch(
+        multi_day_todos = range_spans_calendar_days(start_iso, end_iso)
+        email_text, verified_email = _todo_list_email_evidence(
             start_iso, end_iso, verbose=verbose, limit_per_tool=3,
         )
         meeting_text, verified_meetings = _do_meeting_todos_prefetch(start_iso, end_iso, verbose=verbose)
-        data_text = (
-            f"## Email evidence\n\n{email_text}\n\n"
-            f"## Meeting evidence\n\n{meeting_text}"
-        )
+        if multi_day_todos:
+            days = calendar_days_in_range(start_iso, end_iso)
+            range_note = (
+                f"### Multi-day range ({len(days)} calendar day(s))\n"
+                f"Place todos under the calendar day of the source message or meeting start.\n"
+            )
+            data_text = (
+                f"{range_note}\n"
+                f"## Email evidence (by day)\n\n{email_text}\n\n"
+                f"## Meeting evidence (whole range)\n\n{meeting_text}"
+            )
+        else:
+            data_text = (
+                f"## Email evidence\n\n{email_text}\n\n"
+                f"## Meeting evidence\n\n{meeting_text}"
+            )
 
         email_rule = (
             (
@@ -1656,19 +1855,30 @@ def run_agent(
             else "MEETING todos: no meeting transcripts were available — do not list any meeting todos."
         )
         empty = not verified_email and not verified_meetings
-        extra = (
-            (
+        if empty:
+            extra = (
                 "NO email tools and NO meeting transcripts were found. State clearly that no "
                 "actionable todos could be extracted in the given time range, then give the Tip. "
                 "Do NOT list any todos or invent tasks."
             )
-            if empty
-            else (
+        elif multi_day_todos:
+            day_headers = ", ".join(d.isoformat() for d, _, _ in calendar_days_in_range(start_iso, end_iso))
+            extra = (
+                f"{email_rule} {meeting_rule} "
+                f"MULTI-DAY RANGE: Start with `## Range summary` (1–2 sentences naming each day: "
+                f"{day_headers}). Then one `## YYYY-MM-DD` section per day that has todos. "
+                f"Under each day use `### Todolist` with checkbox bullets (same line format as pipe.md). "
+                f"Assign each todo to the day of its source email date or meeting start time from the data. "
+                f"After all day sections, add `## By Source` and `## Suggested Next Action` for the "
+                f"whole range (not repeated per day). "
+                f"If a task has no explicit deadline, write `due no date`. Deduplicate across sources."
+            )
+        else:
+            extra = (
                 f"{email_rule} {meeting_rule} "
                 f"If a task has no explicit deadline in the data, write `due no date`. "
                 f"Deduplicate across sources and tag every bullet's `source:` field correctly."
             )
-        )
         return _single_shot_report(
             pipe_body=pipe_body,
             skill_text=skill_text,
@@ -1676,9 +1886,9 @@ def run_agent(
             data_text=data_text,
             verbose=verbose,
             extra_rules=extra,
-            start_heading="## Todolist",
-            num_predict=4096,
-            max_data_chars=10000,
+            start_heading="## Range summary" if multi_day_todos else "## Todolist",
+            num_predict=6144 if multi_day_todos else 4096,
+            max_data_chars=16000 if multi_day_todos else 10000,
         )
 
     # Email compose: the local app.py has already baked the verified compose
@@ -1723,7 +1933,7 @@ def run_agent(
                     f"{len(prompts)} prompt(s) from {verified}",
                     file=sys.stderr,
                 )
-            return _emit_prompt_blocks(prompts)
+            return _emit_prompt_blocks(prompts, start_iso=start_iso, end_iso=end_iso)
         # No structured prompts: fall back to the ai-habits-style /search
         # prefetch + LLM extraction so we still try to capture *something*
         # from OCR/UI scraping when keystroke/focused capture is empty.
@@ -1794,19 +2004,45 @@ def run_agent(
     if pipe_md_path.parent.name == "day-recap":
         if verbose:
             print("  [agent] day-recap → prefetch + single-shot report", file=sys.stderr)
+        multi_day_recap = range_spans_calendar_days(start_iso, end_iso)
         data_text = _do_day_recap_prefetch(start_iso, end_iso, verbose=verbose)
+        recap_rules = (
+            "Accomplishments and Key Moments must NOT repeat the same items — "
+            "Accomplishments = concrete things finished; Key Moments = specific "
+            "things seen/typed/said/heard. "
+        )
+        if multi_day_recap:
+            recap_rules += (
+                "MULTI-DAY RANGE: The Context time range spans multiple calendar days. "
+                "Start with `## Summary` (one short paragraph naming EACH day by date). "
+                "Then one `## YYYY-MM-DD` section per day that has data in Search Results; "
+                "under each day use `### Accomplishments` and `### Key Moments`. "
+                "Every timestamp MUST copy the full value from the data "
+                "(e.g. `2026-05-31 2:30 PM`). Never say 'today', 'yesterday', or 'last 16 hours'. "
+                "Omit days with no captures. End with `## Unfinished Work`, `## Patterns`, "
+                "and `**Next step:**` as in the pipe instructions."
+            )
+            recap_pipe = pipe_body.replace(
+                "from today (last 16 hours only).",
+                "from the Context time range (may span multiple days).",
+            ).replace(
+                "what I mainly did today.",
+                "what I mainly did across the selected date range.",
+            )
+        else:
+            recap_rules += (
+                "Use clock-time timestamps (e.g. '2:30 PM') exactly as they appear in the data."
+            )
+            recap_pipe = pipe_body
         return _single_shot_report(
-            pipe_body=pipe_body,
+            pipe_body=recap_pipe,
             skill_text=skill_text,
             context_header=context_header,
             data_text=data_text,
             verbose=verbose,
-            extra_rules=(
-                "Accomplishments and Key Moments must NOT repeat the same items — "
-                "Accomplishments = concrete things finished; Key Moments = specific "
-                "things seen/typed/said/heard. Use clock-time timestamps (e.g. '2:30 PM') "
-                "exactly as they appear in the data."
-            ),
+            extra_rules=recap_rules,
+            max_data_chars=20000 if multi_day_recap else 12000,
+            num_predict=8192 if multi_day_recap else 6144,
         )
 
     # Pre-fetch API data before the LLM writes the report (other pipes)
@@ -1886,13 +2122,13 @@ def run_agent(
     return strip_thinking(final.get("content", ""))
 
 
-# ── ai-prompt-journal: screenpipe-aligned, SQL-first prefetch ─────────────
+# ── ai-prompt-journal: SQL-first prefetch ─────────────────────────────────
 
 # Display label → matching SQL fragments. Each entry has:
 #   "url_like":    list of LIKE patterns matched against browser_url (lowercased)
 #   "title_like":  list of LIKE patterns matched against window_title (lowercased)
 #   "app_in":      list of process names matched exactly against app_name (lowercased)
-# Aligned with screenpipe assets/pipes/ai-prompt-journal/pipe.md tool list.
+# Tool list matches apps/ai-prompt-journal/pipe.md.
 AI_PROMPT_JOURNAL_TARGETS: dict[str, dict[str, list[str]]] = {
     "ChatGPT": {
         "url_like": ["%chatgpt.com%", "%chat.openai.com%"],
@@ -1942,7 +2178,7 @@ AI_PROMPT_JOURNAL_TARGETS: dict[str, dict[str, list[str]]] = {
 }
 
 # Accessibility roles that almost always indicate a user-composed text input
-# inside the focused AI chat window. Aligned with screenpipe pipe.md Step 2 but
+# inside the focused AI chat window (pipe.md Step 2). Role names are
 # adapted to pc_assistant's UIA control-name strings (note the ``Control``
 # suffix used by ``pc_assistant/a11y/uia_tree.py``) plus the bare
 # AX/macOS-style names kept for forward compatibility.
@@ -1984,11 +2220,31 @@ _PROMPT_NOISE_SUBSTRINGS = (
     "to enable screen reader optimized mode",
 )
 
+# Empty chat-input placeholder strings. These look like real text in a focused
+# ``EditControl`` but are the box's default prompt, not something the user
+# typed. Matched by *exact* (normalized) equality so a real prompt that merely
+# starts with one of these words (e.g. "Message Claude about the meeting") is
+# never dropped.
+_PROMPT_PLACEHOLDER_EXACT = frozenset({
+    "message chatgpt", "message claude", "message copilot", "message gemini",
+    "message deepseek", "message grok", "message mistral",
+    "ask anything", "ask gemini", "ask claude", "ask follow-up",
+    "ask a question", "ask perplexity anything", "ask anything...",
+    "how can i help you today", "how can i help you", "how can i help",
+    "what can i help with", "what do you want to know", "what's on your mind",
+    "type a message", "send a message", "reply to claude", "reply...",
+    "give me a task to work on", "talk to deepseek", "start typing",
+    "enter a prompt here", "write a message", "type your message here",
+})
+
 
 def _is_prompt_noise(text: str) -> bool:
     """Return True if ``text`` looks like accessibility/UI chrome, not a prompt."""
     low = text.strip().lower()
     if not low:
+        return True
+    # Empty input-box placeholder (exact match after trimming trailing dots/?).
+    if low.rstrip("….?: ") in _PROMPT_PLACEHOLDER_EXACT:
         return True
     for needle in _PROMPT_NOISE_SUBSTRINGS:
         if needle in low:
@@ -2095,17 +2351,97 @@ def _upsert_prompt_journal_entry(
     prompts.append(entry)
 
 
+# Leading conversational filler stripped from prompt text when deriving a
+# topic, so "Can you please help me fix the timeline gap" → "fix timeline gap".
+_TOPIC_FILLER_PREFIXES = (
+    "can you please", "could you please", "can you", "could you",
+    "would you", "will you", "can i", "could i",
+    "how do i", "how can i", "how would i", "how to", "how do you",
+    "i want you to", "i need you to", "i would like you to", "i'd like you to",
+    "i want to", "i need to", "i would like to", "i'd like to",
+    "i want", "i need", "please help me", "help me", "let me", "let's",
+    "give me", "tell me", "show me", "write me", "make me", "explain",
+    "please", "kindly", "just", "hey", "ok", "okay", "so",
+)
+_TOPIC_FILLER_PREFIXES_ZH = (
+    "请帮我", "请帮", "帮我", "请", "麻烦你", "麻烦", "你能不能", "你能", "能不能",
+    "可以帮我", "可以", "我想要", "我想", "我需要", "怎么", "如何",
+)
+
+
 def _short_topic(text: str) -> str:
-    """First few non-trivial words of the prompt, capitalized."""
-    cleaned = " ".join(normalize_capture_text(text).split())
-    # Drop trailing punctuation, take the first ~6 words.
-    words = cleaned.split(" ")[:6]
-    topic = " ".join(words).strip()
-    topic = topic.rstrip(",.;:!?，。；：！？")
+    """A 2–5 word topic derived from the prompt's *intent*.
+
+    Strips leading conversational filler ("can you", "please", "帮我", …) so
+    the topic reflects what the prompt is actually about rather than polite
+    boilerplate, then keeps the first few meaningful words. Falls back to the
+    raw head when stripping would empty the string.
+    """
+    cleaned = " ".join(normalize_capture_text(text).split()).strip()
+    if not cleaned:
+        return "Untitled prompt"
+    stripped = cleaned
+    changed = True
+    while changed:
+        changed = False
+        low = stripped.lower()
+        for pref in _TOPIC_FILLER_PREFIXES:
+            if low.startswith(pref + " "):
+                stripped = stripped[len(pref):].lstrip()
+                changed = True
+                break
+        if changed:
+            continue
+        for pref in _TOPIC_FILLER_PREFIXES_ZH:
+            if stripped.startswith(pref):
+                stripped = stripped[len(pref):].lstrip("，,。、:： ")
+                changed = True
+                break
+    candidate = stripped or cleaned
+    words = candidate.split(" ")[:5]
+    topic = " ".join(words).strip().rstrip(",.;:!?，。；：！？")
+    topic = topic[:48].strip()
     return topic or "Untitled prompt"
 
 
-def _emit_prompt_blocks(prompts: list[dict[str, str]]) -> str:
+def _range_spans_calendar_days(start: str, end: str) -> bool:
+    """True when the ISO window crosses at least two local calendar dates."""
+    try:
+        s = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        e = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        if s.tzinfo is not None:
+            s = s.astimezone()
+        if e.tzinfo is not None:
+            e = e.astimezone()
+        return s.date() != e.date()
+    except ValueError:
+        return False
+
+
+def _prompt_block_header_ts(p: dict[str, str], *, include_date: bool) -> str:
+    """Clock time, or ``YYYY-MM-DD H:MM AM`` when the run spans multiple days."""
+    iso = (p.get("iso_ts") or "").strip()
+    clock = (p.get("ts") or "").strip() or (format_ts_local(iso) if iso else "")
+    if not include_date:
+        return clock
+    if not iso:
+        return clock
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
+        day = dt.date().isoformat()
+        return f"{day} {clock}" if clock else day
+    except ValueError:
+        return clock
+
+
+def _emit_prompt_blocks(
+    prompts: list[dict[str, str]],
+    *,
+    start_iso: str | None = None,
+    end_iso: str | None = None,
+) -> str:
     """Deterministically render ``## HH:MM — Tool — Topic`` blocks.
 
     Used as the LLM-free safety net when the small extraction model returns
@@ -2113,12 +2449,15 @@ def _emit_prompt_blocks(prompts: list[dict[str, str]]) -> str:
     """
     if not prompts:
         return "NO_NEW_PROMPTS"
+    include_date = bool(
+        start_iso and end_iso and _range_spans_calendar_days(start_iso, end_iso)
+    )
     blocks: list[str] = []
     for p in prompts:
         text = (p.get("text") or "").strip()
         if not text:
             continue
-        ts = p.get("ts") or ""
+        ts = _prompt_block_header_ts(p, include_date=include_date)
         tool = p.get("tool") or "Unknown"
         topic = _short_topic(text)
         cat = _heuristic_category(text)
@@ -2139,7 +2478,7 @@ def _do_prompt_journal_prefetch(
     verbose: bool = False,
     limit: int = 200,
 ) -> tuple[str, list[str], list[dict[str, str]]]:
-    """SQL-first prefetch aligned with screenpipe's ai-prompt-journal pipe.
+    """SQL-first prefetch for ai-prompt-journal.
 
     Pulls two high-signal sources via ``/raw_sql``:
 
@@ -2184,7 +2523,8 @@ def _do_prompt_journal_prefetch(
         body = {"query": sql_keystrokes}
         result = _http_post(f"{API_BASE}/raw_sql", body, timeout=20)
         for row in (result.get("data") or [])[:limit]:
-            ts = format_ts_local(str(row.get("timestamp", "")))
+            iso_ts = str(row.get("timestamp", ""))
+            ts = format_ts_local(iso_ts)
             text = normalize_capture_text(row.get("text") or "")
             if not text or _is_prompt_noise(text):
                 continue
@@ -2205,7 +2545,7 @@ def _do_prompt_journal_prefetch(
             _upsert_prompt_journal_entry(
                 prompts,
                 _seen_keys,
-                {"ts": ts, "tool": tool, "text": text, "source": "keystroke"},
+                {"ts": ts, "iso_ts": iso_ts, "tool": tool, "text": text, "source": "keystroke"},
             )
     except Exception as exc:  # noqa: BLE001
         if verbose:
@@ -2248,7 +2588,8 @@ def _do_prompt_journal_prefetch(
         body = {"query": sql_focused}
         result = _http_post(f"{API_BASE}/raw_sql", body, timeout=20)
         for row in (result.get("data") or [])[:limit]:
-            ts = format_ts_local(str(row.get("timestamp", "")))
+            iso_ts = str(row.get("timestamp", ""))
+            ts = format_ts_local(iso_ts)
             val = normalize_capture_text(row.get("val") or "")
             if not val or _is_prompt_noise(val):
                 continue
@@ -2269,7 +2610,7 @@ def _do_prompt_journal_prefetch(
             _upsert_prompt_journal_entry(
                 prompts,
                 _seen_keys,
-                {"ts": ts, "tool": tool, "text": val, "source": "input_field"},
+                {"ts": ts, "iso_ts": iso_ts, "tool": tool, "text": val, "source": "input_field"},
             )
     except Exception as exc:  # noqa: BLE001
         if verbose:
@@ -2535,7 +2876,7 @@ def _run_tool_driven_agent(
         )
     elif pipe_name == "standup-update":
         tool_rules = (
-            "TOOL-DRIVEN STANDUP UPDATE (screenpipe-aligned):\n"
+            "TOOL-DRIVEN STANDUP UPDATE:\n"
             "1. Call activity_summary FIRST with start_time/end_time from Context.\n"
             f"2. You may call search at most {cfg.max_search} times (limit<={cfg.search_limit} each), "
             "only to confirm a specific blocker, unfinished task, file or PR.\n"
@@ -2546,7 +2887,7 @@ def _run_tool_driven_agent(
         )
     elif pipe_name == "time-breakdown":
         tool_rules = (
-            "TOOL-DRIVEN TIME BREAKDOWN (screenpipe-aligned):\n"
+            "TOOL-DRIVEN TIME BREAKDOWN:\n"
             "1. Call activity_summary FIRST with start_time/end_time from Context.\n"
             f"2. You may call search at most {cfg.max_search} times (limit<={cfg.search_limit} each), "
             "only to verify the topic/project/category of a specific app when window titles are ambiguous.\n"

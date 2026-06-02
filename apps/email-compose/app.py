@@ -106,13 +106,39 @@ def _fetch_source_message(provider: str, instance: str, message_id: str) -> dict
     return payload.get("data", {}) if isinstance(payload, dict) else {}
 
 
+def _clean_subject(raw: str) -> str:
+    """Normalize a subject line the model may wrap in markdown / quotes."""
+    text = raw.strip()
+    # Drop a leading "Subject:" the model sometimes repeats inline.
+    text = re.sub(r"^subject\s*:\s*", "", text, flags=re.IGNORECASE)
+    # Unwrap **bold**, `code`, and surrounding bullets / quotes.
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"`(.+?)`", r"\1", text)
+    return text.strip(" -*`\"'“”‘’").strip()
+
+
 def _parse_draft(report: str) -> tuple[str, str]:
-    """Extract Subject and Body from the LLM markdown report."""
-    subject_match = re.search(r"##\s*Subject\s*\n+\s*-?\s*(.+)", report)
-    subject = subject_match.group(1).strip(" -*`\"") if subject_match else ""
+    """Extract Subject and Body from the LLM markdown report.
+
+    Tolerates the heading variants a small model emits: ``## Subject`` on its
+    own line followed by the value, or an inline ``## Subject: value``. The body
+    capture stops at the next ``##`` heading so Alternatives / Send Preview are
+    never folded into the sent body.
+    """
+    subject = ""
+    subject_match = re.search(
+        r"##\s*Subject\b[ \t]*:?[ \t]*\n*[ \t]*-?[ \t]*(.+)", report
+    )
+    if subject_match:
+        # Keep only the first non-empty line of the captured text.
+        for line in subject_match.group(1).splitlines():
+            cleaned = _clean_subject(line)
+            if cleaned:
+                subject = cleaned
+                break
 
     body_match = re.search(
-        r"##\s*Body\s*\n+(.+?)(?=\n##\s|\Z)", report, flags=re.DOTALL,
+        r"##\s*Body\b[ \t]*:?[ \t]*\n+(.+?)(?=\n##\s|\Z)", report, flags=re.DOTALL,
     )
     body_raw = body_match.group(1).strip() if body_match else ""
     # strip leading "- " bullets that the LLM may emit

@@ -46,7 +46,7 @@ def test_gmail_auth_url_uses_pkce_and_gmail_scopes(tmp_path, monkeypatch) -> Non
     assert data["state"] == params["state"][0]
 
 
-def test_parse_gmail_message_matches_screenpipe_shape() -> None:
+def test_parse_gmail_message_parses_standard_fields() -> None:
     encoded_body = base64.urlsafe_b64encode("Full Gmail body".encode()).decode().rstrip("=")
     parsed = parse_gmail_message(
         {

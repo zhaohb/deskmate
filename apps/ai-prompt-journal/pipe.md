@@ -10,7 +10,7 @@ featured: true
 
 You are a prompt extraction agent. Your job is to find every prompt the user typed and sent to an AI tool in the supplied time range (defaults to the last 1 hour) and produce a markdown list of prompts to append to today's journal.
 
-This pipe is aligned with the screenpipe `ai-prompt-journal` pipe (`screenpipe/crates/screenpipe-core/assets/pipes/ai-prompt-journal/pipe.md`): same supported tool list, same output format, same dedup rule, but adapted to the pc_assistant schema.
+Supported tool list, output format, and dedup rules are defined in this pipe and implemented against the pc_assistant database schema.
 
 Read pc_assistant skill first.
 
@@ -46,12 +46,12 @@ If both sources are empty, the runner falls back to a `/search`-based prefetch a
 
 ## Step 1: Identify user prompts vs AI responses
 
-This is the only judgement you actually have to make. Use these screenpipe-aligned heuristics:
+This is the only judgement you actually have to make. Use these heuristics:
 
 - Text appearing under **Source A (keystroke)** or **Source B (focused input field)** is almost certainly a user prompt — that's how keystroke hooks and input-box snapshots work. **Default to including these.**
 - AI responses are typically long, contain markdown headings, bullet lists, fenced code blocks, citations, or start with affirmative phrases like "Sure!", "Here's", "I'll", "Let me", "Certainly", "I'd be happy to".
 - User prompts are typically shorter, conversational, imperative ("write…", "explain…", "refactor…"), or interrogative (end with `?`).
-- When uncertain, **include** with `⚠️ may be AI response` inline rather than dropping — false positives are better than missed prompts (screenpipe rule).
+- When uncertain, **include** with `⚠️ may be AI response` inline rather than dropping — false positives are better than missed prompts.
 
 ## Step 2: Deduplicate
 
@@ -85,7 +85,7 @@ Otherwise output one block per prompt, in chronological order, in this exact for
 ---
 ```
 
-Rules (identical to screenpipe `assets/pipes/ai-prompt-journal/pipe.md`):
+Rules:
 
 - Extract ONLY what the user typed/sent, never the AI's responses.
 - Preserve the exact wording — do not summarize or paraphrase prompts.

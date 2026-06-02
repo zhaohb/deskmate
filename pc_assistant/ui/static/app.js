@@ -814,7 +814,10 @@ function renderApps() {
 function isDetailPanelOpen() {
   const out = $("#appOutputPanel");
   const hist = $("#appHistoryPanel");
-  return (out && out.style.display !== "none") || (hist && hist.style.display !== "none");
+  return (
+    (out && out.classList.contains("is-visible")) ||
+    (hist && hist.classList.contains("is-visible"))
+  );
 }
 
 function syncPipesDetailLayout() {
@@ -822,17 +825,29 @@ function syncPipesDetailLayout() {
   if (page) page.classList.toggle("pipes-page--detail-open", isDetailPanelOpen());
 }
 
+function showDetailPanel(panel) {
+  if (!panel) return;
+  panel.classList.add("is-visible");
+  // Must stay flex (not block) so .app-output-content can scroll inside max-height.
+  panel.style.display = "flex";
+}
+
+function hideDetailPanel(panel) {
+  if (!panel) return;
+  panel.classList.remove("is-visible");
+  panel.style.display = "none";
+}
+
 function closeAppOutput() {
   const panel = $("#appOutputPanel");
   const content = $("#appOutputContent");
-  if (panel) panel.style.display = "none";
+  hideDetailPanel(panel);
   if (content) content.innerHTML = "";
   syncPipesDetailLayout();
 }
 
 function closeAppHistory() {
-  const panel = $("#appHistoryPanel");
-  if (panel) panel.style.display = "none";
+  hideDetailPanel($("#appHistoryPanel"));
   syncPipesDetailLayout();
 }
 
@@ -1386,8 +1401,7 @@ async function runApp(appName, runBody = {}) {
   statusEl.textContent = `Started ${label}. Running in the background… You can keep using pc_assistant.`;
   focusAppRunStatus();
 
-  const outputPanel = $("#appOutputPanel");
-  outputPanel.style.display = "none";
+  hideDetailPanel($("#appOutputPanel"));
 
   for (const btn of document.querySelectorAll(".pipe-row-actions .primary")) {
     btn.disabled = true;
@@ -1443,7 +1457,8 @@ async function showAppOutput(appName, runId, filename) {
   } catch {
     content.textContent = "(Unable to load report content)";
   }
-  panel.style.display = "block";
+  showDetailPanel(panel);
+  content.scrollTop = 0;
   syncPipesDetailLayout();
   renderApps();
 }
@@ -1453,7 +1468,7 @@ async function showAppHistory(appName, appTitle) {
   const histPanel = $("#appHistoryPanel");
   const histList = $("#appHistoryList");
   appsUi.selectedApp = appName;
-  histPanel.style.display = "block";
+  showDetailPanel(histPanel);
   syncPipesDetailLayout();
 
   try {

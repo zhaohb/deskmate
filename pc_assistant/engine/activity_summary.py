@@ -613,8 +613,11 @@ def _build_guidance(
     return {"searched_endpoints": searched, "next_best_query": next_best}
 
 
-def format_summary_for_agent(summary: dict[str, Any]) -> str:
+def format_summary_for_agent(summary: dict[str, Any], *, include_date: bool = False) -> str:
     """Turn API JSON into markdown sections for the LLM agent."""
+    from pc_assistant.engine.day_recap_context import format_ts_recap
+
+    fmt_ts = lambda ts: format_ts_recap(ts, include_date=include_date)  # noqa: E731
     status = summary.get("data_status", "unknown")
     total_frames = summary.get("total_frames", 0)
     audio = summary.get("audio_summary") or {}
@@ -650,7 +653,7 @@ def format_summary_for_agent(summary: dict[str, Any]) -> str:
     if timeline:
         lines = []
         for e in timeline:
-            ts = format_ts_local(e.get("timestamp", ""))
+            ts = fmt_ts(e.get("timestamp", ""))
             text = (e.get("text") or "").replace("\n", " ").strip()
             url = e.get("browser_url") or ""
             extra = f" | {url}" if url else ""
@@ -684,7 +687,7 @@ def format_summary_for_agent(summary: dict[str, Any]) -> str:
     if key_texts:
         lines = []
         for kt in key_texts[:30]:
-            ts = format_ts_local(kt.get("timestamp", ""))
+            ts = fmt_ts(kt.get("timestamp", ""))
             text = (kt.get("text") or "").replace("\n", " ").strip()
             lines.append(
                 f"  [{ts}] {kt.get('app_name', '')} / {kt.get('window_name', '')}:\n"
@@ -698,13 +701,14 @@ def format_summary_for_agent(summary: dict[str, Any]) -> str:
         for sn in snippets:
             src = sn.get("source", "?")
             text = (sn.get("text") or "").replace("\n", " ").strip()
+            ts = fmt_ts(sn.get("timestamp", ""))
             if src == "audio":
                 lines.append(
-                    f"  [{sn.get('timestamp', '')}] AUDIO ({sn.get('speaker', '')}): {text}"
+                    f"  [{ts}] AUDIO ({sn.get('speaker', '')}): {text}"
                 )
             else:
                 lines.append(
-                    f"  [{sn.get('timestamp', '')}] SCREEN "
+                    f"  [{ts}] SCREEN "
                     f"{sn.get('app_name', '')} / {sn.get('window_name', '')}: {text}"
                 )
         sections.append("### Snippets\n" + "\n".join(lines))
@@ -713,8 +717,9 @@ def format_summary_for_agent(summary: dict[str, Any]) -> str:
     if top_tx:
         lines = []
         for t in top_tx[:12]:
+            ts = fmt_ts(t.get("timestamp", ""))
             lines.append(
-                f"  [{t.get('timestamp', '')}] ({t.get('speaker', '')}, {t.get('device', '')}): "
+                f"  [{ts}] ({t.get('speaker', '')}, {t.get('device', '')}): "
                 f"{(t.get('transcription') or '')[:450]}"
             )
         sections.append(f"### Audio ({audio_count} segments)\n" + "\n".join(lines))

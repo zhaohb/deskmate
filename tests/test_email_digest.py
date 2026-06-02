@@ -58,10 +58,9 @@ def _ocr_item(
     }
 
 
-def test_email_targets_cover_screenpipe_aligned_clients(agent: ModuleType) -> None:
+def test_email_targets_cover_major_mail_clients(agent: ModuleType) -> None:
     labels = set(agent.EMAIL_TOOL_TARGETS)
-    # Must cover native clients and the major webmail equivalents of
-    # screenpipe's Gmail connection (Gmail + Outlook web).
+    # Must cover native clients and major webmail (Gmail + Outlook web).
     assert {"Outlook", "Thunderbird", "Gmail (web)", "Outlook (web)"} <= labels
 
 
@@ -162,6 +161,10 @@ def test_email_prefetch_empty_when_no_hits(
         "_do_content_search",
         lambda *a, **k: [],
     )
+    # Isolate from any locally-connected OAuth account so the assertion reflects
+    # the screen/UI evidence only (a live Gmail/Outlook login must not leak in).
+    monkeypatch.setattr(agent, "_fetch_gmail_oauth_messages", lambda *a, **k: ("", False))
+    monkeypatch.setattr(agent, "_fetch_outlook_oauth_messages", lambda *a, **k: ("", False))
 
     data, verified = agent._do_email_digest_prefetch(
         "2026-05-29T00:00:00+08:00", "2026-05-29T23:59:59+08:00", verbose=False
@@ -241,3 +244,57 @@ def test_email_prefetch_uses_gmail_oauth_messages(
     assert "Gmail (OAuth)" in verified
     assert "Gmail planning" in data
     assert "Ada <ada@example.com>" in data
+
+
+def test_gmail_oauth_constrains_to_window_and_drops_stale(
+    agent: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gmail OAuth must pass a `newer_than` query and drop pre-window mail."""
+    seen_urls: list[str] = []
+
+    def fake_get(url: str, timeout: int = 15):
+        seen_urls.append(url)
+        if url.endswith("/connections/gmail/instances"):
+            return {"data": [{"instance": "me@gmail.com", "email": "me@gmail.com"}]}
+        if "/connections/gmail/messages/fresh" in url:
+            return {
+                "data": {
+                    "date": "Fri, 29 May 2026 09:00:00 +0800",
+                    "from": "Ada <ada@example.com>",
+                    "subject": "Fresh thread",
+                    "snippet": "in window",
+                }
+            }
+        if "/connections/gmail/messages/stale" in url:
+            return {
+                "data": {
+                    "date": "Mon, 01 Jan 2026 09:00:00 +0800",
+                    "from": "Old <old@example.com>",
+                    "subject": "Stale thread",
+                    "snippet": "way before the window",
+                }
+            }
+        if "/connections/gmail/messages" in url:
+            return {"data": {"messages": [{"id": "fresh"}, {"id": "stale"}]}}
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(agent, "_http_get", fake_get)
+    text, ok = agent._fetch_gmail_oauth_messages(
+        since_iso="2026-05-29T00:00:00+08:00"
+    )
+
+    assert any("newer_than" in u for u in seen_urls), "list call must constrain by newer_than"
+    assert ok is True
+    assert "Fresh thread" in text
+    assert "Stale thread" not in text, "pre-window mail must be dropped"
+
+
+def test_gmail_oauth_unparseable_date_is_kept(
+    agent: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A message whose date cannot be parsed must NOT be silently dropped."""
+    assert agent._msg_date_within("not a date", "2026-05-29T00:00:00+08:00") is True
+    assert agent._msg_date_within("(no date)", "2026-05-29T00:00:00+08:00") is True
+    assert agent._msg_date_within("", "2026-05-29T00:00:00+08:00") is True
+    # No floor → always within.
+    assert agent._msg_date_within("Mon, 01 Jan 2020 00:00:00 +0000", None) is True

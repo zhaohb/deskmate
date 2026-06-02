@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+from datetime import date
 from pathlib import Path
 from types import ModuleType
 
@@ -128,3 +129,50 @@ def test_today_journal_under_pc_assistant_home(
     path = app._today_journal()
     assert path.parent == tmp_path / "apps" / app.APP_NAME / "journal"
     assert path.suffix == ".md"
+
+
+def test_header_journal_date_parses_iso_prefix(app: ModuleType) -> None:
+    assert app._header_journal_date("2026-05-31 8:40 PM — Cursor — todo") == date(
+        2026, 5, 31
+    )
+    assert app._header_journal_date("8:40 PM — Cursor — todo") is None
+
+
+def test_append_blocks_by_date_writes_per_day_journal(
+    app: ModuleType, tmp_path: Path
+) -> None:
+    blocks = [
+        (
+            "2026-05-31 9:00 AM — Cursor — may31",
+            "**Category**: other | **Length**: short\n\n> prompt on may 31",
+        ),
+        (
+            "2026-06-02 8:40 PM — Cursor — jun2",
+            "**Category**: other | **Length**: short\n\n> prompt on jun 2",
+        ),
+    ]
+    appended = app._append_blocks_by_date(blocks)
+    assert appended == 2
+    may31 = tmp_path / "apps" / app.APP_NAME / "journal" / "2026-05-31.md"
+    jun02 = tmp_path / "apps" / app.APP_NAME / "journal" / "2026-06-02.md"
+    assert "may 31" in may31.read_text(encoding="utf-8")
+    assert "jun 2" in jun02.read_text(encoding="utf-8")
+
+
+def test_build_range_display_includes_multi_day_report(app: ModuleType) -> None:
+    report = (
+        "## 2026-05-31 9:00 AM — Cursor — may31\n"
+        "**Category**: other | **Length**: short\n\n"
+        "> older prompt\n\n"
+        "---\n\n"
+        "## 2026-06-02 8:40 PM — Cursor — jun2\n"
+        "**Category**: other | **Length**: short\n\n"
+        "> newer prompt\n\n"
+        "---\n"
+    )
+    start = "2026-05-31T00:00:00+08:00"
+    end = "2026-06-02T23:59:59+08:00"
+    display = app._build_range_display(start, end, report)
+    assert "2026-05-31" in display and "2026-06-02" in display
+    assert "older prompt" in display and "newer prompt" in display
+    assert "AI Prompts — 2026-05-31 … 2026-06-02" in display

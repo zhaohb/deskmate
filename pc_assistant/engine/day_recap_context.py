@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 _LOW_VALUE_PHRASES = (
@@ -98,6 +98,11 @@ def extract_valuable_lines(text: str, *, freq_threshold: int = 0) -> str:
             continue
         if s.isdigit():
             continue
+        # Drop OCR garble: lines that are almost all symbols/punctuation
+        # (separator bars, scattered glyphs, stray UI icons) carry no recap
+        # value. CJK ideographs count as alphabetic, so non-Latin text is kept.
+        if sum(ch.isalpha() for ch in s) < 3:
+            continue
         if _NOISE_LINE_RE.match(s):
             continue
         norm = s.lower()
@@ -115,19 +120,72 @@ def normalize_text_key(text: str) -> str:
     return " ".join((text or "").lower().split())[:120]
 
 
-def format_ts_local(ts: str) -> str:
-    """Format a timestamp as a clock time like '2:30 PM' for recap reports."""
+def parse_iso_datetime(ts: str) -> datetime | None:
     if not ts:
-        return ""
+        return None
     try:
         dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         if dt.tzinfo is not None:
-            dt = dt.astimezone()
-        hour12 = dt.hour % 12 or 12
-        meridiem = "AM" if dt.hour < 12 else "PM"
-        return f"{hour12}:{dt.minute:02d} {meridiem}"
+            return dt.astimezone().replace(microsecond=0)
+        return dt.replace(microsecond=0)
     except ValueError:
+        return None
+
+
+def range_spans_calendar_days(start: str, end: str) -> bool:
+    """True when the ISO window crosses at least two local calendar dates."""
+    start_dt = parse_iso_datetime(start)
+    end_dt = parse_iso_datetime(end)
+    if not start_dt or not end_dt:
+        return False
+    return start_dt.date() != end_dt.date()
+
+
+def calendar_days_in_range(
+    start: str,
+    end: str,
+    *,
+    max_days: int = 14,
+) -> list[tuple[date, str, str]]:
+    """Return (calendar_date, clipped_start_iso, clipped_end_iso) for each day in range."""
+    start_dt = parse_iso_datetime(start)
+    end_dt = parse_iso_datetime(end)
+    if not start_dt or not end_dt:
+        return []
+    if end_dt < start_dt:
+        start_dt, end_dt = end_dt, start_dt
+    tz = start_dt.tzinfo
+    days: list[tuple[date, str, str]] = []
+    cur = start_dt.date()
+    end_d = end_dt.date()
+    while cur <= end_d and len(days) < max_days:
+        day_start = datetime.combine(cur, time.min, tzinfo=tz)
+        day_end = datetime.combine(cur, time(23, 59, 59), tzinfo=tz)
+        clip_start = max(start_dt, day_start)
+        clip_end = min(end_dt, day_end)
+        days.append((cur, clip_start.isoformat(), clip_end.isoformat()))
+        cur += timedelta(days=1)
+    return days
+
+
+def format_ts_local(ts: str) -> str:
+    """Format a timestamp as a clock time like '2:30 PM' for recap reports."""
+    return format_ts_recap(ts, include_date=False)
+
+
+def format_ts_recap(ts: str, *, include_date: bool = False) -> str:
+    """Clock time, or ``YYYY-MM-DD H:MM AM`` when ``include_date`` is set."""
+    if not ts:
+        return ""
+    dt = parse_iso_datetime(ts)
+    if not dt:
         return ts[:16]
+    hour12 = dt.hour % 12 or 12
+    meridiem = "AM" if dt.hour < 12 else "PM"
+    clock = f"{hour12}:{dt.minute:02d} {meridiem}"
+    if include_date:
+        return f"{dt.date().isoformat()} {clock}"
+    return clock
 
 
 def format_search_items(
@@ -135,6 +193,7 @@ def format_search_items(
     *,
     max_text: int = 450,
     include_ui_text: bool = True,
+    include_date: bool = False,
 ) -> list[str]:
     """Format /search results; filter noise and bare UI focus events."""
     lines: list[str] = []
@@ -142,7 +201,7 @@ def format_search_items(
     for item in sorted(items, key=lambda x: (x.get("content") or {}).get("timestamp", "")):
         item_type = item.get("type", "?")
         c = item.get("content", {})
-        ts = format_ts_local(c.get("timestamp", ""))
+        ts = format_ts_recap(c.get("timestamp", ""), include_date=include_date)
         if item_type == "OCR":
             raw_text = (c.get("text") or "").strip()
             text = extract_valuable_lines(raw_text)

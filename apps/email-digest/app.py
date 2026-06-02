@@ -5,10 +5,9 @@ Reads pipe.md, lets the agent runner do the per-email-tool prefetch
 activity captured locally by pc_assistant — apps used, top senders / threads,
 drafts in progress, action items, and patterns.
 
-Aligns in spirit with screenpipe's Gmail connection (read/list/send via
-``/connections/gmail/...``). For Gmail and Outlook, pc_assistant can also
-read/send via OAuth-backed mail APIs; for all other tools it reconstructs email
-activity from local screen / UI recordings.
+Gmail and Outlook can be read via OAuth-backed mail APIs
+(``/connections/gmail/...``, ``/connections/outlook/...``). For all other tools
+pc_assistant reconstructs email activity from local screen / UI recordings.
 """
 
 from __future__ import annotations
