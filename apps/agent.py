@@ -78,12 +78,9 @@ PIPE_TOOL_CONFIG: dict[str, PipeToolConfig] = {
     ),
 }
 
-# Pipes that let the model drive tool calls in a loop. The local 8B model is
-# unreliable at multi-step tool calling and tends to fabricate usage, so
-# ai-habits/day-recap use deterministic Python prefetch + single-shot. The
-# standup-update pipe is opted in here to align with screenpipe's tool-loop
-# implementation, where the LLM autonomously calls `activity_summary` / `search`.
-TOOL_DRIVEN_PIPES: frozenset[str] = frozenset({"standup-update", "time-breakdown"})
+# Pipes that let the model drive tool calls in a loop. Small models are unreliable
+# at multi-step tool calling; most pipes use Python prefetch + single-shot instead.
+TOOL_DRIVEN_PIPES: frozenset[str] = frozenset()
 
 AI_HABITS_APP_NAMES = (
     "ChatGPT", "Claude", "Copilot", "Cursor", "Gemini", "Perplexity",
@@ -714,6 +711,160 @@ def _do_day_recap_prefetch(start: str, end: str, verbose: bool = False) -> str:
             f"  [day-recap] context sections={len(sections)} "
             f"timeline={len(summary.get('timeline') or [])} "
             f"key_texts={len(summary.get('key_texts') or [])}",
+            file=sys.stderr,
+        )
+    return "\n\n".join(sections)
+
+
+_APP_DISPLAY_NAMES: dict[str, str] = {
+    "cursor.exe": "Cursor",
+    "code.exe": "VS Code",
+    "chrome.exe": "Chrome",
+    "msedge.exe": "Edge",
+    "firefox.exe": "Firefox",
+    "explorer.exe": "File Explorer",
+    "windowsterminal.exe": "Windows Terminal",
+    "powershell.exe": "PowerShell",
+    "cmd.exe": "Command Prompt",
+    "teams.exe": "Microsoft Teams",
+    "zoom.exe": "Zoom",
+}
+
+
+def _friendly_app_name(process_name: str) -> str:
+    key = (process_name or "").strip().lower()
+    return _APP_DISPLAY_NAMES.get(key, process_name or "Unknown")
+
+
+_CODING_PROCS = frozenset({
+    "cursor.exe", "code.exe", "devenv.exe", "windowsterminal.exe", "powershell.exe",
+    "cmd.exe", "wt.exe", "idea64.exe", "pycharm64.exe",
+})
+_BROWSING_PROCS = frozenset({
+    "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe",
+})
+_MEETING_PROCS = frozenset({
+    "teams.exe", "zoom.exe", "webex.exe", "slack.exe", "discord.exe",
+})
+_COMM_PROCS = frozenset({
+    "outlook.exe", "thunderbird.exe", "mailbird.exe", "mailspring.exe",
+})
+
+
+def _app_category(process_name: str) -> str:
+    key = (process_name or "").strip().lower()
+    if key in _CODING_PROCS:
+        return "coding"
+    if key in _BROWSING_PROCS:
+        return "browsing"
+    if key in _MEETING_PROCS:
+        return "meetings"
+    if key in _COMM_PROCS:
+        return "communication"
+    if "word" in key or "excel" in key or "powerpnt" in key or "notepad" in key:
+        return "writing"
+    return "other"
+
+
+def _format_time_breakdown_stats(summary: dict[str, Any]) -> str:
+    """Deterministic minutes/percentages so the model cannot drop apps like Cursor."""
+    apps = [
+        a for a in (summary.get("apps") or [])
+        if float(a.get("minutes") or 0) > 0
+    ]
+    if not apps:
+        return "### Pre-computed totals\n(no app minutes in range — say so in the report)"
+
+    total = sum(float(a.get("minutes") or 0) for a in apps)
+    lines = [
+        "### Pre-computed application minutes (copy these durations — do not invent or round to 0)",
+        f"TOTAL tracked active time: {total:.1f} min",
+        "",
+    ]
+    for a in sorted(apps, key=lambda x: float(x.get("minutes") or 0), reverse=True):
+        raw = a.get("name") or "?"
+        minutes = float(a.get("minutes") or 0)
+        pct = round(100 * minutes / total, 1) if total else 0
+        lines.append(
+            f"- {_friendly_app_name(raw)} (`{raw}`): {minutes:.1f} min ({pct}%)"
+        )
+
+    cat_totals: dict[str, float] = {}
+    for a in apps:
+        cat = _app_category(a.get("name") or "")
+        cat_totals[cat] = cat_totals.get(cat, 0.0) + float(a.get("minutes") or 0)
+    lines.append("")
+    lines.append("### Pre-computed category minutes (sum of apps above)")
+    for cat, minutes in sorted(cat_totals.items(), key=lambda x: x[1], reverse=True):
+        pct = round(100 * minutes / total, 1) if total else 0
+        lines.append(f"- {cat}: {minutes:.1f} min ({pct}%)")
+
+    focused = cat_totals.get("coding", 0) + cat_totals.get("writing", 0)
+    unfocused = cat_totals.get("browsing", 0) + cat_totals.get("other", 0)
+    score = round(100 * focused / total, 1) if total else 0
+    lines.append("")
+    lines.append(
+        f"### Pre-computed productivity score\n"
+        f"- focused (coding+writing): {focused:.1f} min\n"
+        f"- unfocused (browsing+other): {unfocused:.1f} min\n"
+        f"- score = focused/total: {score}%"
+    )
+
+    edited = summary.get("edited_files") or []
+    if edited:
+        lines.append("")
+        lines.append("### Files touched (use for By Project)")
+        for ef in edited[:20]:
+            lines.append(f"- {ef.get('path', '')} ({ef.get('frame_count', 0)} captures)")
+
+    return "\n".join(lines)
+
+
+def _do_time_breakdown_prefetch(start: str, end: str, verbose: bool = False) -> str:
+    """Rich activity-summary + deterministic minute tables for time-breakdown."""
+    summary = _fetch_activity_summary(start, end, verbose=verbose, rich=True)
+    if not summary:
+        return "(Failed to fetch activity data from pc_assistant API.)"
+
+    sections = [
+        _format_time_breakdown_stats(summary),
+        format_summary_for_agent(summary),
+    ]
+
+    apps = sorted(
+        summary.get("apps") or [],
+        key=lambda a: float(a.get("minutes") or 0),
+        reverse=True,
+    )
+    top_apps = [a.get("name", "") for a in apps[:3] if a.get("name") and float(a.get("minutes") or 0) > 0]
+    if top_apps:
+        if verbose:
+            print(f"  [time-breakdown] supplemental searches: {top_apps}", file=sys.stderr)
+        extra = _do_per_tool_searches(
+            top_apps, start, end, limit_per_search=8, verbose=verbose,
+        )
+        if extra.strip():
+            sections.append(
+                "### Window/title detail (top apps by minutes)\n\n" + extra
+            )
+
+    if verbose:
+        print(
+            f"  [time-breakdown] apps={len(apps)} timeline={len(summary.get('timeline') or [])}",
+            file=sys.stderr,
+        )
+    return "\n\n".join(sections)
+
+
+def _do_standup_prefetch(start: str, end: str, verbose: bool = False) -> str:
+    """Same rich context as day-recap plus meetings for a concrete standup."""
+    sections = [_do_day_recap_prefetch(start, end, verbose=verbose)]
+    meeting_text, meeting_names = _do_meeting_todos_prefetch(start, end, verbose=verbose)
+    if meeting_names:
+        sections.append(f"### Meetings in range ({len(meeting_names)})\n\n{meeting_text}")
+    if verbose:
+        print(
+            f"  [standup-update] meetings={len(meeting_names)}",
             file=sys.stderr,
         )
     return "\n\n".join(sections)
@@ -1586,6 +1737,57 @@ def run_agent(
             data_text=data_text,
             verified=verified,
             verbose=verbose,
+        )
+
+    # Standup: rich prefetch (day-recap context + meetings) + single-shot
+    if pipe_md_path.parent.name == "standup-update":
+        if verbose:
+            print("  [agent] standup-update → prefetch + single-shot report", file=sys.stderr)
+        data_text = _do_standup_prefetch(start_iso, end_iso, verbose=verbose)
+        return _single_shot_report(
+            pipe_body=pipe_body,
+            skill_text=skill_text,
+            context_header=context_header,
+            data_text=data_text,
+            verbose=verbose,
+            extra_rules=(
+                "STANDUP RULES: Under Yesterday, use 3–6 bullets. Each bullet MUST name a "
+                "concrete app, file path, URL, or meeting from timeline / key_texts / "
+                "edited_files / windows — include a clock time when the data has one. "
+                "Under Today, infer 2–4 next steps ONLY from unfinished work, open tabs, "
+                "or meeting action items in the data. Under Blockers, quote errors or "
+                "waiting states from key_texts/audio; if none, write 'None'. "
+                "Stay under 200 words but do not be vague — no 'reviewed documentation' "
+                "without naming what file or project."
+            ),
+            start_heading="## Yesterday",
+            num_predict=3072,
+            max_data_chars=14000,
+        )
+
+    # Time breakdown: prefetch with pre-computed minutes + single-shot
+    if pipe_md_path.parent.name == "time-breakdown":
+        if verbose:
+            print("  [agent] time-breakdown → prefetch + single-shot report", file=sys.stderr)
+        data_text = _do_time_breakdown_prefetch(start_iso, end_iso, verbose=verbose)
+        return _single_shot_report(
+            pipe_body=pipe_body,
+            skill_text=skill_text,
+            context_header=context_header,
+            data_text=data_text,
+            verbose=verbose,
+            extra_rules=(
+                "TIME BREAKDOWN RULES: Copy durations from 'Pre-computed application minutes' "
+                "exactly — never report 0 min for an app listed there with >0 min. "
+                "By Application must list every app from pre-computed totals, sorted by time. "
+                "By Category must match 'Pre-computed category minutes'. "
+                "By Project must group edited_files paths and window titles (e.g. pc_assistant, "
+                "ollama_openvino). Productivity Score must use the pre-computed score line. "
+                "Suggestion must cite the top time sink or lowest-focus pattern from the data."
+            ),
+            start_heading="## By Application",
+            num_predict=4096,
+            max_data_chars=14000,
         )
 
     # Day-recap: Python prefetch + single-shot LLM report (more reliable for 8B)

@@ -65,9 +65,11 @@ python apps\meeting-summary\app.py --meeting-id 42 --verbose
 
 ### standup-update
 
-Generates a short standup update (Yesterday / Today / Blockers) from the last
-24 hours of recorded activity. Copy-paste ready for a team standup; capped at
-~150 words.
+Generates a short standup update (Yesterday / Today / Blockers) from the supplied
+time window. Uses the same rich prefetch as day-recap (timeline, key texts,
+edited files, top-app searches) plus any meetings in range, then a single LLM
+pass — copy-paste ready; aim for concrete bullets with timestamps, not generic
+phrases.
 
 ```cmd
 python apps\standup-update\app.py --hours 24 --verbose
@@ -75,9 +77,10 @@ python apps\standup-update\app.py --hours 24 --verbose
 
 ### time-breakdown
 
-Breaks down the supplied time range by application, category (coding /
-meetings / browsing / writing / communication / other), and project, then
-computes a productivity score from `activity_summary` minutes.
+Breaks down the supplied time range by application, category, and project, with
+a productivity score. Python pre-computes per-app and per-category minutes from
+`activity_summary` (so apps like Cursor are not dropped to 0 min), then the LLM
+writes the four sections from that evidence plus timeline/edited files.
 
 ```cmd
 python apps\time-breakdown\app.py --hours 12 --verbose
