@@ -1026,10 +1026,23 @@ a:hover {
 .pipes-detail-panel {
   flex: 0 0 auto;
   margin-top: 1rem;
-  max-height: 40vh;
+  max-height: min(34vh, 380px);
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+/* Match home Recent activity / Ask open: give run output room to scroll without CSS ellipsis */
+.pipes-page--detail-open .pipes-list {
+  flex: 0 1 auto;
+  max-height: 38%;
+  min-height: 6rem;
+}
+
+.pipes-page--detail-open .pipes-detail-panel {
+  flex: 1 1 auto;
+  max-height: none;
+  min-height: min(34vh, 380px);
 }
 
 .pipes-detail-panel .detail-panel-header {
@@ -1493,21 +1506,25 @@ a:hover {
 }
 
 .activity-title {
-  overflow: hidden;
+  overflow: visible;
   font-size: 0.76rem;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .activity-preview {
   margin: 0.08rem 0 0;
-  overflow: hidden;
+  overflow: visible;
   color: var(--muted);
   font-size: 0.68rem;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .activity-time {
@@ -1684,16 +1701,34 @@ a:hover {
 }
 
 .app-output-content {
-  white-space: pre-wrap;
   font-family: var(--mono);
   font-size: 0.78rem;
   line-height: 1.55;
-  max-height: 50vh;
-  overflow-y: auto;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+  text-overflow: clip;
   padding: 0.9rem;
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: var(--radius);
+}
+
+.app-output-content p,
+.app-output-content blockquote,
+.app-output-content li {
+  margin: 0.35rem 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.app-output-content blockquote {
+  margin: 0.5rem 0 0.5rem 0.65rem;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--line-strong);
+  color: var(--text);
 }
 
 .app-output-content h1,

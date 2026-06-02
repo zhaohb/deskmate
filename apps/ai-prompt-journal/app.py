@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from agent import _is_prompt_noise, run_agent  # noqa: E402
-from common import output_dir, pc_assistant_home, write_markdown  # noqa: E402
+from common import normalize_capture_text, output_dir, pc_assistant_home, write_markdown  # noqa: E402
 
 APP_NAME = "ai-prompt-journal"
 PIPE_MD = Path(__file__).with_name("pipe.md")
@@ -58,7 +58,7 @@ def _ensure_journal_header(path: Path) -> None:
 
 def _prompt_key(body: str) -> str:
     """First 80 chars of the unquoted prompt body, normalized for dedup."""
-    text = _BLOCKQUOTE_LINE_RE.sub("", body).strip()
+    text = normalize_capture_text(_BLOCKQUOTE_LINE_RE.sub("", body))
     text = " ".join(text.split())
     return text[:80].lower()
 
@@ -87,21 +87,62 @@ def _split_blocks(report: str) -> list[tuple[str, str]]:
     return blocks
 
 
+def _upgrade_block_if_longer(journal_path: Path, key: str, header: str, body: str) -> bool:
+    """Replace an existing journal block when we capture a longer version of the same prompt."""
+    if not journal_path.exists():
+        return False
+    content = journal_path.read_text(encoding="utf-8")
+    header_end = content.find("\n## ")
+    if header_end < 0:
+        return False
+    header_part = content[: header_end + 1]
+    body_region = content[header_end + 1 :]
+    new_text = _block_body_text(body)
+    if not new_text:
+        return False
+
+    kept: list[str] = []
+    replaced = False
+    for match in _BLOCK_RE.finditer(body_region):
+        block_header = match.group("header").strip()
+        block_body = match.group("body").strip()
+        block_key = _prompt_key(block_body)
+        old_text = _block_body_text(block_body)
+        if block_key == key and len(new_text) > len(old_text):
+            kept.append(f"## {header}\n{body}\n\n---\n\n")
+            replaced = True
+        else:
+            kept.append(f"## {block_header}\n{block_body}\n\n---\n\n")
+    if not replaced:
+        return False
+    journal_path.write_text(header_part.rstrip() + "\n\n" + "".join(kept), encoding="utf-8")
+    return True
+
+
 def _append_new_blocks(journal_path: Path, blocks: list[tuple[str, str]]) -> int:
     if not blocks:
         return 0
     _ensure_journal_header(journal_path)
     existing = _existing_keys(journal_path)
     appended = 0
+    pending: list[tuple[str, str]] = []
+    for header, body in blocks:
+        metadata_stripped = "\n".join(
+            ln for ln in body.splitlines() if not ln.startswith("**Category**")
+        )
+        key = _prompt_key(metadata_stripped)
+        if not key:
+            continue
+        if key in existing:
+            if _upgrade_block_if_longer(journal_path, key, header, body):
+                appended += 1
+            continue
+        existing.add(key)
+        pending.append((header, body))
+    if not pending:
+        return appended
     with journal_path.open("a", encoding="utf-8") as fh:
-        for header, body in blocks:
-            metadata_stripped = "\n".join(
-                ln for ln in body.splitlines() if not ln.startswith("**Category**")
-            )
-            key = _prompt_key(metadata_stripped)
-            if not key or key in existing:
-                continue
-            existing.add(key)
+        for header, body in pending:
             fh.write(f"## {header}\n{body}\n\n---\n\n")
             appended += 1
     return appended
@@ -110,8 +151,7 @@ def _append_new_blocks(journal_path: Path, blocks: list[tuple[str, str]]) -> int
 def _block_body_text(body: str) -> str:
     """Return the prompt body text with blockquote markers and metadata stripped."""
     lines = [ln for ln in body.splitlines() if not ln.startswith("**Category**")]
-    text = _BLOCKQUOTE_LINE_RE.sub("", "\n".join(lines)).strip()
-    return text
+    return normalize_capture_text(_BLOCKQUOTE_LINE_RE.sub("", "\n".join(lines)))
 
 
 def _prune_noise_from_journal(journal_path: Path) -> int:
@@ -187,11 +227,7 @@ def main() -> int:
         journal_text = journal_path.read_text(encoding="utf-8")
     else:
         journal_text = "_no prompts captured yet today._\n"
-    footer = (
-        f"\n\n---\n_Run summary: pruned **{pruned}** stale noise block(s) and "
-        f"appended **{appended}** new prompt block(s) this run; full journal at "
-        f"`{journal_path}`._\n"
-    )
+    footer = f"\n\n---\n_Appended **{appended}** new prompt(s) this run._\n"
     display = journal_text.rstrip() + footer
 
     out = output_dir(APP_NAME)

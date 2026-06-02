@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -59,6 +60,14 @@ def write_json(path: Path, data: Any) -> None:
 
 def write_markdown(path: Path, content: str) -> None:
     path.write_text(content.strip() + "\n", encoding="utf-8")
+
+
+_INVISIBLE_CAPTURE_RE = re.compile(r"[\u200b-\u200d\ufeff\u2060]")
+
+
+def normalize_capture_text(text: str | None) -> str:
+    """Strip zero-width / BOM chars that make prompts look cut off in the journal."""
+    return _INVISIBLE_CAPTURE_RE.sub("", text or "").strip()
 
 
 def truncate(text: str | None, limit: int = 240) -> str:

@@ -49,10 +49,41 @@ const videoExportUi = {
 
 /** Apps that prompt for a look-back window before Run (hours or custom ISO range). */
 const HOURS_RANGE_APPS = {
-  "email-digest": { defaultPreset: "16", title: "Email digest" },
-  "todo-list": { defaultPreset: "16", title: "Todo List Assistant" },
-  "day-recap": { defaultPreset: "16", title: "Day recap" },
-  "ai-habits": { defaultPreset: "24", title: "AI usage habits" },
+  "email-digest": {
+    defaultPreset: "16",
+    title: "Email digest",
+    desc: "Select how far back to analyze email and on-screen activity for this run.",
+  },
+  "todo-list": {
+    defaultPreset: "16",
+    title: "Todo List Assistant",
+    desc: "Select how far back to scan activity and email for todos.",
+  },
+  "day-recap": {
+    defaultPreset: "16",
+    title: "Day recap",
+    desc: "Select the period to summarize from your recordings.",
+  },
+  "ai-habits": {
+    defaultPreset: "24",
+    title: "AI usage habits",
+    desc: "Select how far back to analyze AI tool usage on screen.",
+  },
+  "standup-update": {
+    defaultPreset: "24",
+    title: "Standup update",
+    desc: "Select the period to draft your standup from recorded activity.",
+  },
+  "time-breakdown": {
+    defaultPreset: "12",
+    title: "Time breakdown",
+    desc: "Select the period to break down time by app and category.",
+  },
+  "ai-prompt-journal": {
+    defaultPreset: "1",
+    title: "AI prompt journal",
+    desc: "Select how far back to collect AI prompts from your recordings.",
+  },
 };
 
 const APP_RUN_LABELS = {
@@ -181,9 +212,9 @@ function isScheduledPipe(app) {
   return s !== "manual" && s.trim() !== "";
 }
 
-function textPreview(value, max = 140) {
+function textPreview(value) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
-  return text.length > max ? `${text.slice(0, max)}…` : text || "-";
+  return text || "-";
 }
 
 function displayValue(value) {
@@ -442,7 +473,7 @@ function buildActivityFeed() {
       kind: "screen",
       ts: frame.timestamp,
       title: frame.app_name || "unknown",
-      preview: textPreview(frame.window_name || frame.ocr_text, 100),
+      preview: textPreview(frame.window_name || frame.ocr_text),
       onClick: () => selectFrame(frame.id || frame.frame_id),
     });
   }
@@ -451,7 +482,7 @@ function buildActivityFeed() {
       kind: "audio",
       ts: t.timestamp,
       title: t.device || "mic",
-      preview: textPreview(t.transcription || t.redacted_transcription, 100),
+      preview: textPreview(t.transcription || t.redacted_transcription),
       onClick: () => selectTranscript(t),
     });
   }
@@ -460,7 +491,7 @@ function buildActivityFeed() {
       kind: "event",
       ts: ev.timestamp,
       title: ev.event_type || "event",
-      preview: textPreview(`${ev.app_name || ""} · ${ev.window_title || ""}`, 100),
+      preview: textPreview(`${ev.app_name || ""} · ${ev.window_title || ""}`),
       onClick: () => selectEvent(ev),
     });
   }
@@ -786,16 +817,23 @@ function isDetailPanelOpen() {
   return (out && out.style.display !== "none") || (hist && hist.style.display !== "none");
 }
 
+function syncPipesDetailLayout() {
+  const page = document.querySelector(".pipes-page");
+  if (page) page.classList.toggle("pipes-page--detail-open", isDetailPanelOpen());
+}
+
 function closeAppOutput() {
   const panel = $("#appOutputPanel");
   const content = $("#appOutputContent");
   if (panel) panel.style.display = "none";
   if (content) content.innerHTML = "";
+  syncPipesDetailLayout();
 }
 
 function closeAppHistory() {
   const panel = $("#appHistoryPanel");
   if (panel) panel.style.display = "none";
+  syncPipesDetailLayout();
 }
 
 function closeAppDetails() {
@@ -1059,7 +1097,9 @@ function openAppTimeRangeModal(appName) {
   const desc = $("#appTimeRangeModalDesc");
   if (title) title.textContent = cfg.title || appName;
   if (desc) {
-    desc.textContent = "Select how far back to analyze email and on-screen activity for this run.";
+    desc.textContent =
+      cfg.desc ||
+      "Select how far back to analyze recorded activity for this run.";
   }
   setAppTimeRangePreset(cfg.defaultPreset || "16");
   resetModalConfirmButton($("#appTimeRangeConfirm"), "Run");
@@ -1404,6 +1444,7 @@ async function showAppOutput(appName, runId, filename) {
     content.textContent = "(Unable to load report content)";
   }
   panel.style.display = "block";
+  syncPipesDetailLayout();
   renderApps();
 }
 
@@ -1413,6 +1454,7 @@ async function showAppHistory(appName, appTitle) {
   const histList = $("#appHistoryList");
   appsUi.selectedApp = appName;
   histPanel.style.display = "block";
+  syncPipesDetailLayout();
 
   try {
     const result = await api(`/apps/${appName}/outputs`);
@@ -1439,14 +1481,34 @@ async function showAppHistory(appName, appTitle) {
 }
 
 function simpleMarkdown(text) {
-  return text
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
-    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
-    .replace(/^# (.+)$/gm, "<h1>$1</h1>")
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/^- (.+)$/gm, "• $1")
-    .replace(/\n/g, "<br>");
+  const escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const lines = escaped.split("\n");
+  const html = [];
+  let quoteLines = [];
+  const flushQuote = () => {
+    if (!quoteLines.length) return;
+    html.push(`<blockquote>${quoteLines.join("<br>")}</blockquote>`);
+    quoteLines = [];
+  };
+  for (const line of lines) {
+    if (/^> ?/.test(line)) {
+      quoteLines.push(line.replace(/^> ?/, ""));
+      continue;
+    }
+    flushQuote();
+    if (/^### /.test(line)) html.push(`<h3>${line.slice(4)}</h3>`);
+    else if (/^## /.test(line)) html.push(`<h2>${line.slice(3)}</h2>`);
+    else if (/^# /.test(line)) html.push(`<h1>${line.slice(2)}</h1>`);
+    else if (/^- /.test(line)) html.push(`<p>• ${line.slice(2)}</p>`);
+    else if (line.trim() === "---") html.push("<hr>");
+    else if (line.trim()) html.push(`<p>${line.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")}</p>`);
+    else html.push("<br>");
+  }
+  flushQuote();
+  return html.join("");
 }
 
 function renderSettings() {

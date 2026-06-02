@@ -21,8 +21,13 @@ from typing import Any
 from urllib.parse import quote
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_APPS_SRC = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+if str(_APPS_SRC) not in sys.path:
+    sys.path.insert(0, str(_APPS_SRC))
+
+from common import normalize_capture_text  # noqa: E402
 
 from pc_assistant.engine import llm  # noqa: E402
 from pc_assistant.engine.activity_summary import format_summary_for_agent  # noqa: E402
@@ -1860,15 +1865,41 @@ def _length_bucket(text: str) -> str:
     return "long"
 
 
+def _upsert_prompt_journal_entry(
+    prompts: list[dict[str, str]],
+    seen_keys: set[str],
+    entry: dict[str, str],
+) -> None:
+    """Keep the longest text when debounce/IME emits a short prefix then a full prompt."""
+    text = normalize_capture_text(entry.get("text") or "")
+    if not text:
+        return
+    entry = {**entry, "text": text}
+    key = " ".join(text.split())[:80].lower()
+    for i, existing in enumerate(prompts):
+        old_text = existing.get("text") or ""
+        if text == old_text:
+            return
+        if text.startswith(old_text) or old_text.startswith(text):
+            if len(text) >= len(old_text):
+                old_key = " ".join(old_text.split())[:80].lower()
+                seen_keys.discard(old_key)
+                seen_keys.add(key)
+                prompts[i] = entry
+            return
+    if key in seen_keys:
+        return
+    seen_keys.add(key)
+    prompts.append(entry)
+
+
 def _short_topic(text: str) -> str:
     """First few non-trivial words of the prompt, capitalized."""
-    cleaned = " ".join(text.split())
+    cleaned = " ".join(normalize_capture_text(text).split())
     # Drop trailing punctuation, take the first ~6 words.
     words = cleaned.split(" ")[:6]
     topic = " ".join(words).strip()
     topic = topic.rstrip(",.;:!?，。；：！？")
-    if len(topic) > 60:
-        topic = topic[:60] + "…"
     return topic or "Untitled prompt"
 
 
@@ -1952,7 +1983,7 @@ def _do_prompt_journal_prefetch(
         result = _http_post(f"{API_BASE}/raw_sql", body, timeout=20)
         for row in (result.get("data") or [])[:limit]:
             ts = format_ts_local(str(row.get("timestamp", "")))
-            text = (row.get("text") or "").strip()
+            text = normalize_capture_text(row.get("text") or "")
             if not text or _is_prompt_noise(text):
                 continue
             tool = _classify_tool(
@@ -1963,16 +1994,17 @@ def _do_prompt_journal_prefetch(
             verified_set.add(tool)
             preview = text.replace("\n", " ")
             if len(preview) > 600:
-                preview = preview[:600] + "…"
+                preview = preview[:600] + "...(truncated for agent context)"
             keystroke_lines.append(
                 f"- [{ts}] tool={tool} app={row.get('app','')} "
                 f"win={row.get('win','')[:60]} url={(row.get('url','') or '')[:80]}\n"
                 f"  keystroke> {preview}"
             )
-            key = " ".join(text.split())[:80].lower()
-            if key and key not in _seen_keys:
-                _seen_keys.add(key)
-                prompts.append({"ts": ts, "tool": tool, "text": text, "source": "keystroke"})
+            _upsert_prompt_journal_entry(
+                prompts,
+                _seen_keys,
+                {"ts": ts, "tool": tool, "text": text, "source": "keystroke"},
+            )
     except Exception as exc:  # noqa: BLE001
         if verbose:
             print(f"  [prompt-journal] keystroke SQL failed: {exc}", file=sys.stderr)
@@ -2015,7 +2047,7 @@ def _do_prompt_journal_prefetch(
         result = _http_post(f"{API_BASE}/raw_sql", body, timeout=20)
         for row in (result.get("data") or [])[:limit]:
             ts = format_ts_local(str(row.get("timestamp", "")))
-            val = (row.get("val") or "").strip()
+            val = normalize_capture_text(row.get("val") or "")
             if not val or _is_prompt_noise(val):
                 continue
             tool = _classify_tool(
@@ -2026,16 +2058,17 @@ def _do_prompt_journal_prefetch(
             verified_set.add(tool)
             preview = val.replace("\n", " ")
             if len(preview) > 600:
-                preview = preview[:600] + "…"
+                preview = preview[:600] + "...(truncated for agent context)"
             focused_lines.append(
                 f"- [{ts}] tool={tool} role={row.get('role','')} "
                 f"win={row.get('win','')[:60]}\n"
                 f"  input_field> {preview}"
             )
-            key = " ".join(val.split())[:80].lower()
-            if key and key not in _seen_keys:
-                _seen_keys.add(key)
-                prompts.append({"ts": ts, "tool": tool, "text": val, "source": "input_field"})
+            _upsert_prompt_journal_entry(
+                prompts,
+                _seen_keys,
+                {"ts": ts, "tool": tool, "text": val, "source": "input_field"},
+            )
     except Exception as exc:  # noqa: BLE001
         if verbose:
             print(f"  [prompt-journal] focused SQL failed: {exc}", file=sys.stderr)

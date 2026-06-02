@@ -52,7 +52,7 @@ class A11yConfig(BaseModel):
     enabled: bool = True
     ax_depth: int = 60
     ax_max_nodes: int = 5000
-    text_input_debounce_seconds: float = 0.3
+    text_input_debounce_seconds: float = 1.0
     capture_clicks: bool = True
     capture_keystrokes: bool = True
     capture_clipboard: bool = True
