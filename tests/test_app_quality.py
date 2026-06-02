@@ -1,12 +1,12 @@
 """Quality tests for ai-prompt-journal and day-recap output helpers.
 
-Pure-Python paths only — no Ollama / pc_assistant API required.
+Pure-Python paths only — no Ollama / DeskMate API required.
 
 Covers:
 - ai-prompt-journal deterministic emission helpers in ``apps/agent.py``
   (``_short_topic``, ``_is_prompt_noise``, ``_emit_prompt_blocks``);
 - day-recap OCR denoising in
-  ``pc_assistant.engine.day_recap_context.extract_valuable_lines``.
+  ``deskmate.engine.day_recap_context.extract_valuable_lines``.
 """
 
 from __future__ import annotations
@@ -156,7 +156,7 @@ def test_meeting_generic_titles_expanded(agent: ModuleType, title: str) -> None:
     assert agent._is_generic_meeting_title(title) is True
 
 
-@pytest.mark.parametrize("title", ["Q2 launch review", "pc_assistant design discussion"])
+@pytest.mark.parametrize("title", ["Q2 launch review", "deskmate design discussion"])
 def test_meeting_meaningful_titles_are_kept(agent: ModuleType, title: str) -> None:
     assert agent._is_generic_meeting_title(title) is False
 
@@ -184,7 +184,7 @@ def test_frames_export_suggests_smaller_range_for_large_exports(
 # ── day-recap: OCR garble filtering ──────────────────────────────────────
 
 def test_extract_valuable_lines_drops_garble() -> None:
-    from pc_assistant.engine.day_recap_context import extract_valuable_lines
+    from deskmate.engine.day_recap_context import extract_valuable_lines
 
     raw = "\n".join([
         "| || | —— |",            # separator garble, no letters
@@ -199,7 +199,7 @@ def test_extract_valuable_lines_drops_garble() -> None:
 
 
 def test_extract_valuable_lines_keeps_cjk() -> None:
-    from pc_assistant.engine.day_recap_context import extract_valuable_lines
+    from deskmate.engine.day_recap_context import extract_valuable_lines
 
     raw = "优化了 day recap 的输出效果"
     out = extract_valuable_lines(raw)
@@ -207,7 +207,7 @@ def test_extract_valuable_lines_keeps_cjk() -> None:
 
 
 def test_extract_valuable_lines_keeps_real_text() -> None:
-    from pc_assistant.engine.day_recap_context import extract_valuable_lines
+    from deskmate.engine.day_recap_context import extract_valuable_lines
 
     raw = "500: Internal Server Error when loading the export feature"
     out = extract_valuable_lines(raw)

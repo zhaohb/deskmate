@@ -29,7 +29,7 @@ dist/
 *.egg
 
 # Local runtime data
-.pc_assistant/
+.deskmate/
 data.db
 *.db
 *.sqlite

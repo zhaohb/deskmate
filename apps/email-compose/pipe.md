@@ -10,7 +10,7 @@ featured: true
 
 Draft an email (or reply to one) on behalf of the user, using their connected Gmail or Outlook account.
 
-Read pc_assistant skill first. The agent runner has already gathered the relevant context for you and placed it in the section below — do NOT call any further tools. Use ONLY the verified provider listed in the extra rules.
+Read DeskMate skill first. The agent runner has already gathered the relevant context for you and placed it in the section below — do NOT call any further tools. Use ONLY the verified provider listed in the extra rules.
 
 Use this exact format:
 

@@ -5,7 +5,7 @@ extract prompts the user typed into AI tools and emit one ``## HH:MM — Tool �
 block per prompt. This runner then appends only the genuinely new blocks to
 today's journal file at::
 
-    %USERPROFILE%\\.pc_assistant\\apps\\ai-prompt-journal\\journal\\YYYY-MM-DD.md
+    %USERPROFILE%\\.deskmate\\apps\\ai-prompt-journal\\journal\\YYYY-MM-DD.md
 
 Deduplication keys on the first 80 characters of each prompt's body, so the
 same prompt captured by repeated hourly runs is not re-appended.
@@ -27,7 +27,7 @@ from common import (  # noqa: E402
     agent_time_kwargs_from_args,
     normalize_capture_text,
     output_dir,
-    pc_assistant_home,
+    deskmate_home,
     write_markdown,
 )
 
@@ -45,7 +45,7 @@ _HEADER_DATE_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<rest>.+)$")
 
 
 def _journal_dir() -> Path:
-    out = pc_assistant_home() / "apps" / APP_NAME / "journal"
+    out = deskmate_home() / "apps" / APP_NAME / "journal"
     out.mkdir(parents=True, exist_ok=True)
     return out
 
@@ -112,7 +112,7 @@ def _ensure_journal_header(path: Path, day: date | None = None) -> None:
     journal_date = (day or datetime.now().date()).isoformat()
     header = (
         f"---\ndate: {journal_date}\n"
-        f"tags: [ai-prompts, pc_assistant]\n---\n\n"
+        f"tags: [ai-prompts, deskmate]\n---\n\n"
         f"# AI Prompts — {journal_date}\n\n"
     )
     path.write_text(header, encoding="utf-8")
@@ -250,7 +250,7 @@ def _wrap_range_display(start_iso: str, end_iso: str, body: str) -> str:
         fm_date = f"{start_d.isoformat()} … {end_d.isoformat()}"
     header = (
         f"---\ndate: {fm_date}\n"
-        f"tags: [ai-prompts, pc_assistant]\n"
+        f"tags: [ai-prompts, deskmate]\n"
         f"window_start: {start_iso}\n"
         f"window_end: {end_iso}\n---\n\n"
         f"{title}\n\n"

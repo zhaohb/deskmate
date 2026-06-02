@@ -1,7 +1,7 @@
 """Unit tests for the ai-prompt-journal app helpers.
 
 These tests cover only pure-Python paths (block parsing, prompt-key dedup,
-append behaviour) — they do not require Ollama or the pc_assistant API.
+append behaviour) — they do not require Ollama or the DeskMate API.
 """
 
 from __future__ import annotations
@@ -20,11 +20,11 @@ _APPS_DIR = _APP_DIR.parent
 
 
 def _load_app_module(tmp_home: Path) -> ModuleType:
-    """Load apps/ai-prompt-journal/app.py with PC_ASSISTANT_HOME isolated."""
-    os.environ["PC_ASSISTANT_HOME"] = str(tmp_home)
+    """Load apps/ai-prompt-journal/app.py with DESKMATE_HOME isolated."""
+    os.environ["DESKMATE_HOME"] = str(tmp_home)
     if str(_APPS_DIR) not in sys.path:
         sys.path.insert(0, str(_APPS_DIR))
-    # Drop any prior cached load so PC_ASSISTANT_HOME takes effect.
+    # Drop any prior cached load so DESKMATE_HOME takes effect.
     sys.modules.pop("ai_prompt_journal_app", None)
     spec = importlib.util.spec_from_file_location(
         "ai_prompt_journal_app", _APP_DIR / "app.py"
@@ -123,7 +123,7 @@ def test_append_zero_blocks_does_not_create_file(
     assert not journal.exists()
 
 
-def test_today_journal_under_pc_assistant_home(
+def test_today_journal_under_deskmate_home(
     app: ModuleType, tmp_path: Path
 ) -> None:
     path = app._today_journal()

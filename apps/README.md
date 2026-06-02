@@ -1,4 +1,4 @@
-# pc_assistant apps
+# DeskMate apps
 
 Local LLM apps driven by `pipe.md` prompts. Each app follows this execution model:
 
@@ -9,12 +9,12 @@ Local LLM apps driven by `pipe.md` prompts. Each app follows this execution mode
 5. Other pipes may pre-fetch API data when `pipe.md` instructs it
 6. LLM generates the report in the exact format specified by `pipe.md`
 
-Output is written to: `%USERPROFILE%\.pc_assistant\apps\<app-name>\output\<timestamp>\`
+Output is written to: `%USERPROFILE%\.deskmate\apps\<app-name>\output\<timestamp>\`
 
 ## Prerequisites
 
 - **Ollama** running at `http://127.0.0.1:11434` with a model loaded
-- **pc_assistant API** running at `http://127.0.0.1:3030`
+- **DeskMate API** running at `http://127.0.0.1:3030`
 
 ## Apps
 
@@ -24,7 +24,7 @@ Exports recent screenshots as a video clip. The LLM calls `POST /frames/export`
 as instructed by `pipe.md`.
 
 ```cmd
-cd /d C:\hongbo\UX\pc_assistant
+cd /d C:\hongbo\UX\deskmate
 conda activate support_qwen3.5
 python apps\video-export\app.py --minutes 5 --verbose
 ```
@@ -92,7 +92,7 @@ Captures every prompt the user typed into AI tools (ChatGPT, Claude, Gemini,
 Perplexity, Grok, DeepSeek, Copilot, Cursor, local models, etc.) over the
 supplied window (default 1 hour) and appends only the genuinely new prompts to
 a daily markdown journal at
-`%USERPROFILE%\.pc_assistant\apps\ai-prompt-journal\journal\YYYY-MM-DD.md`.
+`%USERPROFILE%\.deskmate\apps\ai-prompt-journal\journal\YYYY-MM-DD.md`.
 Designed to be scheduled hourly.
 
 ```cmd
@@ -167,7 +167,7 @@ python apps\email-compose\app.py --provider outlook --to a@b.com --intent "我�
 
 ## Configuration
 
-Ollama settings can live in `~/.pc_assistant/config.toml` (or `%USERPROFILE%\.pc_assistant\config.toml` on Windows):
+Ollama settings can live in `~/.deskmate/config.toml` (or `%USERPROFILE%\.deskmate\config.toml` on Windows):
 
 ```toml
 [ollama]
@@ -189,10 +189,10 @@ Environment overrides (take precedence over the file):
 | `OLLAMA_BASE` | `[ollama].base` |
 | `OLLAMA_MODEL` | `[ollama].model` |
 | `OLLAMA_CHAT_TIMEOUT` | `[ollama].chat_timeout` |
-| `PC_ASSISTANT_API` | — (default `http://127.0.0.1:3030`) |
+| `DESKMATE_API` | — (default `http://127.0.0.1:3030`) |
 | `MAX_TOOL_ROUNDS` | — (default `12`) |
 
-Pydantic env form: `PCA_ollama__model=my-model:tag` (also overrides the file).
+Pydantic env form: `DESKMATE_ollama__model=my-model:tag` (also overrides the file).
 
 Override the model for one run: `python apps\day-recap\app.py --model other-model:tag`
 
@@ -207,7 +207,7 @@ agent.py (runner)  ──→  Ollama /api/chat (with tools)
     │  ◄── tool_calls ────────┘
     │
     ▼
-execute_tool()  ──→  pc_assistant /search API
+execute_tool()  ──→  DeskMate /search API
     │
     │  ──→ results back to model
     │
@@ -219,7 +219,7 @@ The `pipe.md` is a prompt; the agent runner manages the tool-calling loop, and
 the model autonomously decides what data to query and how to present it.
 
 Both the app runner (`apps/agent.py`) and the in-app **Ask** agent
-(`pc_assistant/engine/ask.py`) share one engine, `pc_assistant/engine/llm.py`,
+(`deskmate/engine/ask.py`) share one engine, `deskmate/engine/llm.py`,
 for the proxy-bypassing HTTP transport and the `/api/chat` call. Each agent
 keeps its own orchestration and its own `OLLAMA_BASE` / `OLLAMA_MODEL` module
 settings (so `--model` still works by overriding `agent.OLLAMA_MODEL`).

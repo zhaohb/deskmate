@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pc_assistant.a11y.ui_event_types import (
+from deskmate.a11y.ui_event_types import (
     CaptureTrigger,
     ScrollBurstTracker,
     TriggerGates,
@@ -12,7 +12,7 @@ from pc_assistant.a11y.ui_event_types import (
     UiEventType,
     capture_trigger_kind,
 )
-from pc_assistant.capture.frame_linker import (
+from deskmate.capture.frame_linker import (
     EventPersisted,
     FrameCaptured,
     FrameLinker,
@@ -51,7 +51,7 @@ def test_frame_linker_pairs_frame_before_event() -> None:
 
 
 def test_update_ui_event_frame_id_idempotent(tmp_path: Path) -> None:
-    from pc_assistant.db import DatabaseManager
+    from deskmate.db import DatabaseManager
 
     db = DatabaseManager(tmp_path / "t.db")
     try:

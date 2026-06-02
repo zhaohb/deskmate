@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from pc_assistant.engine.day_recap_context import (
+from deskmate.engine.day_recap_context import (
     calendar_days_in_range,
     format_ts_recap,
     range_spans_calendar_days,

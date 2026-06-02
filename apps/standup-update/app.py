@@ -1,7 +1,7 @@
 """Standup Update — LLM agent mode.
 
 Reads pipe.md, sends to Ollama via the agent runner, lets the model
-query pc_assistant /activity-summary and /search and generate a
+query DeskMate /activity-summary and /search and generate a
 short standup update covering yesterday / today / blockers.
 """
 

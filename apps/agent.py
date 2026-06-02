@@ -1,4 +1,4 @@
-"""LLM agent runner for pc_assistant pipe apps.
+"""LLM agent runner for DeskMate pipe apps.
 
 Reads a pipe.md, follows its search instructions by pre-executing API calls,
 then sends the real results to the LLM for report generation.
@@ -30,9 +30,9 @@ if str(_APPS_SRC) not in sys.path:
 
 from common import normalize_capture_text  # noqa: E402
 
-from pc_assistant.engine import llm  # noqa: E402
-from pc_assistant.engine.activity_summary import format_summary_for_agent  # noqa: E402
-from pc_assistant.engine.day_recap_context import (  # noqa: E402
+from deskmate.engine import llm  # noqa: E402
+from deskmate.engine.activity_summary import format_summary_for_agent  # noqa: E402
+from deskmate.engine.day_recap_context import (  # noqa: E402
     calendar_days_in_range,
     format_search_items,
     format_ts_local,
@@ -187,7 +187,7 @@ EMAIL_TOOL_TARGETS: dict[str, dict[str, Any]] = {
 }
 
 OLLAMA_BASE, OLLAMA_MODEL, _OLLAMA_CHAT_TIMEOUT = llm.resolve_ollama_settings()
-API_BASE = os.environ.get("PC_ASSISTANT_API", "http://127.0.0.1:3030")
+API_BASE = os.environ.get("DESKMATE_API", "http://127.0.0.1:3030")
 MAX_TOOL_ROUNDS = int(os.environ.get("MAX_TOOL_ROUNDS", "8"))
 
 SKILL_PATH = Path(__file__).with_name("SKILL.md")
@@ -207,7 +207,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "search",
-            "description": "Search pc_assistant screen captures, audio transcriptions and UI events.",
+            "description": "Search DeskMate screen captures, audio transcriptions and UI events.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -556,7 +556,7 @@ def _do_frames_export(start: str, end: str, verbose: bool = False) -> str:
         return (
             f"### POST /frames/export — FAILED\n"
             f"Error: {exc}\n\n"
-            f"The pc_assistant API may not be running or the time range has no frames."
+            f"The DeskMate API may not be running or the time range has no frames."
         )
 
     success = result.get("success", False)
@@ -619,7 +619,7 @@ def _do_broad_search(start: str, end: str, verbose: bool = False) -> str:
     """Fetch /activity-summary — aggregated activity bundle."""
     summary = _fetch_activity_summary(start, end, verbose=verbose)
     if not summary:
-        return "(Failed to fetch activity data from pc_assistant API.)"
+        return "(Failed to fetch activity data from DeskMate API.)"
 
     if verbose:
         audio_n = int((summary.get("audio_summary") or {}).get("segment_count") or 0)
@@ -698,7 +698,7 @@ def _do_day_recap_prefetch(start: str, end: str, verbose: bool = False) -> str:
 
     summary = _fetch_activity_summary(start, end, verbose=verbose, rich=True)
     if not summary:
-        return "(Failed to fetch activity data from pc_assistant API.)"
+        return "(Failed to fetch activity data from DeskMate API.)"
 
     sections: list[str] = []
     if multi_day:
@@ -909,7 +909,7 @@ def _do_time_breakdown_prefetch(start: str, end: str, verbose: bool = False) -> 
     """Rich activity-summary + deterministic minute tables for time-breakdown."""
     summary = _fetch_activity_summary(start, end, verbose=verbose, rich=True)
     if not summary:
-        return "(Failed to fetch activity data from pc_assistant API.)"
+        return "(Failed to fetch activity data from DeskMate API.)"
 
     sections = [
         _format_time_breakdown_stats(summary),
@@ -1537,7 +1537,7 @@ def _do_meeting_summary(
         )
 
     system_prompt = (
-        "You are a pc_assistant meeting summarizer.\n\n"
+        "You are a DeskMate meeting summarizer.\n\n"
         "RULES:\n"
         "1. Summarize ONLY from the transcript provided. NEVER invent decisions, names, or action items.\n"
         "2. Output a 5-8 word plain-english TITLE on the first line, prefixed exactly with 'TITLE: '.\n"
@@ -1991,7 +1991,7 @@ def run_agent(
                 "exactly — never report 0 min for an app listed there with >0 min. "
                 "By Application must list every app from pre-computed totals, sorted by time. "
                 "By Category must match 'Pre-computed category minutes'. "
-                "By Project must group edited_files paths and window titles (e.g. pc_assistant, "
+                "By Project must group edited_files paths and window titles (e.g. deskmate, "
                 "ollama_openvino). Productivity Score must use the pre-computed score line. "
                 "Suggestion must cite the top time sink or lowest-focus pattern from the data."
             ),
@@ -2066,7 +2066,7 @@ def run_agent(
 
     # Step 3: Build prompt (system = skill, user = context + data + instructions)
     system_prompt = (
-        "You are a pc_assistant AI agent. You analyze the user's local "
+        "You are a DeskMate AI agent. You analyze the user's local "
         "screen recordings, audio transcriptions and UI events.\n\n"
         "RULES:\n"
         "1. ONLY use the search results provided below. NEVER invent or fabricate data.\n"
@@ -2179,11 +2179,11 @@ AI_PROMPT_JOURNAL_TARGETS: dict[str, dict[str, list[str]]] = {
 
 # Accessibility roles that almost always indicate a user-composed text input
 # inside the focused AI chat window (pipe.md Step 2). Role names are
-# adapted to pc_assistant's UIA control-name strings (note the ``Control``
-# suffix used by ``pc_assistant/a11y/uia_tree.py``) plus the bare
+# adapted to DeskMate's UIA control-name strings (note the ``Control``
+# suffix used by ``deskmate/a11y/uia_tree.py``) plus the bare
 # AX/macOS-style names kept for forward compatibility.
 _PROMPT_INPUT_ROLES = (
-    # pc_assistant UIA names
+    # DeskMate UIA names
     "EditControl", "DocumentControl", "TextControl", "ComboBoxControl",
     # bare / macOS-style fallbacks
     "Edit", "Document", "RichEdit", "TextArea",
@@ -2483,7 +2483,7 @@ def _do_prompt_journal_prefetch(
     Pulls two high-signal sources via ``/raw_sql``:
 
     1. ``ui_events.event_type='text'`` — keystroke text emitted by
-       :mod:`pc_assistant.a11y.input_hooks` after the user finished typing.
+       :mod:`deskmate.a11y.input_hooks` after the user finished typing.
        Filtered to AI tool windows/URLs/processes.
     2. ``frame_accessibility.focused_role IN (Edit, Document, AXTextArea, …)``
        joined with ``frames`` matching the same AI tool patterns — captures
@@ -2659,7 +2659,7 @@ def _run_prompt_extraction(
         return "NO_NEW_PROMPTS"
 
     rules = (
-        "You are a pc_assistant prompt extraction agent.\n\n"
+        "You are a DeskMate prompt extraction agent.\n\n"
         "CRITICAL RULES:\n"
         "1. ONLY use the Per-AI-tool data below. NEVER invent prompts, timestamps, tools or topics.\n"
         "2. Every line below starting with '  keystroke> ' or '  input_field> ' IS A USER PROMPT BY CONSTRUCTION (keyboard hook output or focused chat input). EMIT a block for it unless it is obviously AI-generated prose (multi-paragraph polished writing, fenced code blocks, or text starting with 'Sure!'/\"Here's\"/'Certainly'/'I'd be happy').\n"
@@ -2730,7 +2730,7 @@ def _single_shot_report(
     sees all evidence upfront and just needs to write, not plan API calls.
     """
     rules = (
-        "You are a pc_assistant AI agent.\n\n"
+        "You are a DeskMate AI agent.\n\n"
         "CRITICAL RULES:\n"
         "1. ONLY cite data from the Search Results below. NEVER invent apps, files, timestamps, or text.\n"
         "2. If you cannot find evidence for something, DO NOT include it.\n"
@@ -2897,7 +2897,7 @@ def _run_tool_driven_agent(
             "plus the final **Suggestion:** line.\n\n"
         )
     system_prompt = (
-        "You are a pc_assistant AI agent with tools: activity_summary, search, frames_export.\n\n"
+        "You are a DeskMate AI agent with tools: activity_summary, search, frames_export.\n\n"
         f"{tool_rules}"
         "RULES:\n"
         "1. Use tools to fetch data — do not invent content.\n"

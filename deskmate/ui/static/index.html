@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DeskMate</title>
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260602-deskmate" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-row">
+          <span class="brand-name">DeskMate</span>
+        </div>
+
+        <nav class="nav nav-primary">
+          <button class="nav-item active" data-view="overview" type="button">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1v-9.5Z" fill="currentColor"/></svg>
+            <span>Home</span>
+          </button>
+          <button class="nav-item" data-view="apps" type="button">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6a2 2 0 0 1 2-2h3v4H6v12h3v2H6a2 2 0 0 1-2-2V6Zm7-2h3a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm7 0h3a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" fill="currentColor"/></svg>
+            <span>Apps</span>
+          </button>
+          <button class="nav-item" data-view="email" type="button">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Zm0 3v.35l8 4.65 8-4.65V8l-8 4.65L4 8Z" fill="currentColor"/></svg>
+            <span>Email</span>
+          </button>
+          <button class="nav-item" data-view="timeline" type="button">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 11h4v-2h-3V7h-2v6Z" fill="currentColor"/></svg>
+            <span>Timeline</span>
+          </button>
+        </nav>
+
+        <nav class="nav nav-secondary">
+          <button class="nav-item" data-view="todos" type="button"><span>Todos</span></button>
+          <button class="nav-item" data-view="meetings" type="button"><span>Meetings</span></button>
+          <button class="nav-item" data-view="transcripts" type="button"><span>Transcripts</span></button>
+          <button class="nav-item" data-view="events" type="button"><span>Events</span></button>
+          <button class="nav-item" data-view="settings" type="button"><span>Settings</span></button>
+        </nav>
+
+        <section class="status-panel">
+          <div class="status-row">
+            <span>HTTP</span>
+            <strong id="healthStatus">Connecting</strong>
+          </div>
+          <div class="status-row">
+            <span>Frames</span>
+            <strong id="frameCount">-</strong>
+          </div>
+          <div class="status-row">
+            <span>Transcripts</span>
+            <strong id="transcriptCount">-</strong>
+          </div>
+          <div class="status-row">
+            <span>Events</span>
+            <strong id="eventCount">-</strong>
+          </div>
+        </section>
+      </aside>
+
+      <main class="content">
+        <header class="topbar" id="standardTopbar">
+          <div>
+            <h2 id="viewTitle">Overview</h2>
+            <p id="viewSubtitle">Health, activity parameters, and recent records</p>
+          </div>
+          <div class="actions" id="topbarActions">
+            <button id="topbarCaptureButton" class="primary" type="button" style="display:none">Capture now</button>
+            <button id="topbarRefreshButton" type="button">Refresh</button>
+          </div>
+        </header>
+
+        <section id="view-overview" class="view active">
+          <div class="home-page">
+            <div class="home-status-bar">
+              <div class="home-status-left">
+                <span class="rec-indicator" id="homeRecIndicator" aria-hidden="true"></span>
+                <span id="homeRecStatus">Connecting…</span>
+              </div>
+              <div class="home-status-stats" id="homeStatsLine">—</div>
+              <div class="home-status-actions">
+                <button type="button" id="captureButton" class="primary">Capture</button>
+                <button type="button" id="refreshButton">Refresh</button>
+              </div>
+            </div>
+
+            <div class="home-center">
+              <div class="home-hero">
+                <div class="home-logo" aria-hidden="true">DM</div>
+                <h2 class="home-title">DeskMate</h2>
+                <p class="home-tagline">Record your screen, audio, and actions locally — ask questions and review evidence</p>
+              </div>
+
+              <form id="homeSearchForm" class="home-search-bar">
+                <input
+                  id="homeSearchInput"
+                  type="search"
+                  placeholder="Ask about your screen, audio, and activity — e.g. What was I just doing?"
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+                <select id="homeContentType" aria-label="Content type">
+                  <option value="all">All</option>
+                  <option value="ocr">OCR / frames</option>
+                  <option value="accessibility">Accessibility</option>
+                  <option value="audio">Audio</option>
+                  <option value="input">Input events</option>
+                  <option value="memory">Memories</option>
+                </select>
+                <button type="submit" class="primary">Ask</button>
+              </form>
+
+              <div class="home-prompts" id="homePrompts"></div>
+
+              <div class="home-quick-nav">
+                <button type="button" class="home-nav-chip" data-goto="timeline">Timeline</button>
+                <button type="button" class="home-nav-chip" data-goto="apps">Apps</button>
+                <button type="button" class="home-nav-chip" data-goto="transcripts">Transcripts</button>
+              </div>
+            </div>
+
+            <section class="home-bottom-section home-search-section hidden" id="homeSearchSection">
+              <div class="home-bottom-header">
+                <h3>Ask results</h3>
+                <span class="home-ask-meta" id="homeAskStats">—</span>
+                <button type="button" id="homeSearchClear" class="ghost-btn">Clear and return to activity</button>
+              </div>
+              <div id="homeAskFeed" class="home-bottom-feed home-ask-feed">
+                <div id="homeAskToolLog" class="home-ask-tool-log hidden"></div>
+                <div id="homeAskAnswer" class="home-ask-answer hidden"></div>
+              </div>
+            </section>
+
+            <section class="home-bottom-section home-activity-section" id="homeActivitySection">
+              <div class="home-bottom-header">
+                <h3>Recent activity</h3>
+                <span class="home-activity-meta" id="homeCaptureMeta">—</span>
+              </div>
+              <div id="homeActivityFeed" class="home-bottom-feed home-activity-feed empty">Loading…</div>
+            </section>
+
+            <span id="healthMessage" hidden></span>
+            <span id="healthDetails" hidden></span>
+            <span id="activityInterval" hidden></span>
+            <span id="schemaVersion" hidden></span>
+          </div>
+        </section>
+
+        <section id="view-email" class="view">
+          <div class="email-page">
+            <section class="panel email-toolbar">
+              <div>
+                <div class="panel-title">Email connections</div>
+                <p class="muted-copy">
+                  Sign in with Gmail (Gmail API) or Outlook (Microsoft Graph). Connected accounts are used by the
+                  <strong>email-digest</strong>, <strong>Todo List Assistant</strong> and <strong>email-compose</strong> apps
+                  on the Apps page — open Apps to run those.
+                </p>
+              </div>
+              <div class="email-actions">
+                <button type="button" id="emailRefreshButton">Refresh status</button>
+              </div>
+            </section>
+
+            <div class="grid two email-grid">
+              <section class="panel email-provider" data-provider="gmail">
+                <div class="email-provider-head">
+                  <div class="panel-title">Gmail</div>
+                  <div class="email-provider-actions">
+                    <button type="button" id="gmailConnectButton">Connect</button>
+                    <button type="button" id="gmailDisconnectButton" class="ghost" style="display:none">Disconnect</button>
+                  </div>
+                </div>
+                <div id="gmailStatus" class="email-status">Loading…</div>
+                <div id="gmailAccounts" class="email-accounts"></div>
+              </section>
+
+              <section class="panel email-provider" data-provider="outlook">
+                <div class="email-provider-head">
+                  <div class="panel-title">Outlook</div>
+                  <div class="email-provider-actions">
+                    <button type="button" id="outlookConnectButton">Connect</button>
+                    <button type="button" id="outlookDisconnectButton" class="ghost" style="display:none">Disconnect</button>
+                  </div>
+                </div>
+                <div id="outlookStatus" class="email-status">Loading…</div>
+                <div id="outlookAccounts" class="email-accounts"></div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-timeline" class="view">
+          <div class="timeline-layout">
+            <section class="panel list-panel">
+              <div class="panel-title">Frame timeline</div>
+              <div id="timelineFrames" class="list empty">No data</div>
+              <div id="framesPagination" class="pagination"></div>
+            </section>
+            <section class="panel preview detail-panel">
+              <div class="panel-title">Frame details</div>
+              <img id="framePreview" alt="frame preview" />
+              <div id="frameDetails" class="detail-card muted-detail">Select a frame on the left to view details</div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-transcripts" class="view">
+          <div class="details-layout">
+            <section class="panel list-panel">
+              <div class="panel-title">Recent transcripts</div>
+              <div id="transcriptsList" class="list empty">No data</div>
+              <div id="transcriptsPagination" class="pagination"></div>
+            </section>
+            <section class="panel detail-panel">
+              <div class="panel-title">Transcript details</div>
+              <div id="transcriptDetails" class="detail-card muted-detail">Select a transcript on the left to view details</div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-events" class="view">
+          <div class="details-layout">
+            <section class="panel list-panel">
+              <div class="panel-title">Recent UI events</div>
+              <div id="eventsList" class="list empty">No data</div>
+              <div id="eventsPagination" class="pagination"></div>
+            </section>
+            <section class="panel detail-panel">
+              <div class="panel-title">Event details</div>
+              <div id="eventDetails" class="detail-card muted-detail">Select an event on the left to view details</div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-apps" class="view">
+          <div class="pipes-page">
+            <div id="appsMain" class="pipes-tab-panel active">
+              <header class="pipes-header">
+                <div class="pipes-header-text">
+                  <h2>My Apps</h2>
+                  <p>Local LLM analysis apps powered by your screen and audio data · <a href="https://github.com" target="_blank" rel="noopener">docs ↗</a></p>
+                </div>
+                <div class="pipes-header-actions">
+                  <div class="device-select">
+                    <button type="button" class="device-select-btn" id="deviceSelector" aria-haspopup="listbox">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v10H4V6Zm2 2v6h12V8H6Zm-1 10h14v2H5v-2Z" fill="currentColor"/></svg>
+                      <span>THIS DEVICE</span>
+                      <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5H7Z" fill="currentColor"/></svg>
+                    </button>
+                    <div class="device-dropdown" id="deviceDropdown" hidden>
+                      <button type="button" class="device-option active" data-device="local">
+                        <span class="status-dot online"></span>
+                        <span>this device</span>
+                        <span class="check">✓</span>
+                      </button>
+                    </div>
+                  </div>
+                  <button type="button" class="icon-btn" id="pipesRefreshButton" title="Refresh">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4V1L7 6l5 5V7c2.76 0 5 2.24 5 5 0 1.07-.34 2.06-.92 2.86l1.46 1.46A7.94 7.94 0 0 0 20 12c0-2.21-.9-4.21-2.35-5.65ZM6.35 17.65A7.96 7.96 0 0 0 12 20v3l5-5-5-5v3c-2.76 0-5-2.24-5-5 0-1.07.34-2.06.92-2.86L6.46 8.68A7.94 7.94 0 0 0 4 12c0 2.21.9 4.21 2.35 5.65Z" fill="currentColor"/></svg>
+                  </button>
+                  <button type="button" class="text-btn" id="connectionsBtn">CONNECTIONS</button>
+                </div>
+              </header>
+
+              <div class="pipes-type-tabs">
+                <button type="button" class="pipes-type-tab active" data-pipe-type="all">All (<span id="countAllTypes">0</span>)</button>
+                <button type="button" class="pipes-type-tab" data-pipe-type="scheduled">Scheduled (<span id="countScheduled">0</span>)</button>
+                <button type="button" class="pipes-type-tab" data-pipe-type="manual">Manual (<span id="countManual">0</span>)</button>
+              </div>
+
+              <div class="pipes-search-row">
+                <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5Zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14Z" fill="currentColor"/></svg>
+                <input id="pipesSearchInput" type="search" placeholder="search apps..." spellcheck="false" />
+              </div>
+
+              <div class="pipes-filter-tabs">
+                <button type="button" class="pipes-filter-tab active" data-pipe-filter="all">All (<span id="countAll">0</span>)</button>
+                <button type="button" class="pipes-filter-tab" data-pipe-filter="personal">Personal (<span id="countPersonal">0</span>)</button>
+              </div>
+
+              <div id="pipesList" class="pipes-list"></div>
+
+              <div id="appRunStatus" class="app-run-status" role="status" aria-live="polite" style="display:none"></div>
+              <section class="panel pipes-detail-panel" id="appOutputPanel" style="display:none">
+                <div class="detail-panel-header">
+                  <div class="panel-title" id="appOutputTitle">Run output</div>
+                  <button type="button" class="icon-btn detail-close" id="appOutputClose" title="Close" aria-label="Close">×</button>
+                </div>
+                <div id="appOutputContent" class="app-output-content"></div>
+              </section>
+              <section class="panel pipes-detail-panel" id="appHistoryPanel" style="display:none">
+                <div class="detail-panel-header">
+                  <div class="panel-title">Run history</div>
+                  <button type="button" class="icon-btn detail-close" id="appHistoryClose" title="Close" aria-label="Close">×</button>
+                </div>
+                <div id="appHistoryList" class="list empty">No history</div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-todos" class="view">
+          <div class="todos-page">
+            <section class="panel">
+              <div class="detail-panel-header">
+                <div class="panel-title">Todos <span id="todosOpenCount" class="todos-count"></span></div>
+                <div class="todos-actions">
+                  <select id="todoFilter" aria-label="Filter todos">
+                    <option value="open">Open</option>
+                    <option value="all">All</option>
+                    <option value="done">Done</option>
+                  </select>
+                  <button type="button" id="todoGoAppsBtn">在 Apps 中生成</button>
+                  <button type="button" id="todoRefreshBtn">Refresh</button>
+                </div>
+              </div>
+              <p class="muted-copy">
+                查看并勾选已生成的待办。要从邮件和会议提取新待办，请前往
+                <strong>Apps → Todo List Assistant</strong> 运行（可选择时间范围）。
+              </p>
+              <div class="todo-range-toolbar">
+                <span class="todo-range-label">时间范围</span>
+                <div class="modal-presets todo-range-presets" id="todoRangePresets">
+                  <button type="button" class="modal-preset" data-preset="1">1 小时</button>
+                  <button type="button" class="modal-preset" data-preset="8">8 小时</button>
+                  <button type="button" class="modal-preset" data-preset="16">16 小时</button>
+                  <button type="button" class="modal-preset" data-preset="24">24 小时</button>
+                  <button type="button" class="modal-preset" data-preset="168">7 天</button>
+                  <button type="button" class="modal-preset active" data-preset="all">全部</button>
+                  <button type="button" class="modal-preset" data-preset="custom">自定义</button>
+                </div>
+              </div>
+              <div id="todoCustomRange" class="modal-custom-range todo-custom-range hidden">
+                <label class="modal-field">
+                  <span>开始</span>
+                  <input type="datetime-local" id="todoRangeStart" />
+                </label>
+                <label class="modal-field">
+                  <span>结束</span>
+                  <input type="datetime-local" id="todoRangeEnd" />
+                </label>
+              </div>
+              <p class="todo-range-summary" id="todoRangeSummary">—</p>
+              <div id="todosList" class="todos-list list empty">No todos yet</div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-meetings" class="view">
+          <div class="details-layout">
+            <section class="panel list-panel">
+              <div class="detail-panel-header">
+                <div class="panel-title">Meetings</div>
+                <button type="button" id="meetingsRefreshBtn">Refresh</button>
+              </div>
+              <div id="meetingsList" class="list empty">No meetings</div>
+            </section>
+            <section class="panel detail-panel">
+              <div class="detail-panel-header">
+                <div class="panel-title" id="meetingDetailTitle">Meeting details</div>
+                <button type="button" id="meetingSummarizeBtn" class="primary" style="display:none">Summarize</button>
+              </div>
+              <div id="meetingRunStatus" class="app-run-status" role="status" aria-live="polite" style="display:none"></div>
+              <div id="meetingDetails" class="detail-card muted-detail">Select a meeting to view its transcript and summary</div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-settings" class="view">
+          <div class="grid two">
+            <section class="panel">
+              <div class="panel-title">Configuration</div>
+              <pre id="configDump">{}</pre>
+            </section>
+            <section class="panel">
+              <div class="panel-title">Monitors</div>
+              <div id="monitorList" class="list empty">No data</div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="emailComposeModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="emailComposeModalTitle">
+      <div class="modal-card modal-card-wide">
+        <header class="modal-header">
+          <h3 id="emailComposeModalTitle">Compose email</h3>
+          <button type="button" class="icon-btn modal-close" id="emailComposeModalClose" title="Close" aria-label="Close">×</button>
+        </header>
+        <p class="modal-desc">Draft with your connected Gmail or Outlook account. The message is saved locally unless you check Send.</p>
+        <div class="modal-form-grid">
+          <label class="modal-field">
+            <span>Account</span>
+            <select id="emailComposeProvider">
+              <option value="gmail">Gmail</option>
+              <option value="outlook">Outlook</option>
+            </select>
+          </label>
+          <label class="modal-field">
+            <span>From (connected)</span>
+            <select id="emailComposeAccount">
+              <option value="">Default account</option>
+            </select>
+          </label>
+          <label class="modal-field modal-field-full">
+            <span>To</span>
+            <input type="email" id="emailComposeTo" placeholder="recipient@example.com" autocomplete="email" />
+          </label>
+          <label class="modal-field modal-field-full">
+            <span>What to write</span>
+            <textarea id="emailComposeIntent" rows="4" placeholder="e.g. Follow up on yesterday's meeting and ask for the slide deck"></textarea>
+          </label>
+          <label class="modal-field modal-field-full">
+            <span>Reply to (optional)</span>
+            <select id="emailComposeReplyPick">
+              <option value="">New email — no reply context</option>
+            </select>
+          </label>
+          <label class="modal-field modal-field-full">
+            <span>Or paste message ID / Gmail link (advanced)</span>
+            <input type="text" id="emailComposeReplyTo" placeholder="Leave blank unless you have the API message id" spellcheck="false" />
+          </label>
+          <label class="modal-field">
+            <span>Context window</span>
+            <select id="emailComposeHours">
+              <option value="1" selected>Last 1 hour</option>
+              <option value="8">Last 8 hours</option>
+              <option value="16">Last 16 hours</option>
+              <option value="24">Last 24 hours</option>
+            </select>
+          </label>
+          <label class="modal-field modal-field-checkbox">
+            <input type="checkbox" id="emailComposeSend" />
+            <span>Send immediately after draft (requires review)</span>
+          </label>
+        </div>
+        <p class="modal-range-summary" id="emailComposeHint"></p>
+        <footer class="modal-footer">
+          <button type="button" id="emailComposeCancel">Cancel</button>
+          <button type="button" class="primary" id="emailComposeConfirm">Draft email</button>
+        </footer>
+      </div>
+    </div>
+
+    <div id="appTimeRangeModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="appTimeRangeModalTitle">
+      <div class="modal-card">
+        <header class="modal-header">
+          <h3 id="appTimeRangeModalTitle">Choose time range</h3>
+          <button type="button" class="icon-btn modal-close" id="appTimeRangeModalClose" title="Close" aria-label="Close">×</button>
+        </header>
+        <p class="modal-desc" id="appTimeRangeModalDesc">Select how far back to analyze email and activity data.</p>
+        <div class="modal-presets" id="appTimeRangePresets">
+          <button type="button" class="modal-preset" data-preset="1">Last 1 hour</button>
+          <button type="button" class="modal-preset" data-preset="8">Last 8 hours</button>
+          <button type="button" class="modal-preset active" data-preset="16">Last 16 hours</button>
+          <button type="button" class="modal-preset" data-preset="24">Last 24 hours</button>
+          <button type="button" class="modal-preset" data-preset="custom">Custom</button>
+        </div>
+        <div id="appTimeRangeCustomRange" class="modal-custom-range hidden">
+          <label class="modal-field">
+            <span>Start</span>
+            <input type="datetime-local" id="appTimeRangeStart" />
+          </label>
+          <label class="modal-field">
+            <span>End</span>
+            <input type="datetime-local" id="appTimeRangeEnd" />
+          </label>
+        </div>
+        <p class="modal-range-summary" id="appTimeRangeSummary"></p>
+        <footer class="modal-footer">
+          <button type="button" id="appTimeRangeCancel">Cancel</button>
+          <button type="button" class="primary" id="appTimeRangeConfirm">Run</button>
+        </footer>
+      </div>
+    </div>
+
+    <div id="videoExportModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="videoExportModalTitle">
+      <div class="modal-card">
+        <header class="modal-header">
+          <h3 id="videoExportModalTitle">Export screen video</h3>
+          <button type="button" class="icon-btn modal-close" id="videoExportModalClose" title="Close" aria-label="Close">×</button>
+        </header>
+        <p class="modal-desc">Choose a time range to export as a video (from captured screenshot frames).</p>
+        <div class="modal-presets" id="videoExportPresets">
+          <button type="button" class="modal-preset active" data-preset="5">Last 5 minutes</button>
+          <button type="button" class="modal-preset" data-preset="15">Last 15 minutes</button>
+          <button type="button" class="modal-preset" data-preset="60">Last 1 hour</button>
+          <button type="button" class="modal-preset" data-preset="custom">Custom</button>
+        </div>
+        <div id="videoExportCustomRange" class="modal-custom-range hidden">
+          <label class="modal-field">
+            <span>Start</span>
+            <input type="datetime-local" id="videoExportStart" />
+          </label>
+          <label class="modal-field">
+            <span>End</span>
+            <input type="datetime-local" id="videoExportEnd" />
+          </label>
+        </div>
+        <p class="modal-range-summary" id="videoExportRangeSummary"></p>
+        <footer class="modal-footer">
+          <button type="button" id="videoExportCancel">Cancel</button>
+          <button type="button" class="primary" id="videoExportConfirm">Start export</button>
+        </footer>
+      </div>
+    </div>
+
+    <template id="itemTemplate">
+      <article class="list-item">
+        <div class="item-main">
+          <div class="item-title"></div>
+          <div class="item-subtitle"></div>
+        </div>
+        <button class="item-action" type="button">View</button>
+      </article>
+    </template>
+
+    <script src="/ui/assets/app.js?v=20260602-todos-view-only" defer></script>
+  </body>
+</html>

@@ -62,7 +62,7 @@ GMAIL_INBOX_FIXTURE: list[dict[str, str]] = [
         "threadId": "18f2b3c4d5e6f7a8",
         "from": "GitHub <noreply@github.com>",
         "to": "me@example.com",
-        "subject": "[pc_assistant] PR #142 ready for review",
+        "subject": "[deskmate] PR #142 ready for review",
         "date": "Thu, 29 May 2026 11:02:11 +0800",
         "snippet": "hongbo opened PR #142: Add email-digest app.",
         "body": "View PR: https://github.com/...\n",
@@ -81,11 +81,11 @@ GMAIL_INBOX_FIXTURE: list[dict[str, str]] = [
 
 
 def _ocr_from_gmail_message(msg: dict[str, str], *, web: bool = True) -> dict:
-    """Synthesise the OCR row pc_assistant would have captured while the user
+    """Synthesise the OCR row DeskMate would have captured while the user
     was reading this exact Gmail message in the browser.
 
     Every Gmail API field we care about ends up in the on-screen text that
-    pc_assistant captures via OCR.
+    DeskMate captures via OCR.
     """
     visible_text = (
         f"{msg['subject']}\n"
@@ -233,20 +233,20 @@ def test_endpoint_capability_matrix(agent: ModuleType) -> None:
     matrix: dict[str, dict[str, str]] = {
         "list_accounts": {
             "gmail_oauth": "GET /connections/gmail/instances",
-            "pc_assistant": "n/a (single local user)",
+            "deskmate": "n/a (single local user)",
         },
         "list_messages": {
             "gmail_oauth": "GET /connections/gmail/messages",
-            "pc_assistant": "_do_email_digest_prefetch (screen-observed)",
+            "deskmate": "_do_email_digest_prefetch (screen-observed)",
         },
         "read_message": {
             "gmail_oauth": "GET /connections/gmail/messages/:id",
-            "pc_assistant": "via OCR text of opened message",
+            "deskmate": "via OCR text of opened message",
         },
         "send_message": {
             "gmail_oauth": "POST /connections/gmail/send",
-            "pc_assistant": "NOT SUPPORTED for Gmail; Outlook send uses /connections/outlook/send",
+            "deskmate": "NOT SUPPORTED for Gmail; Outlook send uses /connections/outlook/send",
         },
     }
-    assert "NOT SUPPORTED" in matrix["send_message"]["pc_assistant"]
+    assert "NOT SUPPORTED" in matrix["send_message"]["deskmate"]
     assert callable(agent._do_email_digest_prefetch)

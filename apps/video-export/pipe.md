@@ -10,7 +10,7 @@ featured: false
 
 Export a video of my screen activity from the last 5 minutes.
 
-Read pc_assistant skill first.
+Read DeskMate skill first.
 
 Use the POST /frames/export endpoint with the time range and fps=1.0. Then show me the exported video file path as an inline code block so I can watch it.
 

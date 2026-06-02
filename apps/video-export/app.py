@@ -2,7 +2,7 @@
 
 Reads pipe.md, sends to Ollama via the agent runner, lets the model
 autonomously call POST /frames/export and report the exported file path.
-Runs the pipe agent against local pc_assistant API data.
+Runs the pipe agent against local DeskMate API data.
 """
 
 from __future__ import annotations

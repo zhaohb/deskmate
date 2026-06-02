@@ -1,7 +1,7 @@
 """AI Habits — LLM agent mode.
 
 Reads pipe.md, sends to Ollama via the agent runner, lets the model
-autonomously query pc_assistant /search API per AI tool and generate
+autonomously query DeskMate /search API per AI tool and generate
 an AI usage report via the local pipe agent.
 """
 

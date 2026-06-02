@@ -1,24 +1,13 @@
-# pc_assistant
+# DeskMate
 
 <div style="text-align:center;">
-  <img src="./imgs/pc_assistant.png" alt="PC-Assistant" width="900" height="600">
+  <img src="./imgs/deskmate.png" alt="DeskMate" width="900" height="600">
 </div>
 
-Local-first PC activity recorder for **Windows**. Captures screenshots, accessibility text, UI events, clipboard activity, and optional audio transcription into a local SQLite database — then exposes everything through a REST API, browser UI, and MCP server.
+DeskMate — local-first desktop activity recorder for **Windows**. Captures screenshots, accessibility text, UI events, clipboard activity, and optional audio transcription into a local SQLite database — then exposes everything through a REST API, browser UI, and MCP server.
 
 All data stays on your machine.
 
-## Outlook OAuth / Microsoft Graph
-
-pc_assistant can connect directly to Outlook through Microsoft Graph, so email apps are not limited to OCR. Register a Microsoft Entra public client, add the redirect URI `http://127.0.0.1:3030/connections/outlook/oauth/callback`, then set `PCA_OUTLOOK__CLIENT_ID` or `[outlook] client_id` in `~/.pc_assistant/config.toml`.
-
-After starting `pc-assistant serve`, open `/connections/outlook/connect` to authorize. The API then exposes `/connections/outlook/instances`, `/connections/outlook/messages`, `/connections/outlook/messages/{id}`, and `/connections/outlook/send`.
-
-## Gmail OAuth / Gmail API
-
-pc_assistant can also connect directly to Gmail. Register a Google OAuth client, add the redirect URI `http://127.0.0.1:3030/connections/gmail/oauth/callback`, then set `PCA_GMAIL__CLIENT_ID` or `[gmail] client_id` in `~/.pc_assistant/config.toml`. If your Google client requires a secret, set `PCA_GMAIL__CLIENT_SECRET` locally rather than committing it.
-
-After starting `pc-assistant serve`, open `/connections/gmail/connect` to authorize. The API exposes `/connections/gmail/instances`, `/connections/gmail/messages`, `/connections/gmail/messages/{id}`, and `/connections/gmail/send`.
 
 ## Features
 
@@ -43,7 +32,7 @@ After starting `pc-assistant serve`, open `/connections/gmail/connect` to author
 
 ```powershell
 git clone <repo-url>
-cd pc_assistant
+cd deskmate
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[ocr-winrt,audio,mcp]"
@@ -54,20 +43,20 @@ Common extras: `[ocr-tesseract]`, `[vad]`, `[speaker]`, `[redact-onnx]`, `[full,
 ## Quick Start
 
 ```powershell
-pc-assistant ui
+deskmate ui
 ```
 
 Opens the browser UI at **http://127.0.0.1:3030/ui** and starts recording.
 
-On first run, config and data are created under `%USERPROFILE%\.pc_assistant\`.
+On first run, config and data are created under `%USERPROFILE%\.deskmate\`.
 
 ## Usage
 
 ### Browser UI
 
 ```powershell
-pc-assistant ui                  # record + API + open /ui
-pc-assistant ui --no-run-daemon  # view existing data only
+deskmate ui                  # record + API + open /ui
+deskmate ui --no-run-daemon  # view existing data only
 ```
 
 | Page | What it does |
@@ -84,18 +73,18 @@ pc-assistant ui --no-run-daemon  # view existing data only
 ### CLI
 
 ```powershell
-pc-assistant serve          # HTTP API (starts recorder by default)
-pc-assistant record         # recorder only
-pc-assistant capture-once   # one manual capture
-pc-assistant search "query" # keyword search via API
-pc-assistant mcp            # MCP stdio server (API must be running)
+deskmate serve          # HTTP API (starts recorder by default)
+deskmate record         # recorder only
+deskmate capture-once   # one manual capture
+deskmate search "query" # keyword search via API
+deskmate mcp            # MCP stdio server (API must be running)
 ```
 
 Split API and recorder into two processes:
 
 ```powershell
-pc-assistant record
-pc-assistant serve --no-run-daemon
+deskmate record
+deskmate serve --no-run-daemon
 ```
 
 ### Ask
@@ -128,25 +117,25 @@ Highlights:
 | `standup-update` | Yesterday / Today / Blockers (~150 words) |
 | `day-recap` / `time-breakdown` / `ai-habits` | Day recap, time split, AI tool usage |
 
-Requires Ollama + the pc_assistant API. Apps use the same HTTP API as Ask but run their own Ollama orchestration (prefetch + single-shot or tool loops per `pipe.md`).
+Requires Ollama + the DeskMate API. Apps use the same HTTP API as Ask but run their own Ollama orchestration (prefetch + single-shot or tool loops per `pipe.md`).
 
 ## Configuration
 
-Config file: `%USERPROFILE%\.pc_assistant\config.toml`
+Config file: `%USERPROFILE%\.deskmate\config.toml`
 
 Key sections: `[capture]`, `[a11y]`, `[ocr]`, `[audio]`, `[redact]`, `[filters]`, `[server]`
 
-Override via environment variables (`PCA_` prefix):
+Override via environment variables (`DESKMATE_` prefix):
 
 ```powershell
-$env:PCA_SERVER__PORT = "4040"
-$env:PCA_AUDIO__ENABLED = "true"
+$env:DESKMATE_SERVER__PORT = "4040"
+$env:DESKMATE_AUDIO__ENABLED = "true"
 ```
 
 ## Data
 
 ```
-%USERPROFILE%\.pc_assistant\
+%USERPROFILE%\.deskmate\
 ├── config.toml
 ├── data.db          # SQLite + FTS5
 ├── frames\          # JPEG snapshots
@@ -156,7 +145,7 @@ $env:PCA_AUDIO__ENABLED = "true"
 └── pipes\           # optional scheduled pipes
 ```
 
-To reset: stop pc_assistant, then delete `data.db` and the folders above.
+To reset: stop deskmate, then delete `data.db` and the folders above.
 
 ## API
 

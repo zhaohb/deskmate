@@ -8,9 +8,9 @@ icon: "🏢"
 featured: true
 ---
 
-Based on my pc_assistant recordings from the supplied time range, generate a standup update.
+Based on my DeskMate recordings from the supplied time range, generate a standup update.
 
-Read pc_assistant skill first. The agent runner has **already pre-fetched** activity summary, timeline, key texts, edited files, supplemental searches, and any meetings in range — you do **not** call tools.
+Read DeskMate skill first. The agent runner has **already pre-fetched** activity summary, timeline, key texts, edited files, supplemental searches, and any meetings in range — you do **not** call tools.
 
 Use this exact format:
 

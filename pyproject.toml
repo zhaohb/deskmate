@@ -3,13 +3,13 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pc_assistant"
+name = "deskmate"
 version = "0.1.0"
-description = "Local-first PC activity recorder for Windows."
+description = "DeskMate — local-first desktop activity recorder for Windows."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "pc_assistant contributors" }]
+authors = [{ name = "DeskMate contributors" }]
 keywords = ["activity", "recorder", "uia", "ocr", "memory", "windows"]
 
 dependencies = [
@@ -53,14 +53,14 @@ full = [
 ]
 
 [project.scripts]
-pc-assistant = "pc_assistant.engine.cli:app"
+deskmate = "deskmate.engine.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["pc_assistant*"]
+include = ["deskmate*"]
 
 [tool.setuptools.package-data]
-pc_assistant = ["ui/static/*.html", "ui/static/*.css", "ui/static/*.js"]
+deskmate = ["ui/static/*.html", "ui/static/*.css", "ui/static/*.js"]
 
 [tool.ruff]
 line-length = 100

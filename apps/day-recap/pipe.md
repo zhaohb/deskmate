@@ -10,7 +10,7 @@ featured: true
 
 Analyze my screen and audio recordings from the Context time range (see start/end in Context).
 
-Read pc_assistant skill first.
+Read DeskMate skill first.
 
 Use this exact format:
 

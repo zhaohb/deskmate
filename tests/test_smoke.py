@@ -1,5 +1,5 @@
 """Cross-platform smoke tests. They only exercise pure-Python paths so they
-pass on Linux/CI even though pc_assistant is primarily a Windows tool."""
+pass on Linux/CI even though deskmate is primarily a Windows tool."""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ import pytest
 
 
 def test_imports() -> None:
-    import pc_assistant  # noqa: F401
-    from pc_assistant import (  # noqa: F401
+    import deskmate  # noqa: F401
+    from deskmate import (  # noqa: F401
         config, core, db, events, paths, redact, screen,
     )
 
 
 def test_pii_redact() -> None:
-    from pc_assistant.core import find_pii_spans, remove_pii
+    from deskmate.core import find_pii_spans, remove_pii
 
     masked = remove_pii("contact me at alice@example.com or +1-555-123-4567")
     assert "alice@example.com" not in masked
@@ -28,7 +28,7 @@ def test_pii_redact() -> None:
 
 
 def test_window_filter() -> None:
-    from pc_assistant.core.filter import WindowFilter, is_app_excluded
+    from deskmate.core.filter import WindowFilter, is_app_excluded
 
     assert is_app_excluded("1Password", ["1password"])
     f = WindowFilter(ignored_windows=["Cursor::Private"], included_windows=["Chrome::"])
@@ -37,7 +37,7 @@ def test_window_filter() -> None:
 
 
 def test_incognito() -> None:
-    from pc_assistant.core import is_title_private
+    from deskmate.core import is_title_private
 
     assert is_title_private("Google — Private Browsing")
     assert is_title_private("无痕窗口")
@@ -45,7 +45,7 @@ def test_incognito() -> None:
 
 
 def test_browser_url_helpers() -> None:
-    from pc_assistant.a11y.browser_url import is_browser_app, normalize_url_text
+    from deskmate.a11y.browser_url import is_browser_app, normalize_url_text
 
     assert is_browser_app("chrome.exe")
     assert is_browser_app("msedge.exe")
@@ -57,7 +57,7 @@ def test_browser_url_helpers() -> None:
 
 
 def test_event_bus() -> None:
-    from pc_assistant import events as bus
+    from deskmate import events as bus
 
     captured: list = []
     unsub = bus.subscribe(captured.append)
@@ -82,7 +82,7 @@ def test_win_event_payload_shape() -> None:
 
 
 def test_db_roundtrip() -> None:
-    from pc_assistant.db import DatabaseManager
+    from deskmate.db import DatabaseManager
 
     with tempfile.TemporaryDirectory() as tmp:
         db = DatabaseManager(Path(tmp) / "test.db")
@@ -113,8 +113,8 @@ def test_db_roundtrip() -> None:
 
 
 def test_config_load_writes_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PC_ASSISTANT_HOME", str(tmp_path))
-    from pc_assistant.config import load
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
+    from deskmate.config import load
 
     cfg = load()
     assert (tmp_path / "config.toml").exists()
@@ -125,12 +125,12 @@ def test_config_load_writes_default(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 def test_ollama_resolve_from_config_and_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("PC_ASSISTANT_HOME", str(tmp_path))
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
     (tmp_path / "config.toml").write_text(
         '[ollama]\nmodel = "from-toml:tag"\nbase = "http://127.0.0.1:11435"\n',
         encoding="utf-8",
     )
-    from pc_assistant.engine import llm
+    from deskmate.engine import llm
 
     base, model, _timeout = llm.resolve_ollama_settings()
     assert model == "from-toml:tag"
@@ -143,7 +143,7 @@ def test_ollama_resolve_from_config_and_env(
 
 
 def test_activity_feed_curve() -> None:
-    from pc_assistant.a11y.activity_feed import ActivityFeed, ActivityKind
+    from deskmate.a11y.activity_feed import ActivityFeed, ActivityKind
 
     feed = ActivityFeed()
     feed.record(ActivityKind.KEY_PRESS)
@@ -157,7 +157,7 @@ def test_activity_feed_curve() -> None:
 
 def test_ocr_output_shape() -> None:
     """OCR shape check: values must be **strings**, not floats."""
-    from pc_assistant.screen.ocr import OcrEngine, perform_ocr
+    from deskmate.screen.ocr import OcrEngine, perform_ocr
     from PIL import Image
 
     img = Image.new("RGB", (10, 10), color="white")
@@ -167,7 +167,7 @@ def test_ocr_output_shape() -> None:
 
 
 def test_tesseract_language_mapping() -> None:
-    from pc_assistant.screen.ocr import _tesseract_languages
+    from deskmate.screen.ocr import _tesseract_languages
 
     assert _tesseract_languages(["en-US"]) == ["eng"]
     assert _tesseract_languages(["zh-CN"]) == ["chi_sim"]
@@ -175,7 +175,7 @@ def test_tesseract_language_mapping() -> None:
 
 
 def test_winrt_language_mapping() -> None:
-    from pc_assistant.screen.ocr import _winrt_languages
+    from deskmate.screen.ocr import _winrt_languages
 
     assert _winrt_languages(["en-US"]) == ["en-US"]
     assert _winrt_languages(["zh-CN"]) == ["zh-Hans"]
@@ -183,7 +183,7 @@ def test_winrt_language_mapping() -> None:
 
 
 def test_pyaudio_stream_cleanup_tolerates_closed_stream() -> None:
-    from pc_assistant.audio.capture import _close_pyaudio_stream
+    from deskmate.audio.capture import _close_pyaudio_stream
 
     class ClosedStream:
         def __init__(self) -> None:
@@ -201,8 +201,8 @@ def test_pyaudio_stream_cleanup_tolerates_closed_stream() -> None:
 
 
 def test_transcriber_offsets_vad_segments() -> None:
-    from pc_assistant.audio.transcribe import WhisperTranscriber
-    from pc_assistant.audio.vad import SpeechSegment
+    from deskmate.audio.transcribe import WhisperTranscriber
+    from deskmate.audio.vad import SpeechSegment
 
     class Segment:
         text = " hello "
@@ -247,7 +247,7 @@ def test_transcriber_offsets_vad_segments() -> None:
 
 
 def test_set_translate() -> None:
-    from pc_assistant.audio.transcribe import WHISPER_TRANSLATE, _set_translate
+    from deskmate.audio.transcribe import WHISPER_TRANSLATE, _set_translate
 
     assert WHISPER_TRANSLATE is False
     kwargs: dict = {}
@@ -258,8 +258,8 @@ def test_set_translate() -> None:
 
 
 def test_meeting_detector_links_segments(tmp_path: Path) -> None:
-    from pc_assistant.db import DatabaseManager
-    from pc_assistant.meeting import MeetingDetector, detect_meeting
+    from deskmate.db import DatabaseManager
+    from deskmate.meeting import MeetingDetector, detect_meeting
 
     assert detect_meeting(
         app_name="chrome.exe",
@@ -302,7 +302,7 @@ def test_meeting_detector_links_segments(tmp_path: Path) -> None:
 
 
 def test_speaker_embedding_roundtrip(tmp_path: Path) -> None:
-    from pc_assistant.db import DatabaseManager
+    from deskmate.db import DatabaseManager
 
     db = DatabaseManager(tmp_path / "speaker.db")
     speaker_id = db._conn.execute(  # noqa: SLF001
@@ -320,7 +320,7 @@ def test_speaker_embedding_roundtrip(tmp_path: Path) -> None:
 
 
 def test_accessibility_node_to_dict() -> None:
-    from pc_assistant.a11y.uia_tree import AccessibilityNode, ElementBounds
+    from deskmate.a11y.uia_tree import AccessibilityNode, ElementBounds
 
     node = AccessibilityNode(
         control_type="Button", is_enabled=True, depth=2,
@@ -335,8 +335,23 @@ def test_accessibility_node_to_dict() -> None:
     assert "is_password" not in d  # optional fields skipped when None
 
 
+def test_safe_control_type_survives_com_errors() -> None:
+    from deskmate.a11y.uia_tree import _safe_control_type
+
+    class _Ok:
+        ControlTypeName = "Button"
+
+    class _Bad:
+        @property
+        def ControlTypeName(self) -> str:
+            raise OSError("COM stale element")
+
+    assert _safe_control_type(_Ok()) == "Button"
+    assert _safe_control_type(_Bad()) is None
+
+
 def test_workflow_classifier_local() -> None:
-    from pc_assistant.workflow import WorkflowClassifier
+    from deskmate.workflow import WorkflowClassifier
 
     wc = WorkflowClassifier()
     assert wc.classify("chrome.exe", "GitHub - PR review") == "browsing"
@@ -345,7 +360,7 @@ def test_workflow_classifier_local() -> None:
 
 
 def test_pipes_loader(tmp_path: Path) -> None:
-    from pc_assistant.pipes import load_pipes
+    from deskmate.pipes import load_pipes
 
     (tmp_path / "demo.md").write_text(
         "---\n"
@@ -367,10 +382,10 @@ def test_pipes_loader(tmp_path: Path) -> None:
 
 
 def test_pipe_runtime_python(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PC_ASSISTANT_HOME", str(tmp_path / "home"))
-    from pc_assistant.db import DatabaseManager
-    from pc_assistant.pipes.loader import Pipe, PipeFrontmatter, PipePermissions
-    from pc_assistant.pipes.runtime import PipeRuntime
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path / "home"))
+    from deskmate.db import DatabaseManager
+    from deskmate.pipes.loader import Pipe, PipeFrontmatter, PipePermissions
+    from deskmate.pipes.runtime import PipeRuntime
 
     db = DatabaseManager(tmp_path / "pipe.db")
     pipe = Pipe(
@@ -382,8 +397,8 @@ def test_pipe_runtime_python(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         ),
         body=(
             "import json, os, pathlib\n"
-            "ctx = json.loads(pathlib.Path(os.environ['PC_ASSISTANT_PIPE_CONTEXT']).read_text())\n"
-            "pathlib.Path(os.environ['PC_ASSISTANT_OUTPUT_DIR'], 'result.txt').write_text(ctx['pipe_name'])\n"
+            "ctx = json.loads(pathlib.Path(os.environ['DESKMATE_PIPE_CONTEXT']).read_text())\n"
+            "pathlib.Path(os.environ['DESKMATE_OUTPUT_DIR'], 'result.txt').write_text(ctx['pipe_name'])\n"
             "print(ctx['db_path'] is not None)\n"
         ),
     )
@@ -399,8 +414,8 @@ def test_pipe_runtime_python(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 def test_pixel_redaction_from_ocr(tmp_path: Path) -> None:
     from PIL import Image
 
-    from pc_assistant.config import Config
-    from pc_assistant.screen.redact_image import redact_image_bytes, regions_from_ocr
+    from deskmate.config import Config
+    from deskmate.screen.redact_image import redact_image_bytes, regions_from_ocr
 
     image_path = tmp_path / "frame.jpg"
     Image.new("RGB", (100, 40), color="white").save(image_path)
@@ -423,9 +438,9 @@ def test_pixel_redaction_from_ocr(tmp_path: Path) -> None:
 
 
 def test_video_chunk_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PC_ASSISTANT_HOME", str(tmp_path))
-    from pc_assistant import paths
-    from pc_assistant.screen.video_chunks import video_chunk_path
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
+    from deskmate import paths
+    from deskmate.screen.video_chunks import video_chunk_path
 
     paths.ensure_dirs()
     p = video_chunk_path(device_name="Display 1")
@@ -435,7 +450,7 @@ def test_video_chunk_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_ui_static_files_exist() -> None:
-    from pc_assistant.ui import index_file, static_dir
+    from deskmate.ui import index_file, static_dir
 
     assert index_file().exists()
     assert (static_dir() / "app.css").exists()
@@ -443,7 +458,7 @@ def test_ui_static_files_exist() -> None:
 
 
 def test_ui_routes_registered() -> None:
-    from pc_assistant.engine.api import create_app
+    from deskmate.engine.api import create_app
 
     app = create_app()
     routes = {getattr(route, "path", "") for route in app.router.routes}

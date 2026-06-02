@@ -10,7 +10,7 @@ featured: true
 
 Build ONE unified todolist from my activity in the supplied time range (defaults to the last 24 hours). Evidence comes from TWO sources, both pre-fetched into the data section below: my **email** (Gmail / Outlook OAuth + on-screen mail tools) and my **meetings** (detected video calls + their transcripts).
 
-Read pc_assistant skill first. The agent runner has ALREADY fetched all evidence — do NOT call any further tools. Use ONLY the verified data provided.
+Read DeskMate skill first. The agent runner has ALREADY fetched all evidence — do NOT call any further tools. Use ONLY the verified data provided.
 
 Use this exact format:
 

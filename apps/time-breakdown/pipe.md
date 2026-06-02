@@ -8,9 +8,9 @@ icon: "⏱"
 featured: false
 ---
 
-Analyze my pc_assistant app usage from the supplied time range (defaults to the last 12 hours).
+Analyze my DeskMate app usage from the supplied time range (defaults to the last 12 hours).
 
-Read pc_assistant skill first. The agent runner has **already pre-fetched** activity summary and **pre-computed** application minutes, category totals, and productivity score — you do **not** call tools.
+Read DeskMate skill first. The agent runner has **already pre-fetched** activity summary and **pre-computed** application minutes, category totals, and productivity score — you do **not** call tools.
 
 Use this exact format with durations and percentages (use the pre-computed tables; do not invent minutes):
 
@@ -24,7 +24,7 @@ Use this exact format with durations and percentages (use the pre-computed table
 
 ## By Project
 - Group related activities by project / repo / topic, using `edited_files` paths and window/tab titles.
-- Name specific folders or tasks (e.g. `UX/pc_assistant`, `ollama_openvino`).
+- Name specific folders or tasks (e.g. `UX/deskmate`, `ollama_openvino`).
 
 ## Productivity Score
 - Use the pre-computed focused/unfocused minutes and score percentage.

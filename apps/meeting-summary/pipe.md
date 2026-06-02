@@ -13,7 +13,7 @@ featured: false
 
 A meeting just ended. Find it, summarize it, and patch the summary back onto its record so the user sees it next time they open the meeting.
 
-Read pc_assistant skill first so you know the meetings + search endpoints.
+Read DeskMate skill first so you know the meetings + search endpoints.
 
 step 1 — find the meeting that just ended:
 

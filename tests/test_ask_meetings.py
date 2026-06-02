@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pc_assistant.engine.ask import (
+from deskmate.engine.ask import (
     _meeting_overlaps_range,
     _slim_meeting_row,
     _slim_segment,

@@ -5,23 +5,23 @@ from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
 
-from pc_assistant.config import Config, GmailConfig
-from pc_assistant.connections.gmail import GmailConnection, build_raw_message, parse_gmail_message
-from pc_assistant.db import DatabaseManager
-from pc_assistant.engine.api import create_app
+from deskmate.config import Config, GmailConfig
+from deskmate.connections.gmail import GmailConnection, build_raw_message, parse_gmail_message
+from deskmate.db import DatabaseManager
+from deskmate.engine.api import create_app
 
 
 def test_gmail_connect_requires_client_id(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("PC_ASSISTANT_HOME", str(tmp_path))
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
     cfg = Config(gmail=GmailConfig(client_id=""))
     app = create_app(cfg=cfg, db=DatabaseManager(tmp_path / "test.db"))
     response = TestClient(app).get("/connections/gmail/auth-url")
     assert response.status_code == 400
-    assert "PCA_GMAIL__CLIENT_ID" in response.json()["error"]
+    assert "DESKMATE_GMAIL__CLIENT_ID" in response.json()["error"]
 
 
 def test_config_endpoint_redacts_gmail_client_secret(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("PC_ASSISTANT_HOME", str(tmp_path))
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
     cfg = Config(gmail=GmailConfig(client_id="google-client", client_secret="secret-value"))
     app = create_app(cfg=cfg, db=DatabaseManager(tmp_path / "test.db"))
     response = TestClient(app).get("/config")
@@ -30,7 +30,7 @@ def test_config_endpoint_redacts_gmail_client_secret(tmp_path, monkeypatch) -> N
 
 
 def test_gmail_auth_url_uses_pkce_and_gmail_scopes(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("PC_ASSISTANT_HOME", str(tmp_path))
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
     conn = GmailConnection(GmailConfig(client_id="google-client"))
     data = conn.auth_url("me@example.com")
     parsed = urlparse(data["authorization_url"])
@@ -92,7 +92,7 @@ def test_build_raw_message_for_gmail_send() -> None:
 
 
 def test_gmail_instances_are_loaded_from_token_store(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("PC_ASSISTANT_HOME", str(tmp_path))
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
     conn = GmailConnection(GmailConfig(client_id="google-client"))
     conn._write_token(
         "me@example.com",

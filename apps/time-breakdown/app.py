@@ -1,7 +1,7 @@
 """Time Breakdown — LLM agent mode.
 
 Reads pipe.md, sends to Ollama via the agent runner, lets the model
-query pc_assistant /activity-summary and generate a time breakdown
+query DeskMate /activity-summary and generate a time breakdown
 report by app, category, project, with a productivity score.
 """
 

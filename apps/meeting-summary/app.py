@@ -2,7 +2,7 @@
 
 Reads pipe.md, finds the meeting that just ended, summarizes its transcript via
 Ollama, and patches the summary back onto the meeting record (note + title).
-Runs the pipe agent against local pc_assistant API data.
+Runs the pipe agent against local DeskMate API data.
 """
 
 from __future__ import annotations

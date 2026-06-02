@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pc_assistant.engine.activity_summary import build_activity_summary, format_summary_for_agent
+from deskmate.engine.activity_summary import build_activity_summary, format_summary_for_agent
 
 
 def test_activity_summary_empty_range(tmp_path: Path) -> None:
-    from pc_assistant.db import DatabaseManager
+    from deskmate.db import DatabaseManager
 
     db = DatabaseManager(tmp_path / "sum.db")
     try:
@@ -29,7 +29,7 @@ def test_activity_summary_empty_range(tmp_path: Path) -> None:
 
 
 def test_activity_summary_with_frame_and_text(tmp_path: Path) -> None:
-    from pc_assistant.db import DatabaseManager
+    from deskmate.db import DatabaseManager
 
     db = DatabaseManager(tmp_path / "sum2.db")
     try:
@@ -49,7 +49,7 @@ def test_activity_summary_with_frame_and_text(tmp_path: Path) -> None:
         )
         db.attach_ocr(
             fid,
-            text="def main(): pass  # export report module for pc_assistant",
+            text="def main(): pass  # export report module for DeskMate",
             text_json="[]",
             engine="test",
             confidence=0.9,
@@ -87,9 +87,9 @@ def test_activity_summary_with_frame_and_text(tmp_path: Path) -> None:
 
 
 def test_is_low_value_text_filters_license_nag() -> None:
-    from pc_assistant.engine.day_recap_context import is_low_value_text
+    from deskmate.engine.day_recap_context import is_low_value_text
 
     assert is_low_value_text("Go to Settings to activate Windows.")
     assert not is_low_value_text(
-        "500: Internal Server Error when loading pc_assistant UI export feature"
+        "500: Internal Server Error when loading DeskMate UI export feature"
     )

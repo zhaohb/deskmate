@@ -6,13 +6,13 @@ from pathlib import Path
 
 
 def test_sanitize_fts5_query_chinese() -> None:
-    from pc_assistant.db.text_normalizer import sanitize_fts5_query
+    from deskmate.db.text_normalizer import sanitize_fts5_query
 
     assert sanitize_fts5_query("彩虹") == '"彩虹"'
 
 
 def test_search_audio_empty_and_filtered_queries(tmp_path: Path) -> None:
-    from pc_assistant.db import DatabaseManager
+    from deskmate.db import DatabaseManager
 
     db = DatabaseManager(tmp_path / "test.db")
     try:
@@ -29,7 +29,7 @@ def test_search_audio_empty_and_filtered_queries(tmp_path: Path) -> None:
 
 
 def test_search_frames_fts_sanitize(tmp_path: Path) -> None:
-    from pc_assistant.db import DatabaseManager
+    from deskmate.db import DatabaseManager
 
     db = DatabaseManager(tmp_path / "test.db")
     try:

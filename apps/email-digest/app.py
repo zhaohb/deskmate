@@ -2,12 +2,12 @@
 
 Reads pipe.md, lets the agent runner do the per-email-tool prefetch
 (``_do_email_digest_prefetch``), then asks Ollama to summarize the inbox
-activity captured locally by pc_assistant — apps used, top senders / threads,
+activity captured locally by DeskMate — apps used, top senders / threads,
 drafts in progress, action items, and patterns.
 
 Gmail and Outlook can be read via OAuth-backed mail APIs
 (``/connections/gmail/...``, ``/connections/outlook/...``). For all other tools
-pc_assistant reconstructs email activity from local screen / UI recordings.
+DeskMate reconstructs email activity from local screen / UI recordings.
 """
 
 from __future__ import annotations

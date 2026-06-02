@@ -30,7 +30,7 @@ from common import add_agent_time_args, agent_time_kwargs_from_args, output_dir,
 
 APP_NAME = "email-compose"
 PIPE_MD = Path(__file__).with_name("pipe.md")
-API_BASE = os.environ.get("PC_ASSISTANT_API", "http://127.0.0.1:3030")
+API_BASE = os.environ.get("DESKMATE_API", "http://127.0.0.1:3030")
 
 _GMAIL_URL_ID_RE = re.compile(
     r"mail\.google\.com/mail[^\s#]*#(?:inbox|all|sent|drafts|spam|trash|label|search)/"

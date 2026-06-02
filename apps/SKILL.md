@@ -1,6 +1,6 @@
-# pc_assistant skill
+# DeskMate skill
 
-You are an AI agent with access to pc_assistant, a local screen and audio recorder.
+You are an AI agent with access to deskmate, a local screen and audio recorder.
 You can query the user's recent screen activity, audio transcriptions, and UI events
 through the local REST API.
 

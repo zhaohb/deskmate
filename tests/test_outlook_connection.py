@@ -4,23 +4,23 @@ from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
 
-from pc_assistant.config import Config, OutlookConfig
-from pc_assistant.connections.outlook import OutlookConnection, build_send_payload, parse_graph_message
-from pc_assistant.db import DatabaseManager
-from pc_assistant.engine.api import create_app
+from deskmate.config import Config, OutlookConfig
+from deskmate.connections.outlook import OutlookConnection, build_send_payload, parse_graph_message
+from deskmate.db import DatabaseManager
+from deskmate.engine.api import create_app
 
 
 def test_outlook_connect_requires_client_id(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("PC_ASSISTANT_HOME", str(tmp_path))
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
     cfg = Config(outlook=OutlookConfig(client_id=""))
     app = create_app(cfg=cfg, db=DatabaseManager(tmp_path / "test.db"))
     response = TestClient(app).get("/connections/outlook/auth-url")
     assert response.status_code == 400
-    assert "PCA_OUTLOOK__CLIENT_ID" in response.json()["error"]
+    assert "DESKMATE_OUTLOOK__CLIENT_ID" in response.json()["error"]
 
 
 def test_outlook_auth_url_uses_pkce_and_graph_scopes(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("PC_ASSISTANT_HOME", str(tmp_path))
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
     conn = OutlookConnection(OutlookConfig(client_id="client-123"))
     data = conn.auth_url("me@example.com")
     parsed = urlparse(data["authorization_url"])
@@ -80,7 +80,7 @@ def test_build_send_payload_for_graph_send_mail() -> None:
 
 
 def test_outlook_instances_are_loaded_from_token_store(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("PC_ASSISTANT_HOME", str(tmp_path))
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
     conn = OutlookConnection(OutlookConfig(client_id="client-123"))
     conn._write_token(
         "me@example.com",

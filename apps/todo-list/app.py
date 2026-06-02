@@ -11,7 +11,7 @@ supplied time range:
 
 Both evidence blocks are handed to a single-shot extraction that emits a
 markdown checklist (`- [ ] ...`) tagging each item's source. The markdown is
-written to ``~/.pc_assistant/apps/todo-list/output/<timestamp>/todo-list.md``
+written to ``~/.deskmate/apps/todo-list/output/<timestamp>/todo-list.md``
 AND parsed into structured rows persisted to the ``todos`` table via
 ``POST /todos`` so the Todos page can show and check them off.
 """
@@ -35,7 +35,7 @@ from common import (  # noqa: E402
     output_dir,
     write_markdown,
 )
-from pc_assistant.engine.day_recap_context import range_spans_calendar_days  # noqa: E402
+from deskmate.engine.day_recap_context import range_spans_calendar_days  # noqa: E402
 
 APP_NAME = "todo-list"
 PIPE_MD = Path(__file__).with_name("pipe.md")
@@ -147,7 +147,7 @@ def _persist_todos(
 
     # Prefer writing the same SQLite file the API server uses (no HTTP hop).
     try:
-        from pc_assistant.db.manager import DatabaseManager  # noqa: WPS433
+        from deskmate.db.manager import DatabaseManager  # noqa: WPS433
 
         db = DatabaseManager()
         count = 0

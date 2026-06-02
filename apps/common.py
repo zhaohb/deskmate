@@ -1,4 +1,4 @@
-"""Shared helpers for pc_assistant local apps."""
+"""Shared helpers for DeskMate local apps."""
 
 from __future__ import annotations
 
@@ -12,23 +12,26 @@ from pathlib import Path
 from typing import Any
 
 
-def pc_assistant_home() -> Path:
-    return Path(os.environ.get("PC_ASSISTANT_HOME", Path.home() / ".pc_assistant")).expanduser()
+def deskmate_home() -> Path:
+    """Same resolution as ``deskmate.paths.root()``."""
+    from deskmate.paths import root
+
+    return root()
 
 
 def db_path() -> Path:
-    override = os.environ.get("PC_ASSISTANT_DB")
-    return Path(override).expanduser() if override else pc_assistant_home() / "data.db"
+    override = os.environ.get("DESKMATE_DB")
+    return Path(override).expanduser() if override else deskmate_home() / "data.db"
 
 
 def api_base() -> str:
-    return os.environ.get("PC_ASSISTANT_API", "http://127.0.0.1:3030").rstrip("/")
+    return os.environ.get("DESKMATE_API", "http://127.0.0.1:3030").rstrip("/")
 
 
 def connect() -> sqlite3.Connection:
     path = db_path()
     if not path.exists():
-        raise FileNotFoundError(f"pc_assistant database not found: {path}")
+        raise FileNotFoundError(f"DeskMate database not found: {path}")
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     return con
@@ -36,7 +39,7 @@ def connect() -> sqlite3.Connection:
 
 def output_dir(app_name: str) -> Path:
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-    out = pc_assistant_home() / "apps" / app_name / "output" / stamp
+    out = deskmate_home() / "apps" / app_name / "output" / stamp
     out.mkdir(parents=True, exist_ok=True)
     return out
 

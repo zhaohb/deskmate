@@ -10,7 +10,7 @@ featured: true
 
 Analyze my email-client and webmail activity from the supplied time range (defaults to the last 24 hours).
 
-Read pc_assistant skill first. The agent runner has already executed one targeted `search` per email tool (native + webmail) and pre-formatted the substantive hits into the Per-email-tool data section below. Do NOT call any further tools. Use ONLY the verified tools listed in the extra rules.
+Read DeskMate skill first. The agent runner has already executed one targeted `search` per email tool (native + webmail) and pre-formatted the substantive hits into the Per-email-tool data section below. Do NOT call any further tools. Use ONLY the verified tools listed in the extra rules.
 
 Use this exact format:
 
