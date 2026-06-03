@@ -29,6 +29,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from ..logger import get
+from .uia_thread import uia_com_session
 
 logger = get("a11y.uia")
 
@@ -283,6 +284,20 @@ def walk_focused_window(
     except ImportError:
         logger.warning("uiautomation not installed; UIA tree disabled")
         return None
+
+    with uia_com_session():
+        return _walk_focused_window_impl(
+            auto, max_depth=max_depth, hwnd=hwnd, max_nodes=max_nodes,
+        )
+
+
+def _walk_focused_window_impl(
+    auto: Any,
+    *,
+    max_depth: int,
+    hwnd: int,
+    max_nodes: int,
+) -> WindowTreeSnapshot | None:
     from datetime import datetime, timezone  # noqa: PLC0415
 
     if hwnd == 0:

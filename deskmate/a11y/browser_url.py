@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..logger import get
+from .uia_thread import uia_com_session
 
 logger = get("a11y.browser_url")
 
@@ -83,6 +84,17 @@ def resolve_browser_url(
         logger.debug("uiautomation not installed; browser URL disabled")
         return None
 
+    with uia_com_session():
+        return _resolve_browser_url_impl(auto, app_name, pid=pid, hwnd=hwnd)
+
+
+def _resolve_browser_url_impl(
+    auto: Any,
+    app_name: str,
+    *,
+    pid: int,
+    hwnd: int,
+) -> str | None:
     pid = _pid_for_uia_lookup(hwnd, pid)
     search_from = _search_root(auto, hwnd=hwnd)
 
