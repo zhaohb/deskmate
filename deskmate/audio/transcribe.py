@@ -17,16 +17,16 @@ from .vad import SileroVAD, SpeechSegment
 
 logger = get("audio.transcribe")
 
-# screenpipe: params.set_translate(false) in whisper/batch.rs (always false, not configurable)
+# Whisper translation is always disabled: we transcribe in the source language.
 WHISPER_TRANSLATE = False
 
-# screenpipe: MIN_RMS_ENERGY in whisper/batch.rs — skip near-silent audio (Whisper hallucinates)
+# Skip near-silent audio below this RMS energy (Whisper hallucinates on silence).
 MIN_RMS_ENERGY = 0.015
 
 # Minimum VAD clip duration; shorter clips produce garbage Chinese fragments
 MIN_CLIP_DURATION_S = 1.0
 
-# screenpipe whisper/batch.rs hallucination thresholds (faster-whisper equivalents)
+# Hallucination-suppression thresholds for faster-whisper.
 WHISPER_NO_SPEECH_THRESHOLD = 0.6
 WHISPER_LOG_PROB_THRESHOLD = -2.0
 WHISPER_COMPRESSION_RATIO_THRESHOLD = 2.4
@@ -35,10 +35,10 @@ ZH_INITIAL_PROMPT = "以下是普通话简体中文内容。"
 
 
 def _set_translate(transcribe_kwargs: dict, translate: bool) -> None:
-    """Mirror whisper_rs FullParams::set_translate for faster-whisper.
+    """Map a translate flag onto the faster-whisper task.
 
-    screenpipe: params.set_translate(false) → task="transcribe"
-    screenpipe: params.set_translate(true)  → task="translate" (not used in screenpipe)
+    translate=False -> task="transcribe" (keep source language)
+    translate=True  -> task="translate"  (translate to English; unused here)
     """
     transcribe_kwargs["task"] = "translate" if translate else "transcribe"
 
@@ -69,7 +69,7 @@ class WhisperTranscriber:
         self.compute_type = compute_type
         self.vad_min_segment_ms = vad_min_segment_ms
         self.vad_padding_ms = vad_padding_ms
-        # Language handling identical to screenpipe:
+        # Language handling:
         #   [] = auto-detect (Whisper decides)
         #   ["zh"] = force Simplified Chinese (skip detection, always use "zh")
         #   ["zh", "en"] = constrained detect (must be one of these)
@@ -172,15 +172,12 @@ class WhisperTranscriber:
             return self._transcribe_file(wav_path, base_offset=0.0, vad_filter=True)
 
     def _resolve_language(self, detected: str | None) -> str | None:
-        """Resolve the effective language following screenpipe's logic:
+        """Resolve the effective language:
 
         - 1 configured language → always force that language
         - 0 configured languages → auto-detect (return detected or None)
         - >1 configured languages → constrained: only accept if detected is
           in the list, otherwise fall back to the first configured language
-
-        This mirrors screenpipe's detect_language() in
-        crates/screenpipe-audio/src/transcription/whisper/detect_language.rs
         """
         if len(self.languages) == 1:
             return self.languages[0]
@@ -224,7 +221,7 @@ class WhisperTranscriber:
                 )
                 return []
 
-            # Build kwargs matching screenpipe's Whisper params:
+            # Build Whisper params:
             # - set_language(lang): force or constrain language
             # - set_translate(false): transcribe only, no translation
             transcribe_kwargs: dict = {
@@ -238,14 +235,14 @@ class WhisperTranscriber:
             _set_translate(transcribe_kwargs, WHISPER_TRANSLATE)
 
             if len(self.languages) == 1:
-                # Force single language (screenpipe: languages.len() == 1)
+                # Force single language
                 transcribe_kwargs["language"] = self.languages[0]
                 if self.languages[0] == "zh":
                     transcribe_kwargs["initial_prompt"] = ZH_INITIAL_PROMPT
             elif len(self.languages) > 1:
                 # Let faster-whisper detect, then we constrain below
                 pass
-            # else: [] = fully automatic (screenpipe: languages.is_empty())
+            # else: [] = fully automatic
 
             segments, info = self._model.transcribe(
                 str(wav_path), **transcribe_kwargs,

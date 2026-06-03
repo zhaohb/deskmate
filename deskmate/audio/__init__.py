@@ -1,4 +1,4 @@
-"""Audio capture + transcription. Mirrors `screenpipe-audio`."""
+"""Audio capture + transcription."""
 
 from .capture import AudioRecorder
 from .speaker import SpeakerIdentifier

@@ -43,7 +43,7 @@ class SpeakerIdentifier:
             return
         from ..model_status import hf_cached, loading  # noqa: PLC0415
 
-        try:  # pyannote first (matches screenpipe's go-to model)
+        try:  # pyannote first (preferred embedder)
             from pyannote.audio import Inference  # type: ignore[import-not-found]
             with loading(
                 "Speaker embedder (pyannote/embedding)",
