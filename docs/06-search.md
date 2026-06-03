@@ -100,20 +100,13 @@ Each batch is filtered by a minimum length (`min_chars`), embedded, and written
 with `INSERT OR REPLACE` into `content_embeddings`:
 
 ```mermaid
-sequenceDiagram
-    participant Loop as semantic index loop
-    participant IDX as SemanticIndexer
-    participant DB as SQLite
-    participant M as EmbeddingModel
-
-    Loop->>IDX: index_pending(max_rows)
-    loop until drained or max_rows reached
-        IDX->>DB: SELECT rows without embedding (LIMIT batch)
-        DB-->>IDX: pending texts
-        IDX->>M: embed(texts)
-        M-->>IDX: vectors or None
-        IDX->>DB: INSERT OR REPLACE content_embeddings
-    end
+flowchart TB
+  START["index_pending(max_rows)"] --> FETCH["Fetch pending rows\nwithout an embedding"]
+  FETCH --> EMBED["Embed text batch"]
+  EMBED --> STORE["INSERT OR REPLACE\ncontent_embeddings"]
+  STORE --> MORE{"More pending rows\nor max_rows not reached?"}
+  MORE -- yes --> FETCH
+  MORE -- no --> DONE["Stop"]
 ```
 
 Because the index key is `UNIQUE(content_type, content_id, model)`, re-runs are
