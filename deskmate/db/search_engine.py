@@ -569,3 +569,317 @@ class SearchEngine:
                 "frame_id": row.get("frame_id"),
             },
         )
+
+    # ─── semantic / hybrid search ────────────────────────────────────────────
+    @staticmethod
+    def _result_key(result: SearchResult) -> tuple[str, Any]:
+        """Stable identity used to merge keyword and semantic hits."""
+        p = result.payload
+        if result.kind == SearchResultKind.OCR:
+            return ("ocr", p.get("frame_id"))
+        if result.kind == SearchResultKind.AUDIO:
+            return ("audio", p.get("id") or p.get("audio_chunk_id"))
+        if result.kind == SearchResultKind.UI:
+            return ("ax", p.get("frame_id"))
+        if result.kind == SearchResultKind.INPUT:
+            return ("ui", p.get("id"))
+        return ("memory", p.get("id"))
+
+    @staticmethod
+    def _emb_content_types(ct: ContentType) -> list[str]:
+        """Map a :class:`ContentType` onto embedding content-type tags."""
+        if ct == ContentType.ALL:
+            return ["ocr", "audio", "ui"]
+        if ct in (ContentType.OCR, ContentType.ACCESSIBILITY):
+            return ["ocr"]
+        if ct == ContentType.AUDIO:
+            return ["audio"]
+        if ct == ContentType.INPUT:
+            return ["ui"]
+        return []
+
+    def _fetch_ocr_by_ids(
+        self, ids: list[int], *, app_name: str | None, window_name: str | None
+    ) -> dict[int, dict[str, Any]]:
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        wheres = [f"fft.frame_id IN ({placeholders})"]
+        args: list[Any] = list(ids)
+        if app_name:
+            wheres.append("fft.app_name LIKE '%' || ? || '%'")
+            args.append(app_name)
+        if window_name:
+            wheres.append("fft.window_name LIKE '%' || ? || '%'")
+            args.append(window_name)
+        sql = f"""
+            SELECT fft.frame_id AS frame_id,
+                   fft.timestamp AS timestamp,
+                   fft.app_name AS app_name,
+                   fft.window_name AS window_name,
+                   fft.browser_url AS browser_url,
+                   fft.ocr_text AS ocr_text,
+                   fft.accessibility_text AS accessibility_text,
+                   f.snapshot_path AS snapshot_path,
+                   f.focused AS focused,
+                   COALESCE(NULLIF(fft.accessibility_text, ''), fft.ocr_text, '') AS full_text
+              FROM frames_full_text fft
+              JOIN frames f ON f.id = fft.frame_id
+             WHERE {' AND '.join(wheres)}
+        """
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+        return {int(r["frame_id"]): r for r in rows}
+
+    def _fetch_audio_by_ids(
+        self, ids: list[int], *, speaker_ids: list[int] | None
+    ) -> dict[int, dict[str, Any]]:
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        wheres = [f"t.id IN ({placeholders})"]
+        args: list[Any] = list(ids)
+        if speaker_ids:
+            sp = ",".join("?" * len(speaker_ids))
+            wheres.append(f"t.speaker_id IN ({sp})")
+            args.extend(speaker_ids)
+        sql = f"""
+            SELECT t.id AS transcription_id,
+                   t.audio_chunk_id,
+                   t.offset_index,
+                   t.timestamp,
+                   t.transcription,
+                   t.device,
+                   t.language,
+                   t.speaker_id,
+                   t.start_time,
+                   t.end_time,
+                   t.text_length,
+                   t.redacted_transcription
+              FROM audio_transcriptions t
+             WHERE {' AND '.join(wheres)}
+        """
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+        return {int(r["transcription_id"]): r for r in rows}
+
+    def _fetch_ui_by_ids(
+        self, ids: list[int], *, app_name: str | None, window_name: str | None
+    ) -> dict[int, dict[str, Any]]:
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        wheres = [f"id IN ({placeholders})"]
+        args: list[Any] = list(ids)
+        if app_name:
+            wheres.append("app_name LIKE '%' || ? || '%'")
+            args.append(app_name)
+        if window_name:
+            wheres.append("window_title LIKE '%' || ? || '%'")
+            args.append(window_name)
+        sql = f"""
+            SELECT id, timestamp, event_type, app_name, window_title,
+                   browser_url, frame_id, data_json, element_json
+              FROM ui_events
+             WHERE {' AND '.join(wheres)}
+        """
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+        return {int(r["id"]): r for r in rows}
+
+    def _load_candidates(
+        self,
+        emb_type: str,
+        *,
+        model_name: str,
+        start_time: str | None,
+        end_time: str | None,
+        candidate_pool: int,
+    ) -> list[dict[str, Any]]:
+        wheres = ["content_type = ?", "model = ?"]
+        args: list[Any] = [emb_type, model_name]
+        if start_time:
+            wheres.append("timestamp >= ?")
+            args.append(start_time)
+        if end_time:
+            wheres.append("timestamp <= ?")
+            args.append(end_time)
+        sql = f"""
+            SELECT content_id, timestamp, embedding
+              FROM content_embeddings
+             WHERE {' AND '.join(wheres)}
+             ORDER BY timestamp DESC
+             LIMIT ?
+        """
+        args.append(candidate_pool)
+        with self._lock:
+            return self._conn.execute(sql, args).fetchall()
+
+    def semantic_search(
+        self,
+        query: str,
+        content_type: ContentType | str,
+        *,
+        model_name: str,
+        limit: int = 50,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        app_name: str | None = None,
+        window_name: str | None = None,
+        speaker_ids: list[int] | None = None,
+        candidate_pool: int = 5000,
+    ) -> list[tuple[SearchResult, float]]:
+        """Rank content by embedding cosine similarity to ``query``.
+
+        Returns ``(result, score)`` pairs ordered by descending similarity.
+        Returns an empty list if the embedder or numpy is unavailable (the
+        caller then falls back to keyword search).
+        """
+        q = (query or "").strip()
+        if not q:
+            return []
+        ct = content_type if isinstance(content_type, ContentType) else normalize_content_type(str(content_type))
+        emb_types = self._emb_content_types(ct)
+        if not emb_types:
+            return []
+        try:
+            import numpy as np  # noqa: PLC0415
+        except Exception:  # noqa: BLE001
+            return []
+        from .embeddings import blob_to_vector, get_embedder  # noqa: PLC0415
+
+        embedder = get_embedder(model_name)
+        if embedder is None:
+            return []
+        qvec = embedder.embed_one(q)
+        if not qvec:
+            return []
+        qarr = np.asarray(qvec, dtype=np.float32)
+        qnorm = float(np.linalg.norm(qarr)) or 1.0
+        qarr = qarr / qnorm
+
+        scored: list[tuple[str, int, str, float]] = []  # (emb_type, id, ts, score)
+        for emb_type in emb_types:
+            rows = self._load_candidates(
+                emb_type,
+                model_name=model_name,
+                start_time=start_time,
+                end_time=end_time,
+                candidate_pool=candidate_pool,
+            )
+            if not rows:
+                continue
+            mat = np.array([blob_to_vector(r["embedding"]) for r in rows], dtype=np.float32)
+            norms = np.linalg.norm(mat, axis=1)
+            norms[norms == 0] = 1.0
+            sims = (mat @ qarr) / norms
+            for r, sim in zip(rows, sims):
+                scored.append((emb_type, int(r["content_id"]), r["timestamp"], float(sim)))
+
+        if not scored:
+            return []
+        scored.sort(key=lambda x: x[3], reverse=True)
+        top = scored[: max(limit, 1)]
+
+        # Group ids by type, fetch full rows, then rebuild in score order.
+        ids_by_type: dict[str, list[int]] = {"ocr": [], "audio": [], "ui": []}
+        for emb_type, cid, _ts, _score in top:
+            ids_by_type[emb_type].append(cid)
+        ocr_rows = self._fetch_ocr_by_ids(ids_by_type["ocr"], app_name=app_name, window_name=window_name)
+        audio_rows = self._fetch_audio_by_ids(ids_by_type["audio"], speaker_ids=speaker_ids)
+        ui_rows = self._fetch_ui_by_ids(ids_by_type["ui"], app_name=app_name, window_name=window_name)
+
+        out: list[tuple[SearchResult, float]] = []
+        for emb_type, cid, _ts, score in top:
+            if emb_type == "ocr":
+                row = ocr_rows.get(cid)
+                if row is not None:
+                    out.append((self._ocr_result(row), score))
+            elif emb_type == "audio":
+                row = audio_rows.get(cid)
+                if row is not None:
+                    out.append((self._audio_result(row), score))
+            else:
+                row = ui_rows.get(cid)
+                if row is not None:
+                    out.append((self._input_result(row), score))
+        return out
+
+    def hybrid_search(
+        self,
+        query: str,
+        content_type: ContentType | str,
+        *,
+        model_name: str,
+        limit: int = 50,
+        offset: int = 0,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        app_name: str | None = None,
+        window_name: str | None = None,
+        frame_name: str | None = None,
+        browser_url: str | None = None,
+        focused: bool | None = None,
+        min_length: int | None = None,
+        max_length: int | None = None,
+        speaker_ids: list[int] | None = None,
+        rrf_k: int = 60,
+        candidate_pool: int = 5000,
+    ) -> list[SearchResult]:
+        """Combine keyword (FTS5/BM25) and semantic hits via Reciprocal Rank
+        Fusion.
+
+        Neither leg is sufficient on its own: keyword search nails exact terms
+        and identifiers but misses paraphrases, while embeddings capture meaning
+        but can drift on rare tokens. RRF fuses the two ranked lists using only
+        rank position (``score = Σ 1/(k + rank)``), which sidesteps the fact
+        that BM25 and cosine scores live on incomparable scales.
+
+        Falls back to the keyword list when semantic search is unavailable or
+        the query is empty.
+        """
+        pool = max((limit + offset) * 4, limit, 20)
+        fts_results = self.search(
+            query,
+            content_type,
+            limit=pool,
+            offset=0,
+            start_time=start_time,
+            end_time=end_time,
+            app_name=app_name,
+            window_name=window_name,
+            frame_name=frame_name,
+            browser_url=browser_url,
+            focused=focused,
+            min_length=min_length,
+            max_length=max_length,
+            speaker_ids=speaker_ids,
+        )
+        semantic_results = self.semantic_search(
+            query,
+            content_type,
+            model_name=model_name,
+            limit=pool,
+            start_time=start_time,
+            end_time=end_time,
+            app_name=app_name,
+            window_name=window_name,
+            speaker_ids=speaker_ids,
+            candidate_pool=candidate_pool,
+        )
+        if not semantic_results:
+            return fts_results[offset : offset + limit]
+
+        scores: dict[tuple[str, Any], float] = {}
+        holder: dict[tuple[str, Any], SearchResult] = {}
+        for rank, result in enumerate(fts_results):
+            key = self._result_key(result)
+            scores[key] = scores.get(key, 0.0) + 1.0 / (rrf_k + rank + 1)
+            holder.setdefault(key, result)
+        for rank, (result, _sim) in enumerate(semantic_results):
+            key = self._result_key(result)
+            scores[key] = scores.get(key, 0.0) + 1.0 / (rrf_k + rank + 1)
+            holder.setdefault(key, result)
+
+        ordered = sorted(holder.values(), key=lambda r: scores[self._result_key(r)], reverse=True)
+        return ordered[offset : offset + limit]

@@ -101,6 +101,10 @@ class Daemon:
             threading.Thread(target=self._audio_loop, name="daemon-audio", daemon=True),
             threading.Thread(target=self._retention_loop, name="daemon-retention", daemon=True),
         ]
+        if self.cfg.search.semantic_enabled and self.cfg.search.auto_index:
+            self._threads.append(
+                threading.Thread(target=self._semantic_index_loop, name="daemon-semantic-index", daemon=True),
+            )
         if self.cfg.capture.event_driven and self.cfg.capture.enabled:
             self._threads.append(
                 threading.Thread(
@@ -270,3 +274,22 @@ class Daemon:
                 logger.info("retention sweep: %s", removed)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("retention err: %s", exc)
+
+    def _semantic_index_loop(self) -> None:
+        """Incrementally embed new text content for semantic search."""
+        # Initial delay so startup isn't competing with the embedding download.
+        self._stop.wait(30)
+        model = self.cfg.search.embedding_model
+        while not self._stop.is_set():
+            try:
+                indexed = self.db.build_semantic_index(
+                    model_name=model,
+                    batch_size=self.cfg.search.index_batch,
+                    min_chars=self.cfg.search.min_chars,
+                    max_rows=self.cfg.search.candidate_pool,
+                )
+                if indexed:
+                    logger.info("semantic index: embedded %d new item(s)", indexed)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("semantic index err: %s", exc)
+            self._stop.wait(5 * 60)

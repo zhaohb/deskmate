@@ -710,6 +710,80 @@ class DatabaseManager:
             speaker_ids=speaker_ids,
         )
 
+    def hybrid_search(
+        self,
+        query: str | None,
+        content_type: str = "all",
+        *,
+        model_name: str,
+        limit: int = 50,
+        offset: int = 0,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        app_name: str | None = None,
+        window_name: str | None = None,
+        frame_name: str | None = None,
+        browser_url: str | None = None,
+        focused: bool | None = None,
+        min_length: int | None = None,
+        max_length: int | None = None,
+        speaker_ids: list[int] | None = None,
+        rrf_k: int = 60,
+        candidate_pool: int = 5000,
+    ) -> list[Any]:
+        """Keyword + semantic hybrid search (falls back to keyword-only)."""
+        from .search_engine import SearchEngine
+
+        return SearchEngine(self._conn, self._lock).hybrid_search(
+            query or "",
+            content_type,
+            model_name=model_name,
+            limit=limit,
+            offset=offset,
+            start_time=start_time,
+            end_time=end_time,
+            app_name=app_name,
+            window_name=window_name,
+            frame_name=frame_name,
+            browser_url=browser_url,
+            focused=focused,
+            min_length=min_length,
+            max_length=max_length,
+            speaker_ids=speaker_ids,
+            rrf_k=rrf_k,
+            candidate_pool=candidate_pool,
+        )
+
+    def build_semantic_index(
+        self,
+        *,
+        model_name: str,
+        batch_size: int = 64,
+        min_chars: int = 12,
+        max_rows: int | None = None,
+        progress: Any = None,
+    ) -> int:
+        """Embed unindexed text content. Returns rows indexed this call."""
+        from .semantic_index import SemanticIndexer
+
+        indexer = SemanticIndexer(
+            self._conn,
+            self._lock,
+            model_name=model_name,
+            batch_size=batch_size,
+            min_chars=min_chars,
+        )
+        return indexer.index_pending(max_rows=max_rows, progress=progress)
+
+    def semantic_pending_count(self, *, model_name: str, min_chars: int = 12) -> int:
+        """How many text rows still need an embedding for ``model_name``."""
+        from .semantic_index import SemanticIndexer
+
+        indexer = SemanticIndexer(
+            self._conn, self._lock, model_name=model_name, min_chars=min_chars
+        )
+        return indexer.pending_count()
+
     def search_frames(
         self,
         query: str | None,

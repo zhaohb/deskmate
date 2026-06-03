@@ -841,6 +841,9 @@ def _execute_tool(name: str, arguments: dict[str, Any], api_base: str) -> str:
             if args.get("end_time"):
                 args["end_time"] = _normalize_iso(str(args["end_time"]))
             args.setdefault("limit", 10)
+            # Prefer hybrid recall; the API ignores this unless semantic search
+            # is enabled in config, so it's a safe default.
+            args.setdefault("semantic", True)
             params = "&".join(
                 f"{k}={quote(str(v))}" for k, v in args.items() if v is not None
             )

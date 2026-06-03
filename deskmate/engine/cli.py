@@ -70,13 +70,56 @@ def ui(host: str | None = None, port: int | None = None, run_daemon: bool = True
 
 
 @app.command()
-def search(query: str, limit: int = 10, app_name: str | None = None) -> None:
+def search(query: str, limit: int = 10, app_name: str | None = None, semantic: bool = False) -> None:
     """Query the HTTP API. The daemon must be running (`deskmate serve`)."""
     cfg = load_config()
     url = f"http://{cfg.server.host}:{cfg.server.port}/search"
-    r = httpx.get(url, params={"q": query, "limit": limit, "app_name": app_name})
+    r = httpx.get(
+        url,
+        params={"q": query, "limit": limit, "app_name": app_name, "semantic": semantic},
+    )
     r.raise_for_status()
     typer.echo(json.dumps(r.json(), indent=2, ensure_ascii=False))
+
+
+@app.command()
+def index(
+    batch_size: int | None = None,
+    max_rows: int | None = None,
+) -> None:
+    """Build the semantic (vector) search index over existing content.
+
+    Embeds OCR/transcript/UI text that hasn't been indexed yet. Safe to re-run;
+    it only processes new rows. Requires the optional `[semantic]` extra.
+    """
+    cfg = load_config()
+    db = DatabaseManager()
+    model = cfg.search.embedding_model
+    pending = db.semantic_pending_count(model_name=model, min_chars=cfg.search.min_chars)
+    if pending == 0:
+        typer.echo("semantic index is up to date — nothing to do")
+        return
+    typer.echo(f"indexing {pending} item(s) with {model}…")
+
+    def _progress(content_type: str, done: int) -> None:
+        typer.echo(f"  {content_type}: {done} embedded", err=True)
+
+    indexed = db.build_semantic_index(
+        model_name=model,
+        batch_size=batch_size or cfg.search.index_batch,
+        min_chars=cfg.search.min_chars,
+        max_rows=max_rows,
+        progress=_progress,
+    )
+    if indexed == 0:
+        typer.echo(
+            "no rows indexed — is the semantic extra installed? "
+            "pip install 'deskmate[semantic]'",
+            err=True,
+        )
+    else:
+        typer.echo(f"done — embedded {indexed} item(s)")
+
 
 
 @app.command()

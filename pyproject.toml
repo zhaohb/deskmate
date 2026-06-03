@@ -39,6 +39,7 @@ redact-onnx = ["onnxruntime>=1.17", "tokenizers>=0.15", "numpy>=1.26"]
 redact-onnx-dml = ["onnxruntime-directml>=1.17; platform_system=='Windows'", "tokenizers>=0.15", "numpy>=1.26"]
 mcp = ["mcp>=1.0"]
 pipes = ["PyYAML>=6.0"]
+semantic = ["fastembed>=0.3", "numpy>=1.26"]
 dev = ["pytest>=8.0", "ruff>=0.4"]
 full = [
     "pytesseract>=0.3.10",
@@ -50,6 +51,7 @@ full = [
     "onnxruntime>=1.17",
     "tokenizers>=0.15",
     "PyYAML>=6.0",
+    "fastembed>=0.3",
     "numpy>=1.26",
 ]
 

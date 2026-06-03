@@ -538,27 +538,53 @@ def create_app(
         max_length: int | None = None,
         speaker_ids: str | None = None,  # comma-separated
         include_frames: bool = False,
+        semantic: bool = Query(
+            default=False,
+            description="Blend semantic (embedding) results with keyword search",
+        ),
         offset: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
         """Search content (FTS sanitize + merge)."""
         speaker_filter = [int(s) for s in (speaker_ids or "").split(",") if s.strip().isdigit()] or None
-        results = db.search(
-            q,
-            content_type,
-            limit=limit,
-            offset=offset,
-            start_time=start_time,
-            end_time=end_time,
-            app_name=app_name,
-            window_name=window_name,
-            frame_name=frame_name,
-            browser_url=browser_url,
-            focused=focused,
-            min_length=min_length,
-            max_length=max_length,
-            speaker_ids=speaker_filter,
-        )
+        use_semantic = semantic and cfg.search.semantic_enabled
+        if use_semantic:
+            results = db.hybrid_search(
+                q,
+                content_type,
+                model_name=cfg.search.embedding_model,
+                limit=limit,
+                offset=offset,
+                start_time=start_time,
+                end_time=end_time,
+                app_name=app_name,
+                window_name=window_name,
+                frame_name=frame_name,
+                browser_url=browser_url,
+                focused=focused,
+                min_length=min_length,
+                max_length=max_length,
+                speaker_ids=speaker_filter,
+                rrf_k=cfg.search.rrf_k,
+                candidate_pool=cfg.search.candidate_pool,
+            )
+        else:
+            results = db.search(
+                q,
+                content_type,
+                limit=limit,
+                offset=offset,
+                start_time=start_time,
+                end_time=end_time,
+                app_name=app_name,
+                window_name=window_name,
+                frame_name=frame_name,
+                browser_url=browser_url,
+                focused=focused,
+                min_length=min_length,
+                max_length=max_length,
+                speaker_ids=speaker_filter,
+            )
         items: list[dict[str, Any]] = []
         for result in results:
             item = _search_result_to_content_item(result)

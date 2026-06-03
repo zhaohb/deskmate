@@ -111,6 +111,29 @@ class OllamaConfig(BaseModel):
     chat_timeout: int = 600
 
 
+class SearchConfig(BaseModel):
+    """Semantic / hybrid search settings.
+
+    Semantic search is opt-in: it requires the optional ``fastembed`` extra and
+    a one-time embedding-model download. When disabled (or unavailable) search
+    transparently falls back to the FTS5 keyword index.
+    """
+
+    semantic_enabled: bool = False
+    # ONNX embedding model resolved by fastembed. 384-dim, CPU-friendly.
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    # Reciprocal Rank Fusion constant. Larger -> flatter rank weighting.
+    rrf_k: int = 60
+    # Max vectors scored per content type for a single semantic query.
+    candidate_pool: int = 5000
+    # Index new content from the daemon in the background.
+    auto_index: bool = True
+    # Rows embedded per indexing batch.
+    index_batch: int = 64
+    # Skip content shorter than this many characters.
+    min_chars: int = 12
+
+
 class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 3030
@@ -154,6 +177,7 @@ class Config(BaseSettings):
     filters: FilterConfig = Field(default_factory=FilterConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    search: SearchConfig = Field(default_factory=SearchConfig)
     outlook: OutlookConfig = Field(default_factory=OutlookConfig)
     gmail: GmailConfig = Field(default_factory=GmailConfig)
     retention: RetentionConfig = Field(default_factory=RetentionConfig)

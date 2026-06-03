@@ -7,7 +7,7 @@ historical migration. `_pca_migrations` stores the active schema version.
 from __future__ import annotations
 
 # Bumped whenever the consolidated schema changes.
-SCHEMA_VERSION = "20260602100000"
+SCHEMA_VERSION = "20260701120000"
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -276,4 +276,24 @@ CREATE VIRTUAL TABLE IF NOT EXISTS ui_events_fts USING fts5(
     app_name, window_title, text_content,
     tokenize = 'unicode61 remove_diacritics 2'
 );
+
+-- ─── Semantic search (vector embeddings) ───────────────────────────────────
+-- One row per indexed piece of text content. The embedding is stored as a
+-- little-endian float32 BLOB. Cosine similarity is computed in Python over a
+-- bounded candidate set; this keeps the schema portable (no vector extension).
+CREATE TABLE IF NOT EXISTS content_embeddings (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    content_type TEXT    NOT NULL,   -- 'ocr' | 'audio' | 'ui'
+    content_id   INTEGER NOT NULL,   -- frame_id | transcription_id | event_id
+    model        TEXT    NOT NULL,
+    dim          INTEGER NOT NULL,
+    embedding    BLOB    NOT NULL,
+    timestamp    TEXT    NOT NULL,
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(content_type, content_id, model)
+);
+CREATE INDEX IF NOT EXISTS idx_content_emb_type_ts
+    ON content_embeddings(content_type, timestamp);
+CREATE INDEX IF NOT EXISTS idx_content_emb_model
+    ON content_embeddings(model);
 """
