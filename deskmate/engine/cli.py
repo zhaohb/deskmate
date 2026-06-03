@@ -38,9 +38,11 @@ def serve(host: str | None = None, port: int | None = None, run_daemon: bool = T
     if run_daemon:
         d = Daemon(cfg=cfg, db=db)
         d.start()
+        if cfg.audio.enabled and d.transcriber and not d.transcriber.available and d.transcriber.user_hint:
+            typer.echo(f"Audio transcription: {d.transcriber.user_hint}", err=True)
     try:
         uvicorn.run(
-            create_app(cfg=cfg, db=db),
+            create_app(cfg=cfg, db=db, daemon=d),
             host=host or cfg.server.host,
             port=port or cfg.server.port,
             log_level="info",

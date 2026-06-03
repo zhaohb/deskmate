@@ -479,3 +479,23 @@ def test_ui_routes_registered() -> None:
     assert "/frames/{frame_id}/context" in routes
     assert "/tags/{content_type}/{item_id}" in routes
     assert "/memories" in routes
+
+
+def test_classify_model_load_error_ssl() -> None:
+    from deskmate.audio.pipeline_status import classify_model_load_error
+
+    code, _hint = classify_model_load_error(
+        Exception("SSL: CERTIFICATE_VERIFY_FAILED unable to get local issuer certificate"),
+    )
+    assert code == "model_download_ssl"
+
+
+def test_build_audio_status_disabled() -> None:
+    from deskmate.audio.pipeline_status import build_audio_status
+    from deskmate.config import Config
+
+    cfg = Config()
+    cfg.audio.enabled = False
+    status = build_audio_status(cfg)
+    assert status["error_code"] == "audio_disabled"
+    assert "enabled = true" in status["hint"]

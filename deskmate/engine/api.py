@@ -269,7 +269,25 @@ def _oauth_success_html(data: dict[str, Any]) -> str:
 <body><h1>Email connected</h1><p>{email} is ready for DeskMate.</p></body></html>"""
 
 
-def create_app(cfg: Config | None = None, db: DatabaseManager | None = None) -> FastAPI:
+def _audio_pipeline_payload(cfg: Config, db: DatabaseManager, daemon: Any) -> dict[str, Any]:
+    from ..audio.pipeline_status import build_audio_status  # noqa: PLC0415
+
+    transcriber = getattr(daemon, "transcriber", None) if daemon else None
+    capture_active = getattr(getattr(daemon, "audio", None), "capture_active", None) if daemon else None
+    stats = db.health()
+    return build_audio_status(
+        cfg,
+        transcriber=transcriber,
+        capture_active=capture_active,
+        transcript_count=int(stats.get("transcripts") or 0),
+    )
+
+
+def create_app(
+    cfg: Config | None = None,
+    db: DatabaseManager | None = None,
+    daemon: Any = None,
+) -> FastAPI:
     cfg = cfg or load_config()
     db = db or DatabaseManager()
     workflow = WorkflowClassifier()
@@ -279,6 +297,7 @@ def create_app(cfg: Config | None = None, db: DatabaseManager | None = None) -> 
     app = FastAPI(title="deskmate", version="0.2.0")
     app.state.cfg = cfg
     app.state.db = db
+    app.state.daemon = daemon
     app.mount("/ui/assets", StaticFiles(directory=static_dir()), name="ui-assets")
 
     started_at = time.time()
@@ -289,6 +308,13 @@ def create_app(cfg: Config | None = None, db: DatabaseManager | None = None) -> 
         stats = db.health()
         feed = activity_default()
         params = feed.get_capture_params()
+        audio_info = _audio_pipeline_payload(cfg, db, app.state.daemon)
+        if not audio_info.get("enabled"):
+            audio_status = "disabled"
+        elif audio_info.get("transcription_ready"):
+            audio_status = "ok" if stats.get("transcripts") else "ready, waiting for speech"
+        else:
+            audio_status = audio_info.get("error_code") or "transcription unavailable"
         return {
             "status": "ok",
             "status_code": 200,
@@ -298,11 +324,14 @@ def create_app(cfg: Config | None = None, db: DatabaseManager | None = None) -> 
             "last_frame_timestamp": stats.get("last_frame_timestamp"),
             "last_audio_timestamp": stats.get("last_audio_timestamp"),
             "frame_status": "ok" if stats.get("frames") else "no frames yet",
-            "audio_status": "ok" if stats.get("transcripts") else "off or no transcripts",
+            "audio_status": audio_status,
+            "audio_hint": audio_info.get("hint"),
+            "audio_error_code": audio_info.get("error_code"),
+            "transcription_ready": audio_info.get("transcription_ready"),
             "meeting_status": "active" if db.active_meeting() else "idle",
             "message": "deskmate running",
-            "verbose_instructions": None,
-            "device_status_details": None,
+            "verbose_instructions": audio_info.get("hint"),
+            "device_status_details": audio_info,
             "monitors": [m.name for m in list_monitors()],
             "schema_version": db.schema_version(),
             "uptime_seconds": int(time.time() - started_at),
@@ -736,12 +765,13 @@ def create_app(cfg: Config | None = None, db: DatabaseManager | None = None) -> 
 
     @app.get("/audio/device/status")
     def audio_device_status() -> dict[str, Any]:
-        return {
-            "enabled": cfg.audio.enabled,
+        payload = _audio_pipeline_payload(cfg, db, app.state.daemon)
+        payload.update({
             "microphone": cfg.audio.microphone,
             "loopback": cfg.audio.loopback,
             "recent_transcripts": len(db.recent_transcripts(limit=10)),
-        }
+        })
+        return payload
 
     @app.post("/audio/start")
     @app.post("/audio/stop")

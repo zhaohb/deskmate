@@ -12,6 +12,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from ..logger import get
+from .pipeline_status import classify_model_load_error
 from .vad import SileroVAD, SpeechSegment
 
 logger = get("audio.transcribe")
@@ -74,8 +75,13 @@ class WhisperTranscriber:
         #   ["zh", "en"] = constrained detect (must be one of these)
         self.languages: list[str] = [l for l in (languages or []) if l]
         self._model = None
+        self.load_error_code: str | None = None
+        self.load_error_detail: str | None = None
+        self.user_hint: str | None = None
         self._available = self._try_load()
         self._vad = SileroVAD(threshold=vad_threshold)
+        if not self._available and self.user_hint:
+            logger.warning("transcription unavailable: %s", self.user_hint)
 
     @property
     def available(self) -> bool:
@@ -85,17 +91,36 @@ class WhisperTranscriber:
         try:
             from faster_whisper import WhisperModel  # noqa: PLC0415
         except ImportError:
+            self.load_error_code = "missing_deps"
+            self.load_error_detail = "faster-whisper not installed"
+            self.user_hint = 'Install audio extras: pip install -e ".[audio,vad]"'
             logger.warning("faster-whisper not installed; transcription disabled")
             return False
         try:
-            self._model = WhisperModel(
-                self.model_size,
-                device=self.device,
-                compute_type=self.compute_type,
-            )
+            from ..model_status import loading, whisper_cached  # noqa: PLC0415
+
+            cached = whisper_cached(self.model_size)
+            with loading(
+                f"Whisper ({self.model_size})",
+                cached=cached,
+                detail=f"device={self.device}, compute={self.compute_type}",
+            ):
+                self._model = WhisperModel(
+                    self.model_size,
+                    device=self.device,
+                    compute_type=self.compute_type,
+                )
+            self.load_error_code = None
+            self.load_error_detail = None
+            self.user_hint = None
             return True
         except Exception as exc:  # noqa: BLE001
+            code, hint = classify_model_load_error(exc)
+            self.load_error_code = code
+            self.load_error_detail = str(exc)
+            self.user_hint = hint
             logger.warning("faster-whisper init failed: %s", exc)
+            logger.warning("hint: %s", hint)
             return False
 
     def transcribe(self, wav_path: Path) -> tuple[str, str | None]:

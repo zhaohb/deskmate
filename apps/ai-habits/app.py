@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from agent import run_agent  # noqa: E402
-from common import add_agent_time_args, agent_time_kwargs_from_args, output_dir, write_markdown  # noqa: E402
+from common import add_agent_time_args, agent_time_kwargs_from_args, output_dir, run_cli, write_markdown  # noqa: E402
 
 APP_NAME = "ai-habits"
 PIPE_MD = Path(__file__).with_name("pipe.md")
@@ -39,4 +39,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_cli(main))

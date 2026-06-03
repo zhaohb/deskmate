@@ -33,6 +33,7 @@ from common import (  # noqa: E402
     agent_time_kwargs_from_args,
     api_base,
     output_dir,
+    run_cli,
     write_markdown,
 )
 from deskmate.engine.day_recap_context import range_spans_calendar_days  # noqa: E402
@@ -234,4 +235,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_cli(main))

@@ -18,8 +18,76 @@ import http.client
 import json
 import os
 import re
+import socket
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, urlparse
+
+
+class FriendlyError(Exception):
+    """An error that prints a plain-language cause and a short fix hint.
+
+    Use this for failures a user can act on (service not running, model not
+    pulled, timeouts). ``str(err)`` renders as::
+
+        <summary>
+          Cause: <why it happened>
+          Fix:   <what to do>
+    """
+
+    def __init__(self, summary: str, *, cause: str | None = None, fix: str | None = None) -> None:
+        self.summary = summary
+        self.cause = cause
+        self.fix = fix
+        super().__init__(summary)
+
+    def __str__(self) -> str:
+        lines = [self.summary]
+        if self.cause:
+            lines.append(f"  Cause: {self.cause}")
+        if self.fix:
+            lines.append(f"  Fix:   {self.fix}")
+        return "\n".join(lines)
+
+
+# Friendly variants that also keep their builtin base type, so existing
+# ``except TimeoutError`` / ``except ConnectionError`` / ``except RuntimeError``
+# handlers keep working unchanged while the message becomes actionable.
+class FriendlyConnectionError(FriendlyError, ConnectionError):
+    pass
+
+
+class FriendlyTimeoutError(FriendlyError, TimeoutError):
+    pass
+
+
+class FriendlyHTTPError(FriendlyError, RuntimeError):
+    pass
+
+
+def _describe_endpoint(parsed: ParseResult) -> tuple[str, str, str]:
+    """Return ``(endpoint, service_name, fix_hint)`` for a known DeskMate dependency."""
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    endpoint = f"{parsed.scheme or 'http'}://{host}:{port}"
+    if port == 11434:
+        return (
+            endpoint,
+            "Ollama",
+            f"start it with `ollama serve` (or open the Ollama app), then verify with "
+            f"`curl {endpoint}/api/tags`.",
+        )
+    if port == 3030:
+        return (
+            endpoint,
+            "the DeskMate API",
+            "start it with `python -m deskmate.engine.cli serve` (or `... ui`).",
+        )
+    return (
+        endpoint,
+        "the server",
+        f"make sure the service at {endpoint} is running and reachable.",
+    )
+
 
 DEFAULT_OLLAMA_BASE = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "qwen3_8b_ov:v1"
@@ -187,8 +255,15 @@ def raw_request(
     headers: dict[str, str] | None = None,
     timeout: int = 60,
 ) -> Any:
-    """Issue an HTTP request via ``http.client`` (bypasses env proxies)."""
+    """Issue an HTTP request via ``http.client`` (bypasses env proxies).
+
+    Transport and HTTP failures are re-raised as :class:`FriendlyError`
+    subclasses that explain the cause and how to fix it, while preserving the
+    original builtin type (``TimeoutError`` / ``ConnectionError`` /
+    ``RuntimeError``) for existing handlers.
+    """
     parsed = urlparse(url)
+    endpoint, service, fix = _describe_endpoint(parsed)
     conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=timeout)
     path = parsed.path or "/"
     if parsed.query:
@@ -197,18 +272,77 @@ def raw_request(
         conn.request(method, path, body=body, headers=headers or {})
         resp = conn.getresponse()
         data = resp.read().decode("utf-8")
-    except TimeoutError:
+    except (TimeoutError, socket.timeout) as exc:
         conn.close()
-        raise
+        raise FriendlyTimeoutError(
+            f"Timed out after {timeout}s waiting for {service} at {endpoint}.",
+            cause="the server accepted the connection but did not respond in time "
+            "(the model may still be loading, or the request is too large).",
+            fix="retry, raise the timeout (config [ollama] chat_timeout or "
+            "OLLAMA_CHAT_TIMEOUT), or switch to a smaller/faster model.",
+        ) from exc
+    except ConnectionRefusedError as exc:
+        conn.close()
+        raise FriendlyConnectionError(
+            f"Cannot reach {service} at {endpoint} (connection refused).",
+            cause=f"{service} is not running, or it is not listening on {endpoint}.",
+            fix=fix,
+        ) from exc
     except OSError as exc:
         conn.close()
         if "timed out" in str(exc).lower():
-            raise TimeoutError(str(exc)) from exc
-        raise
+            raise FriendlyTimeoutError(
+                f"Timed out after {timeout}s waiting for {service} at {endpoint}.",
+                cause="no response from the server in time.",
+                fix="retry, raise the timeout, or use a smaller/faster model.",
+            ) from exc
+        raise FriendlyConnectionError(
+            f"Cannot reach {service} at {endpoint} ({exc.__class__.__name__}: {exc}).",
+            cause=f"a network error occurred while connecting to {endpoint}.",
+            fix=fix,
+        ) from exc
     conn.close()
     if resp.status >= 400:
-        raise RuntimeError(f"HTTP {resp.status}: {data[:500]}")
+        snippet = data[:500].strip()
+        cause, http_fix = _http_failure_hint(resp.status, snippet, parsed, service, fix)
+        raise FriendlyHTTPError(
+            f"{service} returned HTTP {resp.status} for {path.split('?')[0]}.",
+            cause=cause,
+            fix=http_fix,
+        )
     return json.loads(data)
+
+
+def _http_failure_hint(
+    status: int, body: str, parsed: ParseResult, service: str, default_fix: str
+) -> tuple[str, str]:
+    """Map an HTTP error status + body to a plain cause and fix hint."""
+    low = body.lower()
+    if status == 404 and ("model" in low and ("not found" in low or "try pulling" in low)):
+        model = ""
+        m = re.search(r"model '([^']+)'", body) or re.search(r'model "([^"]+)"', body)
+        if m:
+            model = m.group(1)
+        target = f"`{model}`" if model else "the configured model"
+        return (
+            f"{service} does not have {target} installed.",
+            f"pull it with `ollama pull {model or '<model>'}`, or set an installed "
+            "model via config [ollama] model (or the OLLAMA_MODEL env var). "
+            "List installed models with `ollama list`.",
+        )
+    if status in (404, 405):
+        return (
+            f"the endpoint {parsed.path} is not available on {service}.",
+            "check the URL/route, or update DeskMate if the API has changed.",
+        )
+    if status in (502, 503, 504):
+        return (
+            f"{service} is reachable but not ready to serve requests.",
+            default_fix,
+        )
+    detail = f" Response: {body}" if body else ""
+    return (f"{service} rejected the request (HTTP {status}).{detail}", default_fix)
+
 
 
 def http_get(url: str, timeout: int = 15) -> Any:

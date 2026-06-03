@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -119,3 +120,48 @@ def agent_time_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
     if hours is None:
         raise SystemExit("error: --hours or --start/--end is required")
     return {"hours": hours}
+
+
+def run_cli(main: Any) -> int:
+    """Run an app ``main`` and turn failures into plain, actionable messages.
+
+    Known, user-fixable failures (service not running, model not pulled,
+    timeouts, missing database) print a short ``cause + fix`` block instead of a
+    raw traceback. Set ``DESKMATE_DEBUG=1`` to also print the full traceback.
+    """
+    import traceback
+
+    debug = os.environ.get("DESKMATE_DEBUG") not in (None, "", "0")
+    try:
+        return int(main() or 0)
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130
+    except FileNotFoundError as exc:
+        path = getattr(exc, "filename", None) or str(exc)
+        print(
+            "DeskMate error: a required file was not found.\n"
+            f"  Cause: {path} does not exist.\n"
+            "  Fix:   start the recorder (`python -m deskmate.engine.cli serve`) so it "
+            "creates the database, or set DESKMATE_DB to the correct path.",
+            file=sys.stderr,
+        )
+        if debug:
+            traceback.print_exc()
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        from deskmate.engine.llm import FriendlyError
+
+        if isinstance(exc, FriendlyError):
+            print(f"DeskMate error: {exc}", file=sys.stderr)
+        else:
+            print(
+                f"DeskMate error: {exc.__class__.__name__}: {exc}\n"
+                "  Fix:   re-run with DESKMATE_DEBUG=1 for the full traceback, "
+                "or report this if it persists.",
+                file=sys.stderr,
+            )
+        if debug:
+            traceback.print_exc()
+        return 1
+

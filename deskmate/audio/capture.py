@@ -38,8 +38,10 @@ class AudioRecorder:
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._chunks: queue.Queue[tuple[str, Path, int]] = queue.Queue(maxsize=128)
+        self.capture_active = False
 
     def start(self) -> None:
+        self.capture_active = False
         try:
             import sounddevice as sd  # noqa: F401, PLC0415
         except ImportError:
@@ -54,12 +56,14 @@ class AudioRecorder:
             self._threads.append(threading.Thread(target=self._record_loop, args=("loopback", "loopback"), name="audio-loopback", daemon=True))
         for t in self._threads:
             t.start()
+        self.capture_active = bool(self._threads)
 
     def stop(self) -> None:
         self._stop.set()
         for t in self._threads:
             t.join(timeout=2.0)
         self._threads.clear()
+        self.capture_active = False
 
     def take_next_chunk(self, timeout: float | None = None) -> tuple[str, Path, int] | None:
         try:

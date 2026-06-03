@@ -47,7 +47,13 @@ class SileroVAD:
             return True
         try:
             from silero_vad import load_silero_vad, get_speech_timestamps  # type: ignore[import-not-found]
-            self._model = load_silero_vad()
+
+            from ..model_status import loading  # noqa: PLC0415
+
+            # The silero-vad pip package bundles the model file, so this is a
+            # local load rather than a download.
+            with loading("Silero VAD", cached=True):
+                self._model = load_silero_vad()
             self._get_speech_timestamps = get_speech_timestamps
             self._backend = "silero"
             logger.info("silero-vad loaded (sampling_rate=%d)", self.sampling_rate)

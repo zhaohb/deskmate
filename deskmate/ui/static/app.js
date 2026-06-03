@@ -336,7 +336,7 @@ function setView(name) {
 }
 
 async function refreshAll() {
-  const [health, recentFrames, recentEvents, recentTranscripts, frames, events, transcripts, appsData, config, monitors] = await Promise.all([
+  const [health, recentFrames, recentEvents, recentTranscripts, frames, events, transcripts, appsData, config, monitors, audioStatus] = await Promise.all([
     api("/health"),
     api("/frames?limit=12"),
     api("/events/recent?limit=12"),
@@ -347,8 +347,15 @@ async function refreshAll() {
     api("/apps").catch(() => ({ data: [] })),
     api("/config"),
     api("/monitors"),
+    api("/audio/device/status").catch(() => null),
   ]);
   state.health = health;
+  state.audioStatus = audioStatus || (health ? {
+    enabled: true,
+    hint: health.audio_hint,
+    error_code: health.audio_error_code,
+    transcription_ready: health.transcription_ready,
+  } : null);
   state.recentFrames = recentFrames;
   state.recentEvents = recentEvents;
   state.recentTranscripts = recentTranscripts;
@@ -453,7 +460,10 @@ function renderHealth() {
   $("#transcriptCount").textContent = h.transcripts ?? "-";
   $("#eventCount").textContent = h.events ?? "-";
   $("#healthMessage").textContent = h.message || h.status || "-";
-  $("#healthDetails").textContent = `Frames: ${h.frame_status || "-"} · Audio: ${h.audio_status || "-"}`;
+  const audioHint = h.audio_hint || state.audioStatus?.hint;
+  $("#healthDetails").textContent = audioHint
+    ? `Frames: ${h.frame_status || "-"} · Audio: ${h.audio_status || "-"} — ${audioHint}`
+    : `Frames: ${h.frame_status || "-"} · Audio: ${h.audio_status || "-"}`;
   $("#activityInterval").textContent = h.activity?.recommended_interval_ms ?? "-";
   $("#schemaVersion").textContent = h.schema_version || "-";
 }
@@ -638,6 +648,27 @@ function renderEvents() {
   renderPagination("events", events.length);
 }
 
+function transcriptsEmptyMessage() {
+  const a = state.audioStatus || {};
+  const fromHealth = state.health?.audio_hint;
+  if (a.hint || fromHealth) {
+    return a.hint || fromHealth;
+  }
+  if (a.enabled === false) {
+    return "Audio is disabled. Set [audio] enabled = true in ~/.deskmate/config.toml and restart DeskMate.";
+  }
+  if (a.error_code === "missing_deps") {
+    return 'Install audio support: pip install -e ".[audio,vad]" then restart.';
+  }
+  if (a.error_code && String(a.error_code).startsWith("model_download")) {
+    return "Whisper model could not be downloaded. Fix SSL/network (certifi, proxy, or HF mirror) and pre-download the model — see ~/.deskmate/logs/deskmate.log";
+  }
+  if (a.error_code === "model_not_cached") {
+    return `Download the Whisper model (${a.model_repo || "Systran/faster-whisper-small"}), then restart DeskMate.`;
+  }
+  return "No transcripts yet — enable audio, fix Whisper model load (see logs), and speak for 30+ seconds.";
+}
+
 function renderTranscripts() {
   const transcripts = state.transcripts || [];
   const render = (transcript) => listItem({
@@ -646,7 +677,7 @@ function renderTranscripts() {
     actionLabel: "Details",
     onAction: () => selectTranscript(transcript),
   });
-  renderList("#transcriptsList", transcripts, render, "No transcripts yet — enable audio and ensure speech is being captured");
+  renderList("#transcriptsList", transcripts, render, transcriptsEmptyMessage());
   renderPagination("transcripts", transcripts.length);
 }
 

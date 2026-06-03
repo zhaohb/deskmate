@@ -28,6 +28,7 @@ from common import (  # noqa: E402
     normalize_capture_text,
     output_dir,
     deskmate_home,
+    run_cli,
     write_markdown,
 )
 
@@ -416,4 +417,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_cli(main))

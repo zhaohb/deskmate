@@ -24,6 +24,7 @@ dependencies = [
     "httpx>=0.27",
     "anyio>=4.2",
     "pywin32>=306; platform_system=='Windows'",
+    "comtypes>=1.4.8; platform_system=='Windows'",
     "uiautomation>=2.0; platform_system=='Windows'",
     "psutil>=5.9",
 ]

@@ -41,9 +41,15 @@ class SpeakerIdentifier:
     def _ensure(self) -> None:
         if self._backend != "uninitialized":
             return
+        from ..model_status import hf_cached, loading  # noqa: PLC0415
+
         try:  # pyannote first (matches screenpipe's go-to model)
             from pyannote.audio import Inference  # type: ignore[import-not-found]
-            self._embedder = Inference("pyannote/embedding", device="cpu")
+            with loading(
+                "Speaker embedder (pyannote/embedding)",
+                cached=hf_cached("pyannote/embedding", ("pytorch_model.bin", "config.yaml")),
+            ):
+                self._embedder = Inference("pyannote/embedding", device="cpu")
             self._backend = "pyannote"
             logger.info("speaker embedder: pyannote")
             return
@@ -51,11 +57,16 @@ class SpeakerIdentifier:
             pass
         try:
             from speechbrain.inference.speaker import EncoderClassifier  # type: ignore[import-not-found]
-            self._embedder = EncoderClassifier.from_hparams(
-                source="speechbrain/spkrec-ecapa-voxceleb",
-                savedir="./.cache/spkrec-ecapa",
-                run_opts={"device": "cpu"},
-            )
+            with loading(
+                "Speaker embedder (speechbrain ECAPA)",
+                cached=Path("./.cache/spkrec-ecapa").exists()
+                or hf_cached("speechbrain/spkrec-ecapa-voxceleb", ("embedding_model.ckpt", "hyperparams.yaml")),
+            ):
+                self._embedder = EncoderClassifier.from_hparams(
+                    source="speechbrain/spkrec-ecapa-voxceleb",
+                    savedir="./.cache/spkrec-ecapa",
+                    run_opts={"device": "cpu"},
+                )
             self._backend = "speechbrain"
             logger.info("speaker embedder: speechbrain (ECAPA)")
             return
