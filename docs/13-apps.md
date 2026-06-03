@@ -11,7 +11,7 @@ Covers `apps/`.
 
 ## Layout
 
-```
+```text
 apps/
   agent.py          # shared LLM orchestrator (tool calling, rounds, logging)
   common.py         # shared helpers (API/DB connect, paths, time, arg parsing)
@@ -52,6 +52,23 @@ flowchart TB
 4. The final report is written to a timestamped output folder under
    `~/.deskmate/apps/<name>/output/`.
 
+### Search behavior in apps
+
+`apps/agent.py` now mirrors `engine/ask.py`: app-driven `/search` requests default
+to `semantic=true`, which means apps **prefer hybrid retrieval** when they ask the
+API for context. This is mainly useful for recap/summary-style apps, where the
+prompt wording often differs from the exact captured text.
+
+That default is still safe because the API remains the policy gate:
+
+- if `cfg.search.semantic_enabled = true`, the API runs hybrid search
+   (FTS5/BM25 + semantic + RRF fusion);
+- if semantic search is disabled, the API ignores the semantic preference and
+   falls back to keyword-only search.
+
+So the app layer gets a single stable contract, while the server keeps control of
+cost, model availability, and rollout.
+
 ## Why this shape
 
 - **`pipe.md` is the spec; `app.py` is just a runner.** Small local models (≈4B)
@@ -62,6 +79,9 @@ flowchart TB
   and only feed verified hits to the LLM, which curbs hallucination.
 - **Summary-first.** Recap/standup apps call `activity_summary` for broad context
   before targeted `search`.
+- **Hybrid by default, fallback in the API.** Apps ask for the richer retrieval
+   mode by default, but the server can still degrade to FTS5/BM25 when embeddings
+   are disabled or unavailable.
 - **Per-app budgets.** Different apps set different `max_search` / `max_rounds` /
   `num_predict` limits to match their needs.
 

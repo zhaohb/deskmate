@@ -2,59 +2,47 @@
 
 ## Purpose
 
-Retrieve relevant captured content three ways — exact keyword (FTS5/BM25),
-semantic (vector similarity), and a hybrid that fuses both — over OCR text, audio
-transcripts, UI/accessibility text, and memories. This doc also traces the full
-life of an **embedding**: where it comes from, where it is stored, and how it is
-used at query time.
+   OCR["ocr_text"] --> FTS["FTS5 tables<br/>inline and immediate"]
+   TR["audio_transcriptions"] --> FTS
+   UI["ui_events text and clipboard"] --> FTS
 
-Covers `deskmate/db/search_engine.py`, `embeddings.py`, `semantic_index.py`, and
-the `SearchConfig` block in `config.py`.
+   OCR --> FIND["find rows without embedding"]
+   TR --> FIND
+   UI --> FIND
+   FIND --> EMB["embed batch"]
+   EMB --> BLOB["pack float32 blob"]
+   BLOB --> CE["content_embeddings"]
 
-## Key files
-
-| File | Role |
-|------|------|
-| `embeddings.py` | `EmbeddingModel` (lazy fastembed/ONNX), `get_embedder`, `vector_to_blob` / `blob_to_vector` |
-| `semantic_index.py` | `SemanticIndexer` — finds unembedded rows and writes vectors to `content_embeddings` |
-| `search_engine.py` | `search` (keyword), `semantic_search`, `hybrid_search` |
-| `text_normalizer.py` | Query sanitization for the FTS5 path |
-| `config.py` (`SearchConfig`) | Feature flags and tuning knobs |
-
-## Where embeddings sit in the pipeline
-
-An embedding is a fixed-length vector of floats that represents the *meaning* of a
-piece of text, so that paraphrases land near each other — something keyword/FTS5
-indexing can never do. In DeskMate, embeddings live entirely on the **write-side
-index path** and the **read-side semantic path**; they never touch capture.
+   Q["user query"] --> QEMB["embed query once"]
+   QEMB --> SCAN["load candidate vectors"]
+   CE --> SCAN
+   SCAN --> SEMR["semantic results"]
+   Q --> KWR["keyword results"]
+   SEMR --> RRF["RRF fusion"]
+   KWR --> RRF
+   RRF --> OUT["hybrid results"]
 
 ```mermaid
 flowchart TB
-    subgraph Capture["capture / audio (unchanged)"]
-        OCR["ocr_text"]
-        TR["audio_transcriptions"]
-        UI["ui_events (text/clipboard)"]
-    end
-    OCR & TR & UI --> FTS["FTS5 tables<br/>(inline, immediate)"]
+   OCR["ocr_text"] --> FTS["FTS5 tables<br/>inline and immediate"]
+   TR["audio_transcriptions"] --> FTS
+   UI["ui_events text and clipboard"] --> FTS
 
-    subgraph Indexing["background: semantic index loop"]
-        FIND["find rows WITHOUT an<br/>embedding for current model"]
-        EMB["EmbeddingModel.embed(batch)"]
-        BLOB["vector_to_blob (f32 LE)"]
-        FIND --> EMB --> BLOB --> CE[("content_embeddings")]
-    end
-    OCR & TR & UI -. drives .-> FIND
+   OCR --> FIND["find rows without embedding"]
+   TR --> FIND
+   UI --> FIND
+   FIND --> EMB["embed batch"]
+   EMB --> BLOB["pack float32 blob"]
+   BLOB --> CE["content_embeddings"]
 
-    subgraph Query["query time"]
-        Q["user query"] --> QEMB["embed query once"]
-        QEMB --> SCAN["load candidate vectors<br/>from content_embeddings"]
-        CE --> SCAN
-        SCAN --> SIM["cosine (dot product)"]
-        SIM --> SEMR["semantic results"]
-        Q --> KWR["keyword results (FTS5)"]
-        SEMR & KWR --> RRF{{"RRF fusion"}}
-        RRF --> OUT["hybrid results"]
-    end
+   Q["user query"] --> QEMB["embed query once"]
+   QEMB --> SCAN["load candidate vectors"]
+   CE --> SCAN
+   SCAN --> SEMR["semantic results"]
+   Q --> KWR["keyword results"]
+   SEMR --> RRF["RRF fusion"]
+   KWR --> RRF
+   RRF --> OUT["hybrid results"]
 ```
 
 The key idea: **capture writes raw text + FTS5 inline and never blocks on
@@ -101,10 +89,10 @@ with `INSERT OR REPLACE` into `content_embeddings`:
 
 ```mermaid
 flowchart TB
-  START["index_pending(max_rows)"] --> FETCH["Fetch pending rows\nwithout an embedding"]
-  FETCH --> EMBED["Embed text batch"]
-  EMBED --> STORE["INSERT OR REPLACE\ncontent_embeddings"]
-  STORE --> MORE{"More pending rows\nor max_rows not reached?"}
+   START["index_pending(max_rows)"] --> FETCH["Fetch pending rows<br/>without an embedding"]
+   FETCH --> EMBED["Embed text batch"]
+   EMBED --> STORE["Insert or replace<br/>content_embeddings"]
+   STORE --> MORE{"More pending rows<br/>or max_rows not reached?"}
   MORE -- yes --> FETCH
   MORE -- no --> DONE["Stop"]
 ```
@@ -116,12 +104,15 @@ model name (old vectors are ignored by queries that filter on `model`).
 ## 3. Querying — `search_engine.py`
 
 ### Keyword search
+
 FTS5 `MATCH` over the per-type virtual tables, ordered by BM25. Queries are run
 through `text_normalizer` first so screen-captured/code-like text matches. Always
 available, no model needed.
 
 ### Semantic search
+
 `semantic_search()`:
+
 1. Embeds the query once (`embed_one`) and normalizes it.
 2. Loads a **bounded candidate set** from `content_embeddings` — filtered by
    `content_type`, `model`, and optional time range, `ORDER BY timestamp DESC
@@ -135,6 +126,7 @@ If NumPy or the embedder is unavailable, it returns `[]` and the caller falls ba
 to keyword search.
 
 ### Hybrid search (RRF)
+
 `hybrid_search()` runs both legs and fuses them with **Reciprocal Rank Fusion**,
 which uses only each item's *rank* (not its raw score):
 
@@ -147,9 +139,9 @@ unchanged.
 
 ```mermaid
 flowchart LR
-    Q["query"] --> KW["FTS5 → ranked list A"]
-    Q --> SE["semantic → ranked list B"]
-    KW --> F{{"for each item:<br/>Σ 1/(60+rank+1)"}}
+   Q["query"] --> KW["FTS5 ranked list A"]
+   Q --> SE["semantic ranked list B"]
+   KW --> F["RRF score per item"]
     SE --> F
     F --> SORT["sort by fused score"]
     SORT --> OUT["hybrid results"]
@@ -171,7 +163,21 @@ flowchart LR
 
 - HTTP: `GET /search?...&semantic=true` (gated on `semantic_enabled`).
 - CLI: `deskmate search --semantic`, and `deskmate index` to build/backfill vectors.
-- `engine/ask.py` defaults its tool calls to `semantic=true` when enabled.
+- `engine/ask.py` defaults its tool calls to `semantic=true`.
+- `apps/agent.py` also defaults app-issued search calls to `semantic=true`.
+
+In other words, both the Ask agent and the app runner now **prefer hybrid
+retrieval by default**. That does **not** mean every search always runs the
+embedding leg: the API still checks `cfg.search.semantic_enabled`, and only then
+dispatches to `hybrid_search()`. If semantic search is disabled, the same request
+automatically falls back to the normal FTS5/BM25 path.
+
+This split is intentional:
+
+- the **caller** (`ask` or `apps`) expresses a preference for hybrid recall;
+- the **API** decides whether the environment can actually satisfy that request;
+- the **search engine** either runs keyword + semantic + RRF, or degrades to
+   keyword-only without changing the caller contract.
 
 ## Design trade-offs
 

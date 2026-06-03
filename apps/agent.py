@@ -342,7 +342,13 @@ def _execute_ai_habits_search(args: dict[str, Any], session: ToolSession) -> str
         tried.append(proc)
         params = "&".join(
             f"{k}={quote(str(v))}"
-            for k, v in {**base, "content_type": "all", "app_name": proc, "limit": limit}.items()
+            for k, v in {
+                **base,
+                "content_type": "all",
+                "app_name": proc,
+                "limit": limit,
+                "semantic": True,
+            }.items()
             if v is not None
         )
         result = _http_get(f"{API_BASE}/search?{params}")
@@ -353,7 +359,13 @@ def _execute_ai_habits_search(args: dict[str, Any], session: ToolSession) -> str
         tried.append(f"q={q_fb}")
         params = "&".join(
             f"{k}={quote(str(v))}"
-            for k, v in {**base, "content_type": "all", "q": q_fb, "limit": limit}.items()
+            for k, v in {
+                **base,
+                "content_type": "all",
+                "q": q_fb,
+                "limit": limit,
+                "semantic": True,
+            }.items()
             if v is not None
         )
         result = _http_get(f"{API_BASE}/search?{params}")
@@ -430,6 +442,9 @@ def execute_tool(
                 cfg = _pipe_config(session.pipe_name)
                 if cfg:
                     args.setdefault("limit", cfg.search_limit)
+            # Prefer hybrid recall; the API ignores this unless semantic search
+            # is enabled in config, so it's a safe default.
+            args.setdefault("semantic", True)
             if session and session.pipe_name == "ai-habits" and session.format_for_llm:
                 clean = dict(args)
                 clean.pop("q", None)  # per-tool search uses process names, not generic q
@@ -648,6 +663,7 @@ def _do_content_search(
         f"limit={limit}",
         f"start_time={quote(start)}",
         f"end_time={quote(end)}",
+        "semantic=true",
     ]
     if app_name:
         params.append(f"app_name={quote(app_name)}")
