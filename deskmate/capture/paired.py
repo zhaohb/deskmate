@@ -15,7 +15,6 @@ OCR and accessibility data.
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 from datetime import datetime, timezone
@@ -23,7 +22,7 @@ from typing import Any
 
 from .. import events as bus
 from ..a11y.browser_url import resolve_browser_url
-from ..a11y.uia_tree import foreground_window, walk_focused_window
+from ..a11y.uia_tree import foreground_window, walk_focused_window, INTERACTIVE_TYPES
 from ..a11y.win_events import foreground_app_name
 from ..config import Config
 from ..core import is_app_excluded, is_title_private
@@ -36,6 +35,63 @@ from ..screen.ocr import OcrEngine, perform_ocr
 from ..screen.snapshot import SnapshotWriter
 
 logger = get("capture.paired")
+
+
+def _flatten_elements(root: Any, cfg: Config, max_rows: int) -> list[dict[str, Any]]:
+    """Flatten an AccessibilityNode tree into normalized element rows (P1).
+
+    Preorder walk over the whole tree (so ``node_index`` is stable), but only
+    *meaningful* nodes are emitted: those carrying a name/value, or that are
+    interactive, or focused. ``parent_index`` points at the nearest *kept*
+    ancestor so the emitted rows still form a navigable forest. Password fields
+    never expose their value.
+    """
+    if root is None:
+        return []
+    rows: list[dict[str, Any]] = []
+    counter = 0
+
+    def visit(node: Any, kept_parent: int | None) -> None:
+        nonlocal counter
+        if len(rows) >= max_rows:
+            return
+        idx = counter
+        counter += 1
+        role = node.control_type or ""
+        is_interactive = any(role.lower() == t.lower() for t in INTERACTIVE_TYPES)
+        name = (node.name or "").strip() or None
+        if node.is_password:
+            value = None
+        else:
+            raw = (node.value or "").strip()
+            value = maybe_redact(raw, cfg) if raw else None
+        keep = bool(name or value or is_interactive or node.is_focused)
+        next_parent = kept_parent
+        if keep:
+            bounds = None
+            b = node.bounds
+            if b is not None:
+                bounds = f"{b.x:.0f},{b.y:.0f},{b.width:.0f},{b.height:.0f}"
+            rows.append({
+                "node_index": idx,
+                "parent_index": kept_parent,
+                "depth": node.depth,
+                "role": role,
+                "name": name,
+                "value": value,
+                "automation_id": (node.automation_id or "").strip() or None,
+                "is_focused": bool(node.is_focused),
+                "is_interactive": is_interactive,
+                "bounds": bounds,
+            })
+            next_parent = idx
+        for child in node.children:
+            if len(rows) >= max_rows:
+                break
+            visit(child, next_parent)
+
+    visit(root, None)
+    return rows
 
 
 class PairedCapture:
@@ -192,6 +248,16 @@ class PairedCapture:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("a11y attach failed: %s", exc)
+
+            # P1: normalized element rows (gradual rollout; off by default).
+            if self.cfg.a11y.persist_elements and tree.root is not None:
+                try:
+                    rows = _flatten_elements(
+                        tree.root, self.cfg, self.cfg.a11y.elements_max_rows_per_frame
+                    )
+                    self.db.attach_elements(frame_id, rows)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("elements attach failed: %s", exc)
 
         bus.send(bus.EventType.FRAME_WRITTEN, frame_id=frame_id, monitor_id=monitor.id, app_name=app, window_title=title, trigger=trigger)
         return frame_id

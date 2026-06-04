@@ -32,7 +32,7 @@ def apply_text(text: str, rules: list[str] | None = None) -> str:
     return remove_pii(text, rules=rules)
 
 
-def maybe_redact(text: str, cfg: "Config") -> str:
+def maybe_redact(text: str, cfg: Config) -> str:
     """Convenience: respects `cfg.redact.enabled`. Synchronous regex pass."""
     if not text or not cfg.redact.enabled:
         return text

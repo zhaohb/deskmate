@@ -7,7 +7,7 @@ historical migration. `_pca_migrations` stores the active schema version.
 from __future__ import annotations
 
 # Bumped whenever the consolidated schema changes.
-SCHEMA_VERSION = "20260701120000"
+SCHEMA_VERSION = "20260901120000"
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -92,6 +92,30 @@ CREATE TABLE IF NOT EXISTS frame_accessibility (
     FOREIGN KEY (elements_ref_frame_id) REFERENCES frames(id)
 );
 CREATE INDEX IF NOT EXISTS idx_acc_ref_frame    ON frame_accessibility(elements_ref_frame_id);
+
+-- ─── elements (normalized accessibility nodes, P1) ─────────────────────────
+-- One row per meaningful UIA node, flattened from frame_accessibility.tree_json.
+-- Only written for "new content" frames (frame_accessibility.elements_ref_frame_id
+-- IS NULL); dedup pointers reuse the referenced frame's rows. Rows cascade-delete
+-- with their frame.
+CREATE TABLE IF NOT EXISTS elements (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    frame_id       INTEGER NOT NULL,
+    node_index     INTEGER NOT NULL,          -- preorder index within the frame's tree
+    parent_index   INTEGER,                   -- node_index of parent (NULL = root)
+    depth          INTEGER NOT NULL DEFAULT 0,
+    role           TEXT NOT NULL DEFAULT '',  -- control_type
+    name           TEXT,
+    value          TEXT,                      -- redacted; NULL for password fields
+    automation_id  TEXT,
+    is_focused     INTEGER NOT NULL DEFAULT 0,
+    is_interactive INTEGER NOT NULL DEFAULT 0,
+    bounds         TEXT,                      -- "l,t,w,h" or NULL
+    FOREIGN KEY (frame_id) REFERENCES frames(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_elements_frame ON elements(frame_id);
+CREATE INDEX IF NOT EXISTS idx_elements_role  ON elements(role);
+CREATE INDEX IF NOT EXISTS idx_elements_focus ON elements(frame_id, is_focused);
 
 -- ─── ui events ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS ui_events (
@@ -274,6 +298,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS ui_events_fts USING fts5(
     timestamp UNINDEXED,
     event_type UNINDEXED,
     app_name, window_title, text_content,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS elements_fts USING fts5(
+    element_id UNINDEXED,
+    frame_id UNINDEXED,
+    role UNINDEXED,
+    name, value,
     tokenize = 'unicode61 remove_diacritics 2'
 );
 

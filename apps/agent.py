@@ -214,7 +214,8 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "q": {"type": "string", "description": "FTS search query (optional)"},
-                    "content_type": {"type": "string", "enum": ["all", "ocr", "audio", "ui"]},
+                    "content_type": {"type": "string", "enum": ["all", "ocr", "audio", "ui", "element"]},
+                    "role": {"type": "string", "description": "With content_type=element, filter UI controls by UIA role"},
                     "app_name": {"type": "string", "description": "Filter by app process name"},
                     "start_time": {"type": "string", "description": "ISO 8601 start time"},
                     "end_time": {"type": "string", "description": "ISO 8601 end time"},
@@ -564,7 +565,7 @@ def _do_frames_export(start: str, end: str, verbose: bool = False) -> str:
         "limit": 1000,
     }
     if verbose:
-        echo_stderr(f"  [export] POST /frames/export fps=1.0 ...")
+        echo_stderr("  [export] POST /frames/export fps=1.0 ...")
     try:
         result = _http_post(f"{API_BASE}/frames/export", body, timeout=60)
     except Exception as exc:
@@ -585,7 +586,7 @@ def _do_frames_export(start: str, end: str, verbose: bool = False) -> str:
     if verbose:
         echo_stderr(f"  [export] success={success}, frames={frame_count}, path={file_path}")
 
-    lines = [f"### POST /frames/export — Result\n"]
+    lines = ["### POST /frames/export — Result\n"]
     lines.append(f"- success: {success}")
     lines.append(f"- frame_count: {frame_count}")
     if file_path:
@@ -595,7 +596,7 @@ def _do_frames_export(start: str, end: str, verbose: bool = False) -> str:
     if reason:
         lines.append(f"- reason: {reason}")
     lines.append(f"- time_range: {start} to {end}")
-    lines.append(f"- fps: 1.0")
+    lines.append("- fps: 1.0")
     try:
         frame_count_int = int(frame_count)
     except (TypeError, ValueError):
@@ -659,7 +660,7 @@ def _do_content_search(
     verbose: bool = False,
 ) -> list[dict[str, Any]]:
     params = [
-        f"content_type=all",
+        "content_type=all",
         f"limit={limit}",
         f"start_time={quote(start)}",
         f"end_time={quote(end)}",
@@ -2480,17 +2481,19 @@ def _do_prompt_journal_prefetch(
 
     Pulls two high-signal sources via ``/raw_sql``:
 
-    1. ``ui_events.event_type='text'`` — keystroke text emitted by
-       :mod:`deskmate.a11y.input_hooks` after the user finished typing.
-       Filtered to AI tool windows/URLs/processes.
+    1. ``ui_events.event_type='text'`` (``$.source='send'``) — a snapshot of the
+       focused chat input box read via UIA by
+       :mod:`deskmate.a11y.input_hooks` the moment the user pressed Enter /
+       Ctrl+Enter. Individual keystrokes are never recorded. Filtered to AI
+       tool windows/URLs/processes.
     2. ``frame_accessibility.focused_role IN (Edit, Document, AXTextArea, …)``
        joined with ``frames`` matching the same AI tool patterns — captures
-       text sitting in the active chat input field even when no flush event
+       text sitting in the active chat input field even when no send event
        fired.
 
     Returns ``(data_text, verified_labels, prompts)`` where ``prompts`` is a
     deduped list of ``{"ts": HH:MM, "tool": label, "text": prompt_body,
-    "source": "keystroke"|"input_field"}`` rows usable for deterministic
+    "source": "send"|"input_field"}`` rows usable for deterministic
     block emission when the LLM fails to extract anything.
     """
     sections: list[str] = []
@@ -2498,20 +2501,23 @@ def _do_prompt_journal_prefetch(
     prompts: list[dict[str, str]] = []
     _seen_keys: set[str] = set()
 
-    # ── 1. Keystroke text events in AI windows ────────────────────────────
+    # ── 1. Send-snapshot text events in AI windows ───────────────────────────────
     match_sql = _ai_match_sql(
         app_col="app_name", title_col="window_title", url_col="browser_url",
     )
     ts_start = _sql_quote(start)
     ts_end = _sql_quote(end)
+    from deskmate.a11y.ui_event_types import ui_event_text_sql  # noqa: PLC0415
+
+    text_expr = ui_event_text_sql("data_json")
     sql_keystrokes = (
         "SELECT timestamp, COALESCE(app_name,'') AS app, "
         "COALESCE(window_title,'') AS win, COALESCE(browser_url,'') AS url, "
-        "COALESCE(json_extract(data_json,'$.text'), '') AS text "
+        f"{text_expr} AS text "
         "FROM ui_events "
         "WHERE event_type='text' "
         f"AND timestamp >= {ts_start} AND timestamp <= {ts_end} "
-        "AND length(COALESCE(json_extract(data_json,'$.text'), '')) >= 5 "
+        f"AND length({text_expr}) >= 5 "
         f"AND {match_sql} "
         "ORDER BY timestamp ASC "
         f"LIMIT {int(limit)}"
@@ -2538,12 +2544,12 @@ def _do_prompt_journal_prefetch(
             keystroke_lines.append(
                 f"- [{ts}] tool={tool} app={row.get('app','')} "
                 f"win={row.get('win','')[:60]} url={(row.get('url','') or '')[:80]}\n"
-                f"  keystroke> {preview}"
+                f"  sent> {preview}"
             )
             _upsert_prompt_journal_entry(
                 prompts,
                 _seen_keys,
-                {"ts": ts, "iso_ts": iso_ts, "tool": tool, "text": text, "source": "keystroke"},
+                {"ts": ts, "iso_ts": iso_ts, "tool": tool, "text": text, "source": "send"},
             )
     except Exception as exc:  # noqa: BLE001
         if verbose:
@@ -2551,13 +2557,13 @@ def _do_prompt_journal_prefetch(
 
     if keystroke_lines:
         sections.append(
-            "### Source A — keystroke text events (highest confidence)\n"
+            "### Source A — sent-prompt snapshots (highest confidence)\n"
             + "\n".join(keystroke_lines)
         )
     else:
         sections.append(
-            "### Source A — keystroke text events (highest confidence)\n"
-            "(no keystroke text events captured inside AI tool windows in this window)"
+            "### Source A — sent-prompt snapshots (highest confidence)\n"
+            "(no sent-prompt snapshots captured inside AI tool windows in this window)"
         )
 
     # ── 2. Focused-input accessibility snapshots ──────────────────────────
@@ -2620,11 +2626,71 @@ def _do_prompt_journal_prefetch(
             + "\n".join(focused_lines)
         )
 
+    # ── 3. Element-table input snapshots (P2; only when persist_elements on) ──
+    # Covers input boxes that were NOT the focused control at capture time
+    # (e.g. multi-pane chat UIs). Empty when the elements table is unused, so
+    # this degrades gracefully to Sources A/B above.
+    element_role_clause = "(" + " OR ".join(
+        f"e.role = {_sql_quote(r)}" for r in _PROMPT_INPUT_ROLES
+    ) + ")"
+    sql_elements = (
+        "SELECT f.timestamp, COALESCE(f.app_name,'') AS app, "
+        "COALESCE(f.window_name,'') AS win, COALESCE(f.browser_url,'') AS url, "
+        "COALESCE(e.role,'') AS role, COALESCE(e.value,'') AS val "
+        "FROM elements e "
+        "JOIN frames f ON e.frame_id = f.id "
+        f"WHERE f.timestamp >= {ts_start} AND f.timestamp <= {ts_end} "
+        f"AND {element_role_clause} "
+        "AND length(COALESCE(e.value,'')) >= 5 "
+        f"AND {frames_match_sql} "
+        "ORDER BY f.timestamp ASC "
+        f"LIMIT {int(limit)}"
+    )
+    element_lines: list[str] = []
+    try:
+        body = {"query": sql_elements}
+        result = _http_post(f"{API_BASE}/raw_sql", body, timeout=20)
+        for row in (result.get("data") or [])[:limit]:
+            iso_ts = str(row.get("timestamp", ""))
+            ts = format_ts_local(iso_ts)
+            val = normalize_capture_text(row.get("val") or "")
+            if not val or _is_prompt_noise(val):
+                continue
+            tool = _classify_tool(
+                str(row.get("app", "")), str(row.get("win", "")), str(row.get("url", "")),
+            )
+            if not tool:
+                continue
+            verified_set.add(tool)
+            preview = val.replace("\n", " ")
+            if len(preview) > 600:
+                preview = preview[:600] + "...(truncated for agent context)"
+            element_lines.append(
+                f"- [{ts}] tool={tool} role={row.get('role','')} "
+                f"win={row.get('win','')[:60]}\n"
+                f"  input_field> {preview}"
+            )
+            _upsert_prompt_journal_entry(
+                prompts,
+                _seen_keys,
+                {"ts": ts, "iso_ts": iso_ts, "tool": tool, "text": val, "source": "input_field"},
+            )
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            echo_stderr(f"  [prompt-journal] elements SQL failed: {exc}")
+
+    if element_lines:
+        sections.append(
+            "### Source B2 — input field snapshots from element table (any pane)\n"
+            + "\n".join(element_lines)
+        )
+
     verified = sorted(verified_set)
     if verbose:
         echo_stderr(
             f"  [prompt-journal] keystroke_lines={len(keystroke_lines)} "
-            f"focused_lines={len(focused_lines)} verified={verified}",        )
+            f"focused_lines={len(focused_lines)} element_lines={len(element_lines)} "
+            f"verified={verified}",        )
 
     if not verified:
         return ("(no AI-tool activity detected in this time window via keystroke "
@@ -2658,7 +2724,7 @@ def _run_prompt_extraction(
         "You are a DeskMate prompt extraction agent.\n\n"
         "CRITICAL RULES:\n"
         "1. ONLY use the Per-AI-tool data below. NEVER invent prompts, timestamps, tools or topics.\n"
-        "2. Every line below starting with '  keystroke> ' or '  input_field> ' IS A USER PROMPT BY CONSTRUCTION (keyboard hook output or focused chat input). EMIT a block for it unless it is obviously AI-generated prose (multi-paragraph polished writing, fenced code blocks, or text starting with 'Sure!'/\"Here's\"/'Certainly'/'I'd be happy').\n"
+        "2. Every line below starting with '  sent> ' or '  input_field> ' IS A USER PROMPT BY CONSTRUCTION (Enter/send snapshot of the chat input box, or focused chat input). EMIT a block for it unless it is obviously AI-generated prose (multi-paragraph polished writing, fenced code blocks, or text starting with 'Sure!'/\"Here's\"/'Certainly'/'I'd be happy').\n"
         "3. When in doubt, INCLUDE the prompt — false positives are acceptable, missed prompts are not.\n"
         "4. Use only the tools that actually appear in the data: " + ", ".join(verified) + ". The tool label is the value after `tool=` on the same evidence line.\n"
         "5. Every HH:MM timestamp must come from a real entry in the data (use 24h clock derived from its timestamp).\n"
@@ -2673,7 +2739,7 @@ def _run_prompt_extraction(
         "8. Length: short (<50 words), medium (50-200), long (200+).\n"
         "9. Topic MUST be a 2-5 word summary DERIVED FROM THE PROMPT CONTENT/INTENT. Never use a window title (e.g. `README.md`) or file path as the topic.\n"
         "10. Deduplicate by the first 80 chars of the prompt body.\n"
-        "11. Output ONLY when there are zero `keystroke>`/`input_field>` evidence lines (or all are obviously AI prose): output exactly one line: NO_NEW_PROMPTS — and nothing else.\n"
+        "11. Output ONLY when there are zero `sent>`/`input_field>` evidence lines (or all are obviously AI prose): output exactly one line: NO_NEW_PROMPTS — and nothing else.\n"
         "12. No preamble. No trailing commentary. Either ## blocks or NO_NEW_PROMPTS.\n"
     )
     system_prompt = f"{rules}\n{skill_text}\n"

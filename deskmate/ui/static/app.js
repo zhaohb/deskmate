@@ -274,6 +274,17 @@ function rawBlock(label, data) {
   return details;
 }
 
+function collapsibleSection(summaryText, contentEl, { open = false } = {}) {
+  const details = document.createElement("details");
+  details.className = "raw-details collapsible-section";
+  if (open) details.open = true;
+
+  const summary = document.createElement("summary");
+  summary.textContent = summaryText;
+  details.append(summary, contentEl);
+  return details;
+}
+
 function bodyBlock(text) {
   const body = document.createElement("div");
   body.className = "detail-body";
@@ -483,7 +494,7 @@ function buildActivityFeed() {
       kind: "screen",
       ts: frame.timestamp,
       title: frame.app_name || "unknown",
-      preview: textPreview(frame.window_name || frame.ocr_text),
+      preview: textPreview(frame.accessibility_text || frame.window_name || frame.ocr_text),
       onClick: () => selectFrame(frame.id || frame.frame_id),
     });
   }
@@ -1606,19 +1617,21 @@ function renderFrameDetail(detail) {
     ax.className = "detail-section";
     const axLabel = document.createElement("div");
     axLabel.className = "detail-section-label";
-    axLabel.textContent = "Accessibility text (usually closer to actual window content)";
+    axLabel.textContent = "Window text (accessibility)";
     ax.append(axLabel, bodyBlock(detail.accessibility_text));
     el.append(ax);
   }
 
   if (detail.ocr_text) {
-    const ocr = document.createElement("div");
-    ocr.className = "detail-section";
-    const ocrLabel = document.createElement("div");
-    ocrLabel.className = "detail-section-label";
-    ocrLabel.textContent = "OCR (full-screen capture; may include taskbar/watermark noise)";
-    ocr.append(ocrLabel, bodyBlock(textPreview(detail.ocr_text, 8000)));
-    el.append(ocr);
+    const ocrLen = detail.ocr_text.length;
+    const summary = detail.accessibility_text
+      ? `OCR (full-screen fallback, ${ocrLen.toLocaleString()} chars — click to expand; may include taskbar/noise)`
+      : `OCR (full-screen, ${ocrLen.toLocaleString()} chars — no accessibility text for this frame)`;
+    el.append(
+      collapsibleSection(summary, bodyBlock(textPreview(detail.ocr_text, 8000)), {
+        open: !detail.accessibility_text,
+      }),
+    );
   }
 
   if (!detail.accessibility_text && !detail.ocr_text) {

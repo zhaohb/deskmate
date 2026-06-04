@@ -3,8 +3,12 @@
 ## Purpose
 
 Observe what the user is doing via Windows UI Automation (UIA) and low-level
-hooks: window focus changes, clicks, keystrokes, clipboard activity, and the
-structured accessibility tree of the focused window.
+hooks: window focus changes, clicks, sent prompts (Enter), clipboard activity,
+and the structured accessibility tree of the focused window.
+
+We do **not** record individual keystrokes. Instead, on Enter / Ctrl+Enter the
+input hook takes a single UIA snapshot of the focused input box (the
+already-composed text the user is about to send).
 
 Covers `deskmate/a11y/`.
 
@@ -13,7 +17,7 @@ Covers `deskmate/a11y/`.
 | File | Role |
 |------|------|
 | `win_events.py` | `WinEventWatcher` — owns a Win32 message pump + `SetWinEventHook` for focus/foreground/name-change events |
-| `input_hooks.py` | Low-level `WH_KEYBOARD_LL` / `WH_MOUSE_LL` hooks with keystroke debouncing |
+| `input_hooks.py` | Low-level `WH_KEYBOARD_LL` / `WH_MOUSE_LL` hooks; on Enter/Ctrl+Enter takes a UIA snapshot of the focused input box (no per-character logging) |
 | `clipboard.py` | `ClipboardWatcher` polling `GetClipboardSequenceNumber` to detect copy events |
 | `uia_thread.py` | Dedicated COM/STA thread (`UIAutomationInitializerInThread`) for all UIA calls |
 | `uia_tree.py` | UIA tree walker with `CacheRequest` batching → structured text + tree JSON |
@@ -47,9 +51,12 @@ flowchart LR
 
 - **WinEventWatcher** runs its own message pump because `SetWinEventHook`
   callbacks are only delivered to a thread that pumps messages.
-- **InputHooks** install global low-level keyboard/mouse hooks; keystrokes are
-  **debounced (~300 ms)** so a burst of typing becomes a single "typed" event
-  instead of thousands.
+- **InputHooks** install global low-level keyboard/mouse hooks. Individual
+  characters are never recorded; on **Enter / Ctrl+Enter** (a "send", but not
+  Shift+Enter which is a newline) the hook schedules an off-thread UIA read of
+  the focused input box and emits one `text` event with `source="send"`. The
+  UIA read runs on a short-lived worker thread, never the hook callback, because
+  UIA calls can block.
 - **UIA thread** initializes COM in single-threaded apartment (STA) mode and is the
   *only* thread allowed to touch UIA objects, avoiding cross-apartment marshalling
   errors.
@@ -78,8 +85,9 @@ capture triggering (see [02 — Capture](02-capture.md)).
    thread that satisfies their OS requirements, instead of fighting threading rules.
 2. **CacheRequest batching** — Trades a slightly larger single request for far
    fewer COM round-trips; the main lever for acceptable capture latency.
-3. **Keystroke debouncing** — Privacy- and noise-friendly: stores *that* typing
-   happened, not a keylogger stream.
+3. **Send-time input-box snapshots** — Privacy- and noise-friendly: rather than
+   logging every keystroke, captures the composed prompt once at send (Enter),
+   reading the full value (including IME / pasted / voice input) via UIA.
 4. **Polling the clipboard sequence number** — Cheap and reliable; avoids fragile
    clipboard-viewer chain APIs.
 5. **Graceful absence** — If `comtypes`/UIA is unavailable, the recorder still runs

@@ -20,7 +20,7 @@ class Pattern:
     title: str
 
     @classmethod
-    def parse(cls, raw: str) -> "Pattern":
+    def parse(cls, raw: str) -> Pattern:
         if "::" in raw:
             app, title = raw.split("::", 1)
             return cls(app=_norm(app), title=_norm(title))

@@ -12,7 +12,6 @@ Flow (mirrors the agentic Ask pattern):
 from __future__ import annotations
 
 import json
-import os
 import re
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -22,8 +21,6 @@ from urllib.parse import quote
 
 from . import llm
 from .llm import http_get as _http_get
-from .llm import http_post as _http_post
-from .llm import strip_thinking as _strip_thinking
 
 OLLAMA_BASE, OLLAMA_MODEL, _OLLAMA_CHAT_TIMEOUT = llm.resolve_ollama_settings()
 MAX_ROUNDS = 8
@@ -52,7 +49,8 @@ ASK_TOOLS = [
                 "type": "object",
                 "properties": {
                     "q": {"type": "string", "description": "Search query (optional)"},
-                    "content_type": {"type": "string", "enum": ["all", "ocr", "audio", "ui"]},
+                    "content_type": {"type": "string", "enum": ["all", "ocr", "audio", "ui", "element"]},
+                    "role": {"type": "string", "description": "With content_type=element, filter UI controls by UIA role (e.g. EditControl, ButtonControl, DocumentControl)"},
                     "app_name": {"type": "string", "description": "Filter by process name"},
                     "start_time": {"type": "string", "description": "ISO 8601 start"},
                     "end_time": {"type": "string", "description": "ISO 8601 end"},

@@ -20,6 +20,7 @@ class SearchResultKind(str, Enum):
     AUDIO = "audio"
     UI = "ui"
     INPUT = "input"
+    ELEMENT = "element"
     MEMORY = "memory"
 
 
@@ -91,6 +92,7 @@ class SearchEngine:
         min_length: int | None = None,
         max_length: int | None = None,
         speaker_ids: list[int] | None = None,
+        role: str | None = None,
     ) -> list[SearchResult]:
         ct = content_type if isinstance(content_type, ContentType) else normalize_content_type(str(content_type))
         q = query or ""
@@ -198,6 +200,19 @@ class SearchEngine:
                 window_name=window_name,
             ):
                 results.append(self._input_result(row))
+
+        elif ct == ContentType.ELEMENT:
+            for row in self._search_elements(
+                q,
+                limit=limit,
+                offset=offset,
+                start=start_time,
+                end=end_time,
+                app_name=app_name,
+                window_name=window_name,
+                role=role,
+            ):
+                results.append(self._element_result(row))
 
         elif ct == ContentType.MEMORY:
             for row in self._search_memory(
@@ -440,6 +455,66 @@ class SearchEngine:
         with self._lock:
             return self._conn.execute(sql, args).fetchall()
 
+    def _search_elements(
+        self,
+        query: str,
+        *,
+        limit: int,
+        offset: int,
+        start: str | None,
+        end: str | None,
+        app_name: str | None,
+        window_name: str | None,
+        role: str | None,
+    ) -> list[dict[str, Any]]:
+        """Search normalized accessibility elements by role and/or text (P3).
+
+        When ``query`` is given it runs against ``elements_fts`` (name/value);
+        ``role`` filters on the structured column. Either may be omitted.
+        """
+        wheres = ["1=1"]
+        args: list[Any] = []
+        if query.strip():
+            sanitized = sanitize_fts5_query(query)
+            if sanitized:
+                wheres.append(
+                    "e.id IN (SELECT element_id FROM elements_fts "
+                    "WHERE elements_fts MATCH ?)"
+                )
+                args.append(sanitized)
+        if role:
+            wheres.append("e.role = ?")
+            args.append(role)
+        if app_name:
+            wheres.append("f.app_name LIKE '%' || ? || '%'")
+            args.append(app_name)
+        if window_name:
+            wheres.append("f.window_name LIKE '%' || ? || '%'")
+            args.append(window_name)
+        if start:
+            wheres.append("f.timestamp >= ?")
+            args.append(start)
+        if end:
+            wheres.append("f.timestamp <= ?")
+            args.append(end)
+        sql = f"""
+            SELECT e.id AS element_id, e.frame_id AS frame_id,
+                   e.role AS role, e.name AS name, e.value AS value,
+                   e.automation_id AS automation_id, e.is_focused AS is_focused,
+                   e.bounds AS bounds,
+                   f.timestamp AS timestamp,
+                   f.app_name AS app_name, f.window_name AS window_name,
+                   f.browser_url AS browser_url, f.snapshot_path AS file_path
+              FROM elements e
+              JOIN frames f ON f.id = e.frame_id
+             WHERE {' AND '.join(wheres)}
+             ORDER BY f.timestamp DESC
+             LIMIT ? OFFSET ?
+        """
+        args.extend([limit, offset])
+        with self._lock:
+            return self._conn.execute(sql, args).fetchall()
+
     def _search_memory(
         self,
         query: str,
@@ -558,6 +633,30 @@ class SearchEngine:
         )
 
     @staticmethod
+    def _element_result(row: dict[str, Any]) -> SearchResult:
+        return SearchResult(
+            kind=SearchResultKind.ELEMENT,
+            timestamp=row.get("timestamp") or "",
+            payload={
+                "id": row.get("element_id"),
+                "element_id": row.get("element_id"),
+                "frame_id": row.get("frame_id"),
+                "role": row.get("role") or "",
+                "name": row.get("name") or "",
+                "value": row.get("value") or "",
+                "text": row.get("value") or row.get("name") or "",
+                "automation_id": row.get("automation_id"),
+                "is_focused": bool(row.get("is_focused")),
+                "bounds": row.get("bounds"),
+                "timestamp": row.get("timestamp") or "",
+                "app_name": row.get("app_name") or "",
+                "window_name": row.get("window_name") or "",
+                "browser_url": row.get("browser_url"),
+                "file_path": row.get("file_path") or "",
+            },
+        )
+
+    @staticmethod
     def _memory_result(row: dict[str, Any]) -> SearchResult:
         return SearchResult(
             kind=SearchResultKind.MEMORY,
@@ -583,6 +682,8 @@ class SearchEngine:
             return ("ax", p.get("frame_id"))
         if result.kind == SearchResultKind.INPUT:
             return ("ui", p.get("id"))
+        if result.kind == SearchResultKind.ELEMENT:
+            return ("element", p.get("element_id"))
         return ("memory", p.get("id"))
 
     @staticmethod

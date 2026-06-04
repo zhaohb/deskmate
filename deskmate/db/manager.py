@@ -224,6 +224,48 @@ class DatabaseManager:
             )
             self._reindex_frame_fts(frame_id)
 
+    def attach_elements(self, frame_id: int, elements: list[dict[str, Any]]) -> None:
+        """Replace the normalized element rows for a frame (P1).
+
+        Each dict carries: node_index, parent_index, depth, role, name, value,
+        automation_id, is_focused, is_interactive, bounds. Rows cascade-delete
+        with the frame; this is a full replace so re-capture stays idempotent.
+        The ``elements_fts`` index is kept in sync for role-scoped search (P3).
+        """
+        with self._lock:
+            self._conn.execute("DELETE FROM elements WHERE frame_id = ?", (frame_id,))
+            self._conn.execute("DELETE FROM elements_fts WHERE frame_id = ?", (frame_id,))
+            for e in elements:
+                cur = self._conn.execute(
+                    """INSERT INTO elements
+                       (frame_id, node_index, parent_index, depth, role, name,
+                        value, automation_id, is_focused, is_interactive, bounds)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        frame_id,
+                        int(e["node_index"]),
+                        e.get("parent_index"),
+                        int(e.get("depth", 0)),
+                        e.get("role") or "",
+                        e.get("name"),
+                        e.get("value"),
+                        e.get("automation_id"),
+                        1 if e.get("is_focused") else 0,
+                        1 if e.get("is_interactive") else 0,
+                        e.get("bounds"),
+                    ),
+                )
+                name = e.get("name")
+                value = e.get("value")
+                if name or value:
+                    self._conn.execute(
+                        """INSERT INTO elements_fts
+                           (element_id, frame_id, role, name, value)
+                           VALUES (?,?,?,?,?)""",
+                        (int(cur.lastrowid), frame_id, e.get("role") or "",
+                         name or "", value or ""),
+                    )
+
     def _reindex_frame_fts(self, frame_id: int) -> None:
         row = self._conn.execute(
             """SELECT f.timestamp, f.app_name, f.window_name, f.browser_url,
@@ -690,6 +732,7 @@ class DatabaseManager:
         min_length: int | None = None,
         max_length: int | None = None,
         speaker_ids: list[int] | None = None,
+        role: str | None = None,
     ) -> list[Any]:
         from .search_engine import SearchEngine
 
@@ -708,6 +751,7 @@ class DatabaseManager:
             min_length=min_length,
             max_length=max_length,
             speaker_ids=speaker_ids,
+            role=role,
         )
 
     def hybrid_search(
@@ -1006,7 +1050,7 @@ class DatabaseManager:
             except Exception:  # noqa: BLE001
                 pass
 
-    def __enter__(self) -> "DatabaseManager":
+    def __enter__(self) -> DatabaseManager:
         return self
 
     def __exit__(self, *exc: Iterable[Any]) -> None:

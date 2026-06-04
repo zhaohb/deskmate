@@ -704,6 +704,21 @@ a:hover {
   font-family: var(--mono);
   font-size: 0.68rem;
   text-transform: uppercase;
+  list-style: disclosure-closed;
+}
+
+.raw-details[open] summary {
+  list-style: disclosure-open;
+}
+
+.collapsible-section:not([open]) .detail-body {
+  display: none;
+}
+
+.raw-details .detail-body,
+.raw-details pre {
+  padding: 0.65rem 0.9rem;
+  border-top: 1px solid var(--line);
 }
 
 .preview img {

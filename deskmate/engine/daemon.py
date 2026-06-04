@@ -5,7 +5,6 @@ from __future__ import annotations
 import queue
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 from .. import paths
 from ..a11y import UiRecorder

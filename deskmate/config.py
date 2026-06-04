@@ -57,6 +57,11 @@ class A11yConfig(BaseModel):
     capture_keystrokes: bool = True
     capture_clipboard: bool = True
     capture_mouse_move: bool = False
+    # P1: persist normalized accessibility nodes into the `elements` table.
+    # Off by default (gradual rollout); when on, each "new content" frame writes
+    # up to `elements_max_rows_per_frame` rows flattened from its UIA tree.
+    persist_elements: bool = False
+    elements_max_rows_per_frame: int = 300
 
 
 class OcrConfig(BaseModel):
@@ -218,6 +223,7 @@ ax_depth = 60
 capture_clicks = true
 capture_keystrokes = true
 capture_clipboard = true
+persist_elements = false
 
 [ocr]
 engine = "winrt"     # winrt | tesseract | off

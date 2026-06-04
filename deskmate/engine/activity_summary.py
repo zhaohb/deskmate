@@ -10,7 +10,6 @@ from .day_recap_context import (
     count_line_frequencies,
     dedupe_timeline,
     extract_valuable_lines,
-    format_ts_local,
     is_low_value_text,
     normalize_text_key,
     reset_line_freq,

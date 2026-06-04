@@ -113,7 +113,6 @@ class WinEventWatcher:
         SetWinEventHook = user32.SetWinEventHook
         SetWinEventHook.restype = wt.HANDLE
         UnhookWinEvent = user32.UnhookWinEvent
-        GetMessageW = user32.GetMessageW
         TranslateMessage = user32.TranslateMessage
         DispatchMessageW = user32.DispatchMessageW
 

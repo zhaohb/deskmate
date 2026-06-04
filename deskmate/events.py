@@ -89,7 +89,7 @@ def recent(limit: int = 100) -> list[Event]:
         return list(_history[-limit:])
 
 
-def stream(timeout: float | None = None) -> "EventStream":
+def stream(timeout: float | None = None) -> EventStream:
     return EventStream(timeout=timeout)
 
 
@@ -101,7 +101,7 @@ class EventStream:
         self._timeout = timeout
         self._unsub = subscribe(self._q.put)
 
-    def __iter__(self) -> "EventStream":
+    def __iter__(self) -> EventStream:
         return self
 
     def __next__(self) -> Event:

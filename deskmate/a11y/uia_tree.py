@@ -89,7 +89,7 @@ class AccessibilityNode:
     on_screen: bool | None = None
     lines: list[str] | None = None
 
-    children: list["AccessibilityNode"] = field(default_factory=list)
+    children: list[AccessibilityNode] = field(default_factory=list)
 
     # ----- traversal helpers ------------------------------------------------
     def node_count(self) -> int:
@@ -100,7 +100,7 @@ class AccessibilityNode:
             return 0
         return 1 + max(c.max_depth() for c in self.children)
 
-    def find_by_type(self, control_type: str) -> "AccessibilityNode | None":
+    def find_by_type(self, control_type: str) -> AccessibilityNode | None:
         if self.control_type.lower() == control_type.lower():
             return self
         for c in self.children:
@@ -109,7 +109,7 @@ class AccessibilityNode:
                 return found
         return None
 
-    def find_by_name(self, name: str) -> "AccessibilityNode | None":
+    def find_by_name(self, name: str) -> AccessibilityNode | None:
         if self.name and name in self.name:
             return self
         for c in self.children:
@@ -289,6 +289,45 @@ def walk_focused_window(
         return _walk_focused_window_impl(
             auto, max_depth=max_depth, hwnd=hwnd, max_nodes=max_nodes,
         )
+
+
+def read_focused_value(hwnd: int = 0, *, max_len: int = 4000) -> tuple[str, str]:
+    """Read only the focused control's ``(role, value)`` — fast, no tree walk.
+
+    Used for on-demand prompt capture (e.g. when the user pauses typing or
+    sends a message) so a chat input box's *full* text — including pasted and
+    IME-composed content the low-level keystroke buffer may miss — is recorded.
+    Returns ``("", "")`` off-Windows, when UIA is unavailable, for password
+    fields, or on any failure. ``hwnd`` is currently advisory; the system-wide
+    focused control is always the one the user is typing into.
+    """
+    if os.name != "nt":
+        return ("", "")
+    try:
+        import uiautomation as auto  # noqa: PLC0415
+    except ImportError:
+        return ("", "")
+
+    def _do() -> tuple[str, str]:
+        try:
+            f = auto.GetFocusedControl()
+        except Exception:  # noqa: BLE001
+            return ("", "")
+        if f is None:
+            return ("", "")
+        role = _safe_control_type(f) or ""
+        if _safe_is_password(f):
+            return (role, "")
+        value = _read_value(f) or ""
+        if max_len and len(value) > max_len:
+            value = value[:max_len]
+        return (role, value)
+
+    try:
+        with uia_com_session():
+            return _do()
+    except Exception:  # noqa: BLE001
+        return ("", "")
 
 
 def _walk_focused_window_impl(

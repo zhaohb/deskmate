@@ -18,7 +18,7 @@ Read DeskMate skill first.
 
 The agent runner has already done the heavy lifting and pre-fetched the highest-signal data via SQL against the DeskMate database. You receive two sections:
 
-- **Source A — keystroke text events** (highest confidence). Rows from `ui_events` where `event_type='text'`, scoped to the time range and to a window/URL/process belonging to a known AI tool. Each line literally is text the user typed (the low-level keyboard hook flushes aggregated text on Enter / focus change / debounce).
+- **Source A — sent-prompt snapshots** (highest confidence). Rows from `ui_events` where `event_type='text'` and `data_json.source='send'`, scoped to the time range and to a window/URL/process belonging to a known AI tool. Each line is a UIA snapshot of the chat input box taken the moment the user pressed Enter / Ctrl+Enter to send — i.e. the complete, already-composed prompt. Individual keystrokes are never recorded.
 - **Source B — focused input field snapshots**. Rows from `frame_accessibility` where `focused_role IN ('Edit','Document','RichEdit','TextArea','AXTextArea','AXTextField','Entry','Text')` joined with `frames` matching the same AI tool whitelist. The `focused_value` is the text sitting in the active chat input box at capture time.
 
 Tool whitelist (matched on `browser_url`, `window_name`/`window_title`, or process name):
@@ -48,14 +48,14 @@ If both sources are empty, the runner falls back to a `/search`-based prefetch a
 
 This is the only judgement you actually have to make. Use these heuristics:
 
-- Text appearing under **Source A (keystroke)** or **Source B (focused input field)** is almost certainly a user prompt — that's how keystroke hooks and input-box snapshots work. **Default to including these.**
+- Text appearing under **Source A (sent prompt)** or **Source B (focused input field)** is almost certainly a user prompt — that's how the Enter-time input-box snapshots work. **Default to including these.**
 - AI responses are typically long, contain markdown headings, bullet lists, fenced code blocks, citations, or start with affirmative phrases like "Sure!", "Here's", "I'll", "Let me", "Certainly", "I'd be happy to".
 - User prompts are typically shorter, conversational, imperative ("write…", "explain…", "refactor…"), or interrogative (end with `?`).
 - When uncertain, **include** with `⚠️ may be AI response` inline rather than dropping — false positives are better than missed prompts.
 
 ## Step 2: Deduplicate
 
-The same prompt can appear across many frames as the page is recaptured, and again as a Source A keystroke event. Group by the first 80 characters of the prompt text (after stripping `>` blockquote markers and normalizing whitespace). Keep the version with the most complete text and the earliest timestamp. The runner does a second pass against today's journal file so do not worry about cross-run duplicates.
+The same prompt can appear across many frames as the page is recaptured, and again as a Source A sent-prompt snapshot. Group by the first 80 characters of the prompt text (after stripping `>` blockquote markers and normalizing whitespace). Keep the version with the most complete text and the earliest timestamp. The runner does a second pass against today's journal file so do not worry about cross-run duplicates.
 
 ## Step 3: Classify each kept prompt
 

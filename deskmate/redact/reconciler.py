@@ -15,7 +15,6 @@ Idempotent: re-running the worker on a populated DB is a no-op.
 from __future__ import annotations
 
 import threading
-import time
 
 from ..logger import get
 from .onnx import OnnxRedactor

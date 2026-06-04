@@ -58,9 +58,10 @@ def run_stdio() -> None:
                         "end_time": {"type": "string", "description": "ISO 8601"},
                         "content_type": {
                             "type": "string",
-                            "enum": ["all", "frames", "ocr", "audio", "ui"],
+                            "enum": ["all", "frames", "ocr", "audio", "ui", "element"],
                             "default": "all",
                         },
+                        "role": {"type": "string", "description": "With content_type=element, filter by UIA role"},
                         "min_length": {"type": "integer"},
                         "max_length": {"type": "integer"},
                         "speaker_ids": {"type": "string", "description": "comma-separated speaker ids"},

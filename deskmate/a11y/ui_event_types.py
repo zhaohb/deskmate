@@ -31,6 +31,7 @@ class CaptureTrigger(str, Enum):
     TYPING_PAUSE = "typing_pause"
     SCROLL_STOP = "scroll_stop"
     KEY_PRESS = "key_press"
+    SEND = "send"
     CLIPBOARD = "clipboard"
     IDLE = "idle"
     MANUAL = "manual"
@@ -86,6 +87,7 @@ class UiEventInsert:
             data["key_code"] = self.key_code
         if self.text_content is not None:
             data["content"] = self.text_content
+            data["text"] = self.text_content
             data["char_count"] = len(self.text_content)
         return (
             self.event_type.value,
@@ -94,6 +96,17 @@ class UiEventInsert:
             self.browser_url,
             __import__("json").dumps(data, ensure_ascii=False),
         )
+
+
+def ui_event_text_sql(data_json_col: str = "data_json") -> str:
+    """SQLite expression for typed text in ``ui_events.data_json``.
+
+    Rows store ``$.content`` (canonical); older tooling may use ``$.text``.
+    """
+    return (
+        f"COALESCE(NULLIF(json_extract({data_json_col},'$.text'),''), "
+        f"NULLIF(json_extract({data_json_col},'$.content'),''), '')"
+    )
 
 
 def _is_ignored(app_name: str | None, window_title: str | None, ignored_patterns: list) -> bool:
@@ -117,8 +130,6 @@ def capture_trigger_kind(
     if _is_ignored(event.app_name, event.window_title, ignored_patterns):
         if event.event_type in (UiEventType.APP_SWITCH, UiEventType.WINDOW_FOCUS):
             return None
-    app = event.app_name or ""
-    title = event.window_title or ""
     match event.event_type:
         case UiEventType.APP_SWITCH:
             return CaptureTrigger.APP_SWITCH
@@ -130,6 +141,10 @@ def capture_trigger_kind(
             return CaptureTrigger.CLIPBOARD
         case UiEventType.CLIPBOARD:
             return None
+        case UiEventType.TEXT if event.extra.get("source") == "send":
+            # Enter / send keypress snapshot of the focused input box — always
+            # captures a frame regardless of the keystroke gate.
+            return CaptureTrigger.SEND
         case UiEventType.TEXT:
             return CaptureTrigger.TYPING_PAUSE
         case UiEventType.SCROLL:

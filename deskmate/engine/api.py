@@ -133,6 +133,29 @@ def _content_item_for_input(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _content_item_for_element(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "Element",
+        "content": {
+            "id": row.get("element_id") or row.get("id"),
+            "element_id": row.get("element_id"),
+            "frame_id": row.get("frame_id"),
+            "role": row.get("role") or "",
+            "name": row.get("name") or "",
+            "value": row.get("value") or "",
+            "text": row.get("text") or "",
+            "automation_id": row.get("automation_id"),
+            "is_focused": row.get("is_focused"),
+            "bounds": row.get("bounds"),
+            "timestamp": row.get("timestamp"),
+            "app_name": row.get("app_name") or "",
+            "window_name": row.get("window_name") or "",
+            "browser_url": row.get("browser_url"),
+            "file_path": row.get("file_path") or "",
+        },
+    }
+
+
 def _content_item_for_memory(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "Memory",
@@ -175,6 +198,8 @@ def _search_result_to_content_item(result: Any) -> dict[str, Any] | None:
         return _content_item_for_ui(payload)
     if result.kind == SearchResultKind.INPUT:
         return _content_item_for_input(payload)
+    if result.kind == SearchResultKind.ELEMENT:
+        return _content_item_for_element(payload)
     if result.kind == SearchResultKind.MEMORY:
         return _content_item_for_memory(payload)
     return None
@@ -537,6 +562,7 @@ def create_app(
         min_length: int | None = None,
         max_length: int | None = None,
         speaker_ids: str | None = None,  # comma-separated
+        role: str | None = Query(default=None, description="Filter elements by UIA role"),
         include_frames: bool = False,
         semantic: bool = Query(
             default=False,
@@ -584,6 +610,7 @@ def create_app(
                 min_length=min_length,
                 max_length=max_length,
                 speaker_ids=speaker_filter,
+                role=role,
             )
         items: list[dict[str, Any]] = []
         for result in results:

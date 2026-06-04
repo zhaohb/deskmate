@@ -1,7 +1,14 @@
 """Low-level mouse + keyboard hooks.
 
-We aggregate keystrokes into `key_text` events with a debounce so we don't
-emit one event per character. Mouse clicks emit immediately."""
+We do **not** record individual keystrokes. Instead, on Enter / Ctrl+Enter
+(the common AI-chat "send" shortcuts) we take a single snapshot of the focused
+input box via UIA and emit it as one `text` event with ``source="send"``. This
+captures the complete, already-composed prompt (including IME / pasted / voice
+input) without sniffing every character, and trips a one-shot screenshot
+capture at the send moment. Mouse clicks emit immediately.
+
+Shift+Enter inserts a newline and is therefore ignored (not a send).
+"""
 
 from __future__ import annotations
 
@@ -34,7 +41,6 @@ HC_ACTION = 0
 
 _MOVE_THROTTLE_S = 0.25
 
-VK_BACK = 0x08
 VK_TAB = 0x09
 VK_RETURN = 0x0D
 VK_SHIFT = 0x10
@@ -42,12 +48,7 @@ VK_CONTROL = 0x11
 VK_MENU = 0x12
 VK_CAPITAL = 0x14
 VK_ESCAPE = 0x1B
-VK_SPACE = 0x20
 VK_PRIOR = 0x21
-VK_DOWN = 0x28
-VK_RIGHT = 0x27
-VK_UP = 0x26
-VK_LEFT = 0x25
 VK_DELETE = 0x2E
 VK_LWIN = 0x5B
 VK_RWIN = 0x5C
@@ -56,6 +57,19 @@ VK_F24 = 0x87
 
 _NAV_KEYS = set(range(VK_PRIOR, VK_DELETE + 1)) | {VK_ESCAPE, VK_CAPITAL, VK_TAB} | set(range(VK_F1, VK_F24 + 1)) | {VK_LWIN, VK_RWIN}
 _MODIFIERS = {VK_SHIFT, VK_CONTROL, VK_MENU}
+
+
+def return_flush_reason(*, ctrl_down: bool, shift_down: bool) -> str | None:
+    """Flush reason for Return, or None when only inserting a newline (Shift+Enter)."""
+    if shift_down:
+        return None
+    if ctrl_down:
+        return "ctrl_enter"
+    return "enter"
+
+
+def return_inserts_newline(*, shift_down: bool) -> bool:
+    return shift_down
 
 
 class _KBDLLHOOKSTRUCT(ctypes.Structure):
@@ -87,6 +101,15 @@ HOOKPROC = ctypes.WINFUNCTYPE(  # type: ignore[attr-defined]
 ) if os.name == "nt" else None
 
 
+def _modifier_down(vk: int) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        return bool(ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class InputHooks:
     """Manages WH_KEYBOARD_LL + WH_MOUSE_LL on a dedicated message-pump thread."""
 
@@ -102,15 +125,14 @@ class InputHooks:
         self.capture_clicks = capture_clicks
         self.capture_keystrokes = capture_keystrokes
         self.capture_mouse_move = capture_mouse_move
-        self.debounce_seconds = debounce_seconds
+        self.debounce_seconds = debounce_seconds  # retained for API compat; unused
         self._on_event = on_event
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
-        self._buf_lock = threading.Lock()
-        self._buf: list[str] = []
-        self._buf_started_at: float = 0.0
-        self._flush_thread: threading.Thread | None = None
         self._last_move_emit = 0.0
+        # Serializes the off-thread UIA focused-value reads triggered on Enter so
+        # rapid sends don't pile up overlapping reads. Set while a read is queued.
+        self._send_busy = threading.Event()
 
     @property
     def available(self) -> bool:
@@ -122,21 +144,36 @@ class InputHooks:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="InputHooks", daemon=True)
         self._thread.start()
-        self._flush_thread = threading.Thread(target=self._flush_loop, name="InputHooks-flush", daemon=True)
-        self._flush_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
         if self._thread:
-            self._thread.join(timeout=2.0); self._thread = None
-        if self._flush_thread:
-            self._flush_thread.join(timeout=1.0); self._flush_thread = None
-        self._flush(reason="stop")
+            self._thread.join(timeout=2.0)
+            self._thread = None
 
     # ─── pump ──────────────────────────────────────────────────────────────
     def _run(self) -> None:
         user32 = ctypes.windll.user32  # type: ignore[attr-defined]
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+        # Pin correct 64-bit signatures. Without these, ctypes defaults the
+        # return type to a 32-bit C int, truncating HMODULE/HHOOK handles on
+        # 64-bit Windows: GetModuleHandleW's handle is mangled and
+        # SetWindowsHookExW then fails with ERROR_MOD_NOT_FOUND (126), so the
+        # keyboard/mouse hooks never install and no text/key/click events are
+        # ever recorded.
+        kernel32.GetModuleHandleW.restype = wt.HMODULE
+        kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+        user32.SetWindowsHookExW.restype = ctypes.c_void_p
+        user32.SetWindowsHookExW.argtypes = [ctypes.c_int, ctypes.c_void_p, wt.HMODULE, wt.DWORD]
+        user32.UnhookWindowsHookEx.restype = wt.BOOL
+        user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+        # CallNextHookEx's wParam/lParam are pointer-sized (LRESULT/WPARAM/LPARAM).
+        # Without pinned argtypes ctypes defaults each argument to a 32-bit C int,
+        # so on 64-bit Windows the lParam (arg 4) — the address of the hook struct —
+        # overflows with "argument 4: OverflowError: int too long to convert".
+        user32.CallNextHookEx.restype = wt.LPARAM
+        user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wt.WPARAM, wt.LPARAM]
 
         mod = kernel32.GetModuleHandleW(None)
         kproc = HOOKPROC(self._kb_callback) if self.capture_keystrokes else None
@@ -146,6 +183,18 @@ class InputHooks:
 
         khook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, kproc, mod, 0) if kproc else None
         mhook = user32.SetWindowsHookExW(WH_MOUSE_LL, mproc, mod, 0) if mproc else None
+        if kproc and not khook:
+            logger.error(
+                "keyboard hook install failed (GetLastError=%s); no key/text events will be captured",
+                kernel32.GetLastError(),
+            )
+        if mproc and not mhook:
+            logger.error(
+                "mouse hook install failed (GetLastError=%s); no click events will be captured",
+                kernel32.GetLastError(),
+            )
+        if khook or mhook:
+            logger.info("InputHooks installed (keyboard=%s mouse=%s)", bool(khook), bool(mhook))
 
         msg = wt.MSG()
         while not self._stop.is_set():
@@ -180,12 +229,17 @@ class InputHooks:
                     })
                 if vk in _MODIFIERS:
                     return ctypes.windll.user32.CallNextHookEx(0, ncode, wparam, lparam)  # type: ignore[attr-defined]
-                char = self._vk_to_char(vk)
-                if char:
-                    with self._buf_lock:
-                        if not self._buf:
-                            self._buf_started_at = time.time()
-                        self._buf.append(char)
+
+                # We do not record individual characters. Only a "send" Enter
+                # (Enter / Ctrl+Enter, but not Shift+Enter) triggers a one-shot
+                # snapshot of the focused input box. Shift+Enter inserts a
+                # newline and is intentionally ignored.
+                if vk == VK_RETURN and self.capture_keystrokes:
+                    ctrl_down = _modifier_down(VK_CONTROL)
+                    shift_down = _modifier_down(VK_SHIFT)
+                    reason = return_flush_reason(ctrl_down=ctrl_down, shift_down=shift_down)
+                    if reason:
+                        self._schedule_send_capture(reason=reason)
         except Exception as exc:  # noqa: BLE001
             logger.debug("kb cb err: %s", exc)
         return ctypes.windll.user32.CallNextHookEx(0, ncode, wparam, lparam)  # type: ignore[attr-defined]
@@ -199,9 +253,15 @@ class InputHooks:
                 button = self._wparam_to_button(int(wparam))
                 if button:
                     activity_default().record(ActivityKind.MOUSE_CLICK)
-                    self._flush(reason="click")
-                    payload = {"button": button, "x": int(ms.pt.x), "y": int(ms.pt.y),
-                               "app_name": app, "window_title": title, "hwnd": hwnd, "pid": pid}
+                    payload = {
+                        "button": button,
+                        "x": int(ms.pt.x),
+                        "y": int(ms.pt.y),
+                        "app_name": app,
+                        "window_title": title,
+                        "hwnd": hwnd,
+                        "pid": pid,
+                    }
                     bus.send(bus.EventType.CLICK, **payload)
                     if self._on_event:
                         self._on_event({"event_type": "click", **payload})
@@ -251,47 +311,64 @@ class InputHooks:
             WM_XBUTTONDOWN: "other",
         }.get(wparam, "")
 
-    @staticmethod
-    def _vk_to_char(vk: int) -> str:
-        if vk == VK_RETURN:
-            return "\n"
-        if vk == VK_BACK:
-            return "\b"
-        if vk == VK_SPACE:
-            return " "
-        try:
-            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-            state = (ctypes.c_byte * 256)()
-            user32.GetKeyboardState(ctypes.byref(state))
-            buf = ctypes.create_unicode_buffer(8)
-            n = user32.ToUnicode(vk, 0, ctypes.byref(state), buf, 8, 0)
-            if n > 0:
-                return buf.value
-        except Exception:  # noqa: BLE001
-            pass
-        if 0x30 <= vk <= 0x5A:
-            return chr(vk).lower()
-        return ""
+    # ─── send capture ──────────────────────────────────────────────────────
+    def _schedule_send_capture(self, *, reason: str) -> None:
+        """Read the focused input box off-thread after a send keypress.
 
-    # ─── flush ─────────────────────────────────────────────────────────────
-    def _flush_loop(self) -> None:
-        while not self._stop.is_set():
-            self._stop.wait(0.5)
-            with self._buf_lock:
-                age = time.time() - self._buf_started_at if self._buf else 0
-            if age and age >= self.debounce_seconds:
-                self._flush(reason="debounce")
-
-    def _flush(self, *, reason: str) -> None:
-        with self._buf_lock:
-            if not self._buf:
-                return
-            text = "".join(self._buf)
-            self._buf.clear()
-            self._buf_started_at = 0.0
+        UIA reads can block, so they must never run on the low-level hook
+        callback. A single in-flight read is allowed at a time; rapid repeated
+        sends while one is pending are dropped (the pending read already covers
+        the latest input-box contents).
+        """
+        if not self._on_event or self._send_busy.is_set():
+            return
+        self._send_busy.set()
         hwnd, pid, title = _foreground_hwnd_pid()
         app = foreground_app_name(pid)
-        payload = {"text": text, "reason": reason, "app_name": app, "window_title": title, "hwnd": hwnd, "pid": pid}
-        bus.send(bus.EventType.KEY_TEXT, **payload)
-        if self._on_event:
-            self._on_event({"event_type": "text", **payload})
+        threading.Thread(
+            target=self._emit_focused_value,
+            kwargs={"app": app, "title": title, "hwnd": hwnd, "pid": pid, "reason": reason},
+            name="InputHooks-send",
+            daemon=True,
+        ).start()
+
+    def _emit_focused_value(
+        self, *, app: str, title: str, hwnd: int, pid: int, reason: str
+    ) -> None:
+        """Read the full text of the focused input box via UIA and emit it as a
+        single ``text`` event with ``source="send"``. Runs on a short-lived
+        worker thread — never the low-level hook callback — because UIA calls can
+        block. Captures the complete, already-composed prompt (IME, pasted, or
+        voice input) at the moment the user pressed Enter, and trips a one-shot
+        screenshot capture via the SEND trigger.
+        """
+        try:
+            if not self._on_event:
+                return
+            try:
+                from .uia_tree import read_focused_value  # noqa: PLC0415
+
+                role, value = read_focused_value()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("focused-value read failed: %s", exc)
+                return
+            value = (value or "").strip()
+            if len(value) < 5:
+                return
+            payload = {
+                "text": value,
+                "reason": reason,
+                "app_name": app,
+                "window_title": title,
+                "hwnd": hwnd,
+                "pid": pid,
+            }
+            bus.send(bus.EventType.KEY_TEXT, **payload)
+            self._on_event({
+                "event_type": "text",
+                "source": "send",
+                "focused_role": role,
+                **payload,
+            })
+        finally:
+            self._send_busy.clear()

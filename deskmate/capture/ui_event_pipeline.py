@@ -5,7 +5,6 @@ from __future__ import annotations
 import itertools
 import queue
 import threading
-import time
 from typing import TYPE_CHECKING, Any
 
 from ..a11y.browser_url import resolve_browser_url
@@ -126,7 +125,6 @@ class UiEventPipeline:
 
     def _flush_loop(self) -> None:
         timeout_s = self.cfg.capture.ui_event_batch_timeout_ms / 1000.0
-        batch_size = self.cfg.capture.ui_event_batch_size
         while not self._stop.is_set():
             self._stop.wait(timeout_s)
             self.poll_scroll_burst()

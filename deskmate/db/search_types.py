@@ -11,6 +11,7 @@ class ContentType(str, Enum):
     AUDIO = "audio"
     INPUT = "input"
     ACCESSIBILITY = "accessibility"
+    ELEMENT = "element"
     MEMORY = "memory"
 
 
@@ -22,6 +23,7 @@ def normalize_content_type(raw: str) -> ContentType:
         "frame": ContentType.OCR,
         "transcript": ContentType.AUDIO,
         "transcripts": ContentType.AUDIO,
+        "elements": ContentType.ELEMENT,
     }
     if value in aliases:
         return aliases[value]
