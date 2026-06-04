@@ -36,6 +36,7 @@ from common import (  # noqa: E402
     run_cli,
     write_markdown,
 )
+from deskmate.console import echo_stderr
 from deskmate.engine.day_recap_context import range_spans_calendar_days  # noqa: E402
 
 APP_NAME = "todo-list"
@@ -140,7 +141,7 @@ def _persist_todos(
 ) -> int:
     if not todos:
         if verbose:
-            print("  [todo-list] no checkbox lines parsed — nothing to store", file=sys.stderr)
+            echo_stderr("  [todo-list] no checkbox lines parsed — nothing to store")
         return 0
     for item in todos:
         item.setdefault("evidence_start", evidence_start)
@@ -169,20 +170,20 @@ def _persist_todos(
             )
             count += 1
         if verbose:
-            print(f"  [todo-list] stored {count} todo(s) in {db.path}", file=sys.stderr)
+            echo_stderr(f"  [todo-list] stored {count} todo(s) in {db.path}")
         return count
     except Exception as exc:  # noqa: BLE001
         if verbose:
-            print(f"  [todo-list] direct DB store failed ({exc}), trying API…", file=sys.stderr)
+            echo_stderr(f"  [todo-list] direct DB store failed ({exc}), trying API…")
 
     try:
         resp = _http_post(f"{api_base()}/todos", {"todos": todos})
     except Exception as exc:  # noqa: BLE001
-        print(f"  [todo-list] ERROR: could not persist todos: {exc}", file=sys.stderr)
+        echo_stderr(f"  [todo-list] ERROR: could not persist todos: {exc}")
         return 0
     count = int(resp.get("count", 0)) if isinstance(resp, dict) else 0
     if verbose:
-        print(f"  [todo-list] persisted {count} structured todo(s) via /todos", file=sys.stderr)
+        echo_stderr(f"  [todo-list] persisted {count} structured todo(s) via /todos")
     return count
 
 
@@ -222,12 +223,11 @@ def main() -> int:
             verbose=args.verbose,
         )
         if not todos and "## Todolist" in report:
-            print(
+            echo_stderr(
                 "  [todo-list] WARNING: report generated but no '- [ ]' lines parsed for DB",
-                file=sys.stderr,
             )
         elif todos and stored == 0:
-            print("  [todo-list] ERROR: parsed todos but none were stored", file=sys.stderr)
+            echo_stderr("  [todo-list] ERROR: parsed todos but none were stored")
             return 1
 
     print(out / "todo-list.md")

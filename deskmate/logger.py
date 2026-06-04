@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-import sys
 from logging.handlers import RotatingFileHandler
 
 from . import paths
+from .console import SafeStreamHandler
 
 _CONFIGURED = False
 
@@ -20,7 +20,7 @@ def _configure() -> None:
     root.setLevel(logging.INFO)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    stream = logging.StreamHandler(sys.stderr)
+    stream = SafeStreamHandler()
     stream.setFormatter(fmt)
     root.addHandler(stream)
 

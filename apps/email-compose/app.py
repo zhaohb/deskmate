@@ -27,6 +27,7 @@ from urllib.parse import quote, urlparse
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from agent import run_agent  # noqa: E402
 from common import add_agent_time_args, agent_time_kwargs_from_args, output_dir, run_cli, write_markdown  # noqa: E402
+from deskmate.console import echo_stderr
 
 APP_NAME = "email-compose"
 PIPE_MD = Path(__file__).with_name("pipe.md")
@@ -239,7 +240,7 @@ def main() -> int:
 
     if args.send:
         if not subject or not body:
-            print("Could not parse Subject/Body from draft; refusing to send.", file=sys.stderr)
+            echo_stderr("Could not parse Subject/Body from draft; refusing to send.")
             return 2
         result = _send(args.provider, instance, args.to, subject, body)
         print(f"Sent via {args.provider}: {json.dumps(result)[:200]}")

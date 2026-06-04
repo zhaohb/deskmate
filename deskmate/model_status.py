@@ -16,12 +16,12 @@ out of scope here.
 
 from __future__ import annotations
 
-import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from .console import echo_stderr
 from .logger import get
 
 logger = get("model_status")
@@ -29,7 +29,7 @@ logger = get("model_status")
 
 def _emit(message: str) -> None:
     """Print a status line to stderr so users see it during long startups."""
-    print(message, file=sys.stderr, flush=True)
+    echo_stderr(message)
 
 
 @contextmanager

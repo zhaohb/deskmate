@@ -28,6 +28,8 @@ if str(_PROJECT_ROOT) not in sys.path:
 if str(_APPS_SRC) not in sys.path:
     sys.path.insert(0, str(_APPS_SRC))
 
+from deskmate.console import echo_stderr
+
 from common import normalize_capture_text  # noqa: E402
 
 from deskmate.engine import llm  # noqa: E402
@@ -525,10 +527,10 @@ def _do_per_tool_searches(
         except Exception as exc:
             items = []
             if verbose:
-                print(f"  [search] {tool_name}: error {exc}", file=sys.stderr)
+                echo_stderr(f"  [search] {tool_name}: error {exc}")
 
         if verbose:
-            print(f"  [search] {tool_name}: {len(items)} results", file=sys.stderr)
+            echo_stderr(f"  [search] {tool_name}: {len(items)} results")
 
         if not items:
             sections.append(
@@ -562,12 +564,12 @@ def _do_frames_export(start: str, end: str, verbose: bool = False) -> str:
         "limit": 1000,
     }
     if verbose:
-        print(f"  [export] POST /frames/export fps=1.0 ...", file=sys.stderr)
+        echo_stderr(f"  [export] POST /frames/export fps=1.0 ...")
     try:
         result = _http_post(f"{API_BASE}/frames/export", body, timeout=60)
     except Exception as exc:
         if verbose:
-            print(f"  [export] error: {exc}", file=sys.stderr)
+            echo_stderr(f"  [export] error: {exc}")
         return (
             f"### POST /frames/export — FAILED\n"
             f"Error: {exc}\n\n"
@@ -581,7 +583,7 @@ def _do_frames_export(start: str, end: str, verbose: bool = False) -> str:
     reason = result.get("reason", "")
 
     if verbose:
-        print(f"  [export] success={success}, frames={frame_count}, path={file_path}", file=sys.stderr)
+        echo_stderr(f"  [export] success={success}, frames={frame_count}, path={file_path}")
 
     lines = [f"### POST /frames/export — Result\n"]
     lines.append(f"- success: {success}")
@@ -626,7 +628,7 @@ def _fetch_activity_summary(
         )
     except Exception as exc:
         if verbose:
-            print(f"  [prefetch] error: {exc}", file=sys.stderr)
+            echo_stderr(f"  [prefetch] error: {exc}")
         return {}
 
 
@@ -638,13 +640,11 @@ def _do_broad_search(start: str, end: str, verbose: bool = False) -> str:
 
     if verbose:
         audio_n = int((summary.get("audio_summary") or {}).get("segment_count") or 0)
-        print(
+        echo_stderr(
             f"  [prefetch] summary status={summary.get('data_status')} "
             f"apps={len(summary.get('apps', []))} "
             f"key_texts={len(summary.get('key_texts', []))} "
-            f"snippets={len(summary.get('snippets') or [])} audio={audio_n}",
-            file=sys.stderr,
-        )
+            f"snippets={len(summary.get('snippets') or [])} audio={audio_n}",        )
 
     return format_summary_for_agent(summary)
 
@@ -675,11 +675,11 @@ def _do_content_search(
         items = result.get("data", [])
         if verbose:
             label = app_name or q or "all"
-            print(f"  [search] {label}: {len(items)} raw", file=sys.stderr)
+            echo_stderr(f"  [search] {label}: {len(items)} raw")
         return items
     except Exception as exc:
         if verbose:
-            print(f"  [search] error: {exc}", file=sys.stderr)
+            echo_stderr(f"  [search] error: {exc}")
         return []
 
 
@@ -752,7 +752,7 @@ def _do_day_recap_prefetch(start: str, end: str, verbose: bool = False) -> str:
     if top_apps and searches_left > 0:
         n = min(len(top_apps), searches_left - 1)
         if verbose:
-            print(f"  [day-recap] app searches ({n}): {top_apps[:n]}", file=sys.stderr)
+            echo_stderr(f"  [day-recap] app searches ({n}): {top_apps[:n]}")
         extra = _do_per_tool_searches(
             top_apps[:n], start, end,
             limit_per_search=search_limit,
@@ -785,7 +785,7 @@ def _do_day_recap_prefetch(start: str, end: str, verbose: bool = False) -> str:
             )
             lines = format_search_items(broad, max_text=500, include_date=include_date)
             if verbose:
-                print(f"  [day-recap] broad search: {len(lines)} substantive", file=sys.stderr)
+                echo_stderr(f"  [day-recap] broad search: {len(lines)} substantive")
             if lines:
                 sections.append(
                     "### Broad search (all apps, substantive content only)\n"
@@ -808,12 +808,10 @@ def _do_day_recap_prefetch(start: str, end: str, verbose: bool = False) -> str:
         searches_left -= 1
 
     if verbose:
-        print(
+        echo_stderr(
             f"  [day-recap] context sections={len(sections)} multi_day={multi_day} "
             f"timeline={len(summary.get('timeline') or [])} "
-            f"key_texts={len(summary.get('key_texts') or [])}",
-            file=sys.stderr,
-        )
+            f"key_texts={len(summary.get('key_texts') or [])}",        )
     return "\n\n".join(sections)
 
 
@@ -940,7 +938,7 @@ def _do_time_breakdown_prefetch(start: str, end: str, verbose: bool = False) -> 
     top_apps = [a.get("name", "") for a in apps[:3] if a.get("name") and float(a.get("minutes") or 0) > 0]
     if top_apps:
         if verbose:
-            print(f"  [time-breakdown] supplemental searches: {top_apps}", file=sys.stderr)
+            echo_stderr(f"  [time-breakdown] supplemental searches: {top_apps}")
         extra = _do_per_tool_searches(
             top_apps, start, end, limit_per_search=8, verbose=verbose,
         )
@@ -950,10 +948,8 @@ def _do_time_breakdown_prefetch(start: str, end: str, verbose: bool = False) -> 
             )
 
     if verbose:
-        print(
-            f"  [time-breakdown] apps={len(apps)} timeline={len(summary.get('timeline') or [])}",
-            file=sys.stderr,
-        )
+        echo_stderr(
+            f"  [time-breakdown] apps={len(apps)} timeline={len(summary.get('timeline') or [])}",        )
     return "\n\n".join(sections)
 
 
@@ -964,10 +960,8 @@ def _do_standup_prefetch(start: str, end: str, verbose: bool = False) -> str:
     if meeting_names:
         sections.append(f"### Meetings in range ({len(meeting_names)})\n\n{meeting_text}")
     if verbose:
-        print(
-            f"  [standup-update] meetings={len(meeting_names)}",
-            file=sys.stderr,
-        )
+        echo_stderr(
+            f"  [standup-update] meetings={len(meeting_names)}",        )
     return "\n\n".join(sections)
 
 
@@ -1053,11 +1047,9 @@ def _do_ai_habits_prefetch(
         lines = format_search_items(items, max_text=450)
         span = _items_time_span(items)
         if verbose:
-            print(
+            echo_stderr(
                 f"  [ai-habits] {label}: {len(lines)} substantive "
-                f"({span or 'no span'}) (tried {', '.join(tried)})",
-                file=sys.stderr,
-            )
+                f"({span or 'no span'}) (tried {', '.join(tried)})",            )
         if lines:
             verified.append(label)
             hit_count = len(lines)
@@ -1137,7 +1129,7 @@ def _fetch_outlook_oauth_messages(
         instances_payload = _http_get(f"{API_BASE}/connections/outlook/instances")
     except Exception as exc:
         if verbose:
-            print(f"  [email-digest] Outlook OAuth unavailable: {exc}", file=sys.stderr)
+            echo_stderr(f"  [email-digest] Outlook OAuth unavailable: {exc}")
         return "", False
 
     accounts = instances_payload.get("data", []) if isinstance(instances_payload, dict) else []
@@ -1202,7 +1194,7 @@ def _fetch_gmail_oauth_messages(
         instances_payload = _http_get(f"{API_BASE}/connections/gmail/instances")
     except Exception as exc:
         if verbose:
-            print(f"  [email-digest] Gmail OAuth unavailable: {exc}", file=sys.stderr)
+            echo_stderr(f"  [email-digest] Gmail OAuth unavailable: {exc}")
         return "", False
 
     accounts = instances_payload.get("data", []) if isinstance(instances_payload, dict) else []
@@ -1331,11 +1323,9 @@ def _do_email_digest_prefetch(
         lines = format_search_items(items, max_text=350 if limit_per_tool <= 3 else 450)
         span = _items_time_span(items)
         if verbose:
-            print(
+            echo_stderr(
                 f"  [email-digest] {label}: {len(lines)} substantive "
-                f"({span or 'no span'}) (tried {', '.join(tried)})",
-                file=sys.stderr,
-            )
+                f"({span or 'no span'}) (tried {', '.join(tried)})",            )
         if lines:
             verified.append(label)
             header = f"### {label} | substantive_hits={len(lines)}"
@@ -1372,7 +1362,7 @@ def _fetch_latest_meeting(verbose: bool = False) -> dict[str, Any] | None:
         meetings = _http_get(f"{API_BASE}/meetings?limit=1")
     except Exception as exc:
         if verbose:
-            print(f"  [meeting] list error: {exc}", file=sys.stderr)
+            echo_stderr(f"  [meeting] list error: {exc}")
         return None
     if isinstance(meetings, list) and meetings:
         return meetings[0]
@@ -1384,7 +1374,7 @@ def _fetch_meeting_by_id(meeting_id: int, verbose: bool = False) -> dict[str, An
         data = _http_get(f"{API_BASE}/meetings/{meeting_id}")
     except Exception as exc:
         if verbose:
-            print(f"  [meeting] fetch id={meeting_id} error: {exc}", file=sys.stderr)
+            echo_stderr(f"  [meeting] fetch id={meeting_id} error: {exc}")
         return None
     return data.get("meeting") if isinstance(data, dict) else None
 
@@ -1394,7 +1384,7 @@ def _fetch_meeting_transcript(meeting_id: int, verbose: bool = False) -> tuple[s
         data = _http_get(f"{API_BASE}/meetings/{meeting_id}/transcript")
     except Exception as exc:
         if verbose:
-            print(f"  [meeting] transcript error: {exc}", file=sys.stderr)
+            echo_stderr(f"  [meeting] transcript error: {exc}")
         return "", []
     segments = data.get("segments") or [] if isinstance(data, dict) else []
     text = data.get("text", "") if isinstance(data, dict) else ""
@@ -1454,7 +1444,7 @@ def _do_meeting_todos_prefetch(
         meetings = _http_get(f"{API_BASE}/meetings?limit=20")
     except Exception as exc:
         if verbose:
-            print(f"  [todo-list] meetings list error: {exc}", file=sys.stderr)
+            echo_stderr(f"  [todo-list] meetings list error: {exc}")
         return "(no meeting data — /meetings unavailable)", []
 
     if not isinstance(meetings, list):
@@ -1486,11 +1476,9 @@ def _do_meeting_todos_prefetch(
             blocks.append(f"{header}\n- (no transcript captured for this meeting)")
 
     if verbose:
-        print(
+        echo_stderr(
             f"  [todo-list] meetings in range={len(in_range)}, "
-            f"with transcript={len(with_transcript)}",
-            file=sys.stderr,
-        )
+            f"with transcript={len(with_transcript)}",        )
     return "\n\n".join(blocks), with_transcript
 
 
@@ -1524,11 +1512,9 @@ def _do_meeting_summary(
     end = meeting.get("ended_at") or ""
 
     if verbose:
-        print(
+        echo_stderr(
             f"  [meeting] id={meeting_id} title={current_title!r} "
-            f"start={start} end={end}",
-            file=sys.stderr,
-        )
+            f"start={start} end={end}",        )
 
     transcript_text, segments = _fetch_meeting_transcript(meeting_id, verbose=verbose)
     transcript = _format_meeting_segments(segments)
@@ -1536,7 +1522,7 @@ def _do_meeting_summary(
     if not transcript.strip() and start:
         # Fallback: search audio in the meeting window.
         if verbose:
-            print("  [meeting] empty transcript → audio search fallback", file=sys.stderr)
+            echo_stderr("  [meeting] empty transcript → audio search fallback")
         items = _do_content_search(
             start, end or datetime.now().astimezone().isoformat(),
             limit=40, verbose=verbose,
@@ -1599,11 +1585,9 @@ def _do_meeting_summary(
     try:
         _http_patch(f"{API_BASE}/meetings/{meeting_id}", patch_body)
         if verbose:
-            print(
+            echo_stderr(
                 f"  [meeting] patched #{meeting_id} "
-                f"(title={'set' if title_to_set else 'kept'})",
-                file=sys.stderr,
-            )
+                f"(title={'set' if title_to_set else 'kept'})",            )
         status = (
             f"_Saved to meeting #{meeting_id}"
             + (f" — title updated to \"{title_to_set}\"" if title_to_set else "")
@@ -1611,7 +1595,7 @@ def _do_meeting_summary(
         )
     except Exception as exc:
         if verbose:
-            print(f"  [meeting] patch error: {exc}", file=sys.stderr)
+            echo_stderr(f"  [meeting] patch error: {exc}")
         status = f"_(Could not write back to meeting #{meeting_id}: {exc})_"
 
     return f"{summary_section}\n\n{status}"
@@ -1743,7 +1727,7 @@ def run_agent(
     # Meeting summary: find latest meeting, summarize transcript, PATCH it back.
     if pipe_md_path.parent.name == "meeting-summary":
         if verbose:
-            print("  [agent] meeting-summary → find + summarize + patch", file=sys.stderr)
+            echo_stderr("  [agent] meeting-summary → find + summarize + patch")
         return _do_meeting_summary(
             skill_text=skill_text,
             context_header=context_header,
@@ -1756,7 +1740,7 @@ def run_agent(
     # so the small model can't fabricate usage for tools that were never opened.
     if pipe_md_path.parent.name == "ai-habits":
         if verbose:
-            print("  [agent] ai-habits → prefetch + single-shot report", file=sys.stderr)
+            echo_stderr("  [agent] ai-habits → prefetch + single-shot report")
         data_text, verified = _do_ai_habits_prefetch(start_iso, end_iso, verbose=verbose)
         if verified:
             extra = (
@@ -1790,7 +1774,7 @@ def run_agent(
     # model can't fabricate inbox activity from generic browsing.
     if pipe_md_path.parent.name == "email-digest":
         if verbose:
-            print("  [agent] email-digest → prefetch + single-shot report", file=sys.stderr)
+            echo_stderr("  [agent] email-digest → prefetch + single-shot report")
         data_text, verified = _do_email_digest_prefetch(start_iso, end_iso, verbose=verbose)
         if verified:
             extra = (
@@ -1826,7 +1810,7 @@ def run_agent(
     # fabricate inbox activity or meeting dialogue.
     if pipe_md_path.parent.name == "todo-list":
         if verbose:
-            print("  [agent] todo-list → email + meeting prefetch + single-shot todolist", file=sys.stderr)
+            echo_stderr("  [agent] todo-list → email + meeting prefetch + single-shot todolist")
         multi_day_todos = range_spans_calendar_days(start_iso, end_iso)
         email_text, verified_email = _todo_list_email_evidence(
             start_iso, end_iso, verbose=verbose, limit_per_tool=3,
@@ -1912,7 +1896,7 @@ def run_agent(
     # into the pipe body. We hand it straight to the model — no API prefetch.
     if pipe_md_path.parent.name == "email-compose":
         if verbose:
-            print("  [agent] email-compose → single-shot draft", file=sys.stderr)
+            echo_stderr("  [agent] email-compose → single-shot draft")
         extra = (
             "This is a compose task, NOT an analysis. Output the four required "
             "sections (Subject / Body / Alternatives / Send Preview) and the Tip. "
@@ -1934,7 +1918,7 @@ def run_agent(
     # per prompt. The local app.py handles dedup + appending to today's file.
     if pipe_md_path.parent.name == "ai-prompt-journal":
         if verbose:
-            print("  [agent] ai-prompt-journal → SQL prefetch (deterministic emission)", file=sys.stderr)
+            echo_stderr("  [agent] ai-prompt-journal → SQL prefetch (deterministic emission)")
         data_text, verified, prompts = _do_prompt_journal_prefetch(start_iso, end_iso, verbose=verbose)
         # Deterministic-first: if SQL prefetch found real user prompts (Source A
         # keystroke / Source B focused input), emit them directly with
@@ -1944,17 +1928,15 @@ def run_agent(
         # `_is_prompt_noise`, so these rows are high-confidence.
         if prompts:
             if verbose:
-                print(
+                echo_stderr(
                     f"  [agent] ai-prompt-journal → deterministic emission of "
-                    f"{len(prompts)} prompt(s) from {verified}",
-                    file=sys.stderr,
-                )
+                    f"{len(prompts)} prompt(s) from {verified}",                )
             return _emit_prompt_blocks(prompts, start_iso=start_iso, end_iso=end_iso)
         # No structured prompts: fall back to the ai-habits-style /search
         # prefetch + LLM extraction so we still try to capture *something*
         # from OCR/UI scraping when keystroke/focused capture is empty.
         if verbose:
-            print("  [agent] ai-prompt-journal → no SQL prompts, falling back to ai-habits prefetch + LLM", file=sys.stderr)
+            echo_stderr("  [agent] ai-prompt-journal → no SQL prompts, falling back to ai-habits prefetch + LLM")
         data_text, verified = _do_ai_habits_prefetch(start_iso, end_iso, verbose=verbose)
         return _run_prompt_extraction(
             pipe_body=pipe_body,
@@ -1968,7 +1950,7 @@ def run_agent(
     # Standup: rich prefetch (day-recap context + meetings) + single-shot
     if pipe_md_path.parent.name == "standup-update":
         if verbose:
-            print("  [agent] standup-update → prefetch + single-shot report", file=sys.stderr)
+            echo_stderr("  [agent] standup-update → prefetch + single-shot report")
         data_text = _do_standup_prefetch(start_iso, end_iso, verbose=verbose)
         return _single_shot_report(
             pipe_body=pipe_body,
@@ -1994,7 +1976,7 @@ def run_agent(
     # Time breakdown: prefetch with pre-computed minutes + single-shot
     if pipe_md_path.parent.name == "time-breakdown":
         if verbose:
-            print("  [agent] time-breakdown → prefetch + single-shot report", file=sys.stderr)
+            echo_stderr("  [agent] time-breakdown → prefetch + single-shot report")
         data_text = _do_time_breakdown_prefetch(start_iso, end_iso, verbose=verbose)
         return _single_shot_report(
             pipe_body=pipe_body,
@@ -2019,7 +2001,7 @@ def run_agent(
     # Day-recap: Python prefetch + single-shot LLM report (more reliable for 8B)
     if pipe_md_path.parent.name == "day-recap":
         if verbose:
-            print("  [agent] day-recap → prefetch + single-shot report", file=sys.stderr)
+            echo_stderr("  [agent] day-recap → prefetch + single-shot report")
         multi_day_recap = range_spans_calendar_days(start_iso, end_iso)
         data_text = _do_day_recap_prefetch(start_iso, end_iso, verbose=verbose)
         recap_rules = (
@@ -2066,18 +2048,18 @@ def run_agent(
         # pipe.md says "Use the POST /frames/export endpoint"
         # → pre-execute the export before the LLM writes the report
         if verbose:
-            print("  [agent] pipe.md requests POST /frames/export", file=sys.stderr)
+            echo_stderr("  [agent] pipe.md requests POST /frames/export")
         data_text = _do_frames_export(start_iso, end_iso, verbose=verbose)
     elif per_tool_names:
         # pipe.md says "use app_name filter for each tool separately"
         # → do targeted per-tool searches
         if verbose:
-            print(f"  [agent] pipe.md requests per-tool search: {per_tool_names}", file=sys.stderr)
+            echo_stderr(f"  [agent] pipe.md requests per-tool search: {per_tool_names}")
         data_text = _do_per_tool_searches(per_tool_names, start_iso, end_iso, verbose=verbose)
     else:
         # pipe.md asks for broad analysis → use /activity-summary
         if verbose:
-            print("  [agent] pipe.md requests broad analysis → /activity-summary", file=sys.stderr)
+            echo_stderr("  [agent] pipe.md requests broad analysis → /activity-summary")
         data_text = _do_broad_search(start_iso, end_iso, verbose=verbose)
 
     # Step 3: Build prompt (system = skill, user = context + data + instructions)
@@ -2108,7 +2090,7 @@ def run_agent(
     # Step 4: Send to LLM; handle any tool calls
     for round_idx in range(MAX_TOOL_ROUNDS):
         if verbose:
-            print(f"  [agent] round {round_idx + 1}/{MAX_TOOL_ROUNDS} ...", file=sys.stderr)
+            echo_stderr(f"  [agent] round {round_idx + 1}/{MAX_TOOL_ROUNDS} ...")
 
         predict = 4096
         response = chat_ollama(messages, tools=TOOLS, num_predict=predict)
@@ -2124,7 +2106,7 @@ def run_agent(
             fn_args = fn.get("arguments", {})
             tool_call_id = tc.get("id") or f"call_{round_idx}_{len(messages)}"
             if verbose:
-                print(f"  [tool]  {fn_name}({json.dumps(fn_args, ensure_ascii=False)[:200]})", file=sys.stderr)
+                echo_stderr(f"  [tool]  {fn_name}({json.dumps(fn_args, ensure_ascii=False)[:200]})")
             fn_args = _parse_tool_arguments(fn_args)
             tool_result = execute_tool(fn_name, fn_args)
             messages.append({
@@ -2565,7 +2547,7 @@ def _do_prompt_journal_prefetch(
             )
     except Exception as exc:  # noqa: BLE001
         if verbose:
-            print(f"  [prompt-journal] keystroke SQL failed: {exc}", file=sys.stderr)
+            echo_stderr(f"  [prompt-journal] keystroke SQL failed: {exc}")
 
     if keystroke_lines:
         sections.append(
@@ -2630,7 +2612,7 @@ def _do_prompt_journal_prefetch(
             )
     except Exception as exc:  # noqa: BLE001
         if verbose:
-            print(f"  [prompt-journal] focused SQL failed: {exc}", file=sys.stderr)
+            echo_stderr(f"  [prompt-journal] focused SQL failed: {exc}")
 
     if focused_lines:
         sections.append(
@@ -2640,11 +2622,9 @@ def _do_prompt_journal_prefetch(
 
     verified = sorted(verified_set)
     if verbose:
-        print(
+        echo_stderr(
             f"  [prompt-journal] keystroke_lines={len(keystroke_lines)} "
-            f"focused_lines={len(focused_lines)} verified={verified}",
-            file=sys.stderr,
-        )
+            f"focused_lines={len(focused_lines)} verified={verified}",        )
 
     if not verified:
         return ("(no AI-tool activity detected in this time window via keystroke "
@@ -2708,11 +2688,9 @@ def _run_prompt_extraction(
     )
 
     if verbose:
-        print(
+        echo_stderr(
             f"  [prompt-journal] verified tools={verified}, "
-            f"data lines={data_text.count(chr(10))}",
-            file=sys.stderr,
-        )
+            f"data lines={data_text.count(chr(10))}",        )
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -2774,11 +2752,9 @@ def _single_shot_report(
 
     if verbose:
         data_lines = capped.count("\n")
-        print(
+        echo_stderr(
             f"  [single-shot] prompt chars={len(capped)} lines={data_lines}, "
-            f"num_predict={num_predict}, timeout={_OLLAMA_CHAT_TIMEOUT}s",
-            file=sys.stderr,
-        )
+            f"num_predict={num_predict}, timeout={_OLLAMA_CHAT_TIMEOUT}s",        )
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -2934,15 +2910,13 @@ def _run_tool_driven_agent(
     predict = cfg.num_predict
 
     if verbose:
-        print(f"  [agent] {pipe_name} → tool-driven loop (max {max_rounds} rounds)", file=sys.stderr)
+        echo_stderr(f"  [agent] {pipe_name} → tool-driven loop (max {max_rounds} rounds)")
 
     for round_idx in range(max_rounds):
         if verbose:
-            print(
+            echo_stderr(
                 f"  [agent] round {round_idx + 1}/{max_rounds} "
-                f"(summary={session.summary_calls}, search={session.search_calls})",
-                file=sys.stderr,
-            )
+                f"(summary={session.summary_calls}, search={session.search_calls})",            )
         response = chat_ollama(messages, tools=TOOLS, num_predict=predict)
         messages.append(response)
         tool_calls = llm.extract_tool_calls(response)
@@ -2965,10 +2939,8 @@ def _run_tool_driven_agent(
             tool_call_id = tc.get("id") or f"call_{round_idx}_{len(messages)}"
             fn_args = _parse_tool_arguments(fn.get("arguments", {}))
             if verbose:
-                print(
-                    f"  [tool]  {fn_name}({json.dumps(fn_args, ensure_ascii=False)[:200]})",
-                    file=sys.stderr,
-                )
+                echo_stderr(
+                    f"  [tool]  {fn_name}({json.dumps(fn_args, ensure_ascii=False)[:200]})",                )
             tool_result = execute_tool(fn_name, fn_args, session=session)
             messages.append({
                 "role": "tool",

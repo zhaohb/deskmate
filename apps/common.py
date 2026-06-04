@@ -7,10 +7,11 @@ import json
 import os
 import re
 import sqlite3
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+from deskmate.console import echo_stderr
 
 
 def deskmate_home() -> Path:
@@ -135,16 +136,15 @@ def run_cli(main: Any) -> int:
     try:
         return int(main() or 0)
     except KeyboardInterrupt:
-        print("\nCancelled.", file=sys.stderr)
+        echo_stderr("\nCancelled.")
         return 130
     except FileNotFoundError as exc:
         path = getattr(exc, "filename", None) or str(exc)
-        print(
+        echo_stderr(
             "DeskMate error: a required file was not found.\n"
             f"  Cause: {path} does not exist.\n"
             "  Fix:   start the recorder (`python -m deskmate.engine.cli serve`) so it "
             "creates the database, or set DESKMATE_DB to the correct path.",
-            file=sys.stderr,
         )
         if debug:
             traceback.print_exc()
@@ -153,13 +153,12 @@ def run_cli(main: Any) -> int:
         from deskmate.engine.llm import FriendlyError
 
         if isinstance(exc, FriendlyError):
-            print(f"DeskMate error: {exc}", file=sys.stderr)
+            echo_stderr(f"DeskMate error: {exc}")
         else:
-            print(
+            echo_stderr(
                 f"DeskMate error: {exc.__class__.__name__}: {exc}\n"
                 "  Fix:   re-run with DESKMATE_DEBUG=1 for the full traceback, "
                 "or report this if it persists.",
-                file=sys.stderr,
             )
         if debug:
             traceback.print_exc()

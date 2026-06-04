@@ -31,6 +31,7 @@ from common import (  # noqa: E402
     run_cli,
     write_markdown,
 )
+from deskmate.console import echo_stderr
 
 APP_NAME = "ai-prompt-journal"
 PIPE_MD = Path(__file__).with_name("pipe.md")
@@ -365,9 +366,8 @@ def main() -> int:
     for day in _window_calendar_days(start_iso, end_iso):
         pruned = _prune_noise_from_journal(_journal_for_date(day))
         if pruned and args.verbose:
-            print(
+            echo_stderr(
                 f"  [prompt-journal] pruned {pruned} stale noise block(s) from {day}",
-                file=sys.stderr,
             )
 
     report = run_agent(PIPE_MD, verbose=args.verbose, **agent_time_kwargs_from_args(args))
@@ -403,15 +403,13 @@ def main() -> int:
 
     print(out / "ai-prompt-journal.md")
     if custom_range or multi_day:
-        print(
+        echo_stderr(
             f"journal: {_journal_dir()} ({start_iso} → {end_iso}, "
             f"appended {appended} new prompt block(s))",
-            file=sys.stderr,
         )
     else:
-        print(
+        echo_stderr(
             f"journal: {journal_path} (appended {appended} new prompt block(s))",
-            file=sys.stderr,
         )
     return 0
 

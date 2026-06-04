@@ -12,6 +12,7 @@ import typer
 import uvicorn
 
 from ..config import load as load_config
+from ..console import echo
 from ..db import DatabaseManager
 from .api import create_app
 from .daemon import Daemon
@@ -39,7 +40,7 @@ def serve(host: str | None = None, port: int | None = None, run_daemon: bool = T
         d = Daemon(cfg=cfg, db=db)
         d.start()
         if cfg.audio.enabled and d.transcriber and not d.transcriber.available and d.transcriber.user_hint:
-            typer.echo(f"Audio transcription: {d.transcriber.user_hint}", err=True)
+            echo(f"Audio transcription: {d.transcriber.user_hint}", err=True)
     try:
         uvicorn.run(
             create_app(cfg=cfg, db=db, daemon=d),
@@ -65,7 +66,7 @@ def ui(host: str | None = None, port: int | None = None, run_daemon: bool = True
         webbrowser.open(url)
 
     threading.Thread(target=_open_browser, name="open-ui-browser", daemon=True).start()
-    typer.echo(f"opening {url}")
+    echo(f"opening {url}")
     serve(host=target_host, port=target_port, run_daemon=run_daemon)
 
 
@@ -79,7 +80,7 @@ def search(query: str, limit: int = 10, app_name: str | None = None, semantic: b
         params={"q": query, "limit": limit, "app_name": app_name, "semantic": semantic},
     )
     r.raise_for_status()
-    typer.echo(json.dumps(r.json(), indent=2, ensure_ascii=False))
+    echo(json.dumps(r.json(), indent=2, ensure_ascii=False))
 
 
 @app.command()
@@ -97,12 +98,12 @@ def index(
     model = cfg.search.embedding_model
     pending = db.semantic_pending_count(model_name=model, min_chars=cfg.search.min_chars)
     if pending == 0:
-        typer.echo("semantic index is up to date — nothing to do")
+        echo("semantic index is up to date — nothing to do")
         return
-    typer.echo(f"indexing {pending} item(s) with {model}…")
+    echo(f"indexing {pending} item(s) with {model}…")
 
     def _progress(content_type: str, done: int) -> None:
-        typer.echo(f"  {content_type}: {done} embedded", err=True)
+        echo(f"  {content_type}: {done} embedded", err=True)
 
     indexed = db.build_semantic_index(
         model_name=model,
@@ -112,13 +113,13 @@ def index(
         progress=_progress,
     )
     if indexed == 0:
-        typer.echo(
+        echo(
             "no rows indexed — is the semantic extra installed? "
             "pip install 'deskmate[semantic]'",
             err=True,
         )
     else:
-        typer.echo(f"done — embedded {indexed} item(s)")
+        echo(f"done — embedded {indexed} item(s)")
 
 
 
@@ -130,14 +131,14 @@ def capture_once() -> None:
     from ..capture import paired_capture  # noqa: PLC0415
 
     ids = paired_capture(cfg, db, trigger="manual")
-    typer.echo(json.dumps({"frame_ids": ids}, ensure_ascii=False))
+    echo(json.dumps({"frame_ids": ids}, ensure_ascii=False))
 
 
 @app.command()
 def health() -> None:
     cfg = load_config()
     r = httpx.get(f"http://{cfg.server.host}:{cfg.server.port}/health")
-    typer.echo(r.text)
+    echo(r.text)
 
 
 @app.command()
