@@ -1,10 +1,9 @@
 """Training utilities: LoRA fine-tuning + DeskMate SFT data mining.
 
-Ported from OpenJarvis's ``openjarvis.learning.training`` package and adapted to
-DeskMate's local SQLite data model. All heavy ML imports (``torch``,
-``transformers``, ``peft``) are guarded so this package imports cleanly without
-the optional ``[training]`` extra installed; the trainer only raises at
-construction time when ``torch`` is missing.
+Built around DeskMate's local SQLite data model. All heavy ML imports
+(``torch``, ``transformers``, ``peft``) are guarded so this package imports
+cleanly without the optional ``[training]`` extra installed; the trainer only
+raises at construction time when ``torch`` is missing.
 """
 
 from __future__ import annotations

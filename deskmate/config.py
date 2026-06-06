@@ -228,8 +228,11 @@ class TrainingConfig(BaseModel):
     output_dir: str = ""
 
     # Data mining
+    # Note: ``timeline`` (typed text / clipboard / transcript echoes) is
+    # intentionally excluded by default — those pairs echo raw user input and
+    # make poor SFT targets. It can still be opted into explicitly.
     sources: list[str] = Field(
-        default_factory=lambda: ["habits", "pipes", "timeline", "behavior", "ask"]
+        default_factory=lambda: ["habits", "pipes", "behavior", "ask"]
     )
     min_feedback: int = 1
     min_chars: int = 8

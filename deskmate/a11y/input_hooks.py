@@ -44,7 +44,7 @@ HC_ACTION = 0
 
 # Run the hook message pump slightly above normal so the OS schedules it
 # promptly even when busy worker/HTTP threads are runnable — native input
-# handlers (e.g. screenpipe's dedicated input thread) do the same.
+# handlers typically use a dedicated, slightly elevated input thread too.
 THREAD_PRIORITY_ABOVE_NORMAL = 1
 
 _MOVE_THROTTLE_S = 0.25

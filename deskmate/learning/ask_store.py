@@ -60,6 +60,25 @@ class AskHistoryStore:
             logger.debug("ask_history insert failed: %s", exc)
             return None
 
+    def set_feedback(self, ask_id: int, feedback: int) -> bool:
+        """Record the user's rating for one answer (1=useful, -1=not useful).
+
+        Only ``1`` and ``-1`` are accepted; anything else is ignored. Returns
+        ``True`` when a row was updated.
+        """
+        if feedback not in (1, -1):
+            return False
+        try:
+            with self._lock:
+                cur = self._conn.execute(
+                    "UPDATE ask_history SET feedback = ? WHERE id = ?",
+                    (int(feedback), int(ask_id)),
+                )
+                return cur.rowcount > 0
+        except sqlite3.Error as exc:
+            logger.debug("ask_history feedback update failed: %s", exc)
+            return False
+
     def close(self) -> None:
         with self._lock:
             try:

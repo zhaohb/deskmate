@@ -1,10 +1,10 @@
 """LoRATrainer — fine-tune local models via LoRA/QLoRA from DeskMate SFT pairs.
 
-Faithful port of OpenJarvis's ``openjarvis.learning.training.lora``. All
-``torch``, ``transformers`` and ``peft`` imports are guarded so the module can
-be imported without GPU dependencies. :class:`LoRATrainingConfig` works with no
-optional deps; :class:`LoRATrainer` raises ``ImportError`` at construction time
-when ``torch`` is unavailable (install with ``pip install 'deskmate[training]'``).
+All ``torch``, ``transformers`` and ``peft`` imports are guarded so the module
+can be imported without GPU dependencies. :class:`LoRATrainingConfig` works with
+no optional deps; :class:`LoRATrainer` raises ``ImportError`` at construction
+time when ``torch`` is unavailable (install with ``pip install
+'deskmate[training]'``).
 """
 
 from __future__ import annotations

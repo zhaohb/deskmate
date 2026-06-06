@@ -1345,14 +1345,30 @@ def create_app(
         try:
             answer = (result or {}).get("answer") or ""
             if answer and not (result or {}).get("error"):
-                _ask_store().record(
+                ask_id = _ask_store().record(
                     question=question,
                     answer=answer,
                     tool_count=len((result or {}).get("tool_calls") or []),
                 )
+                if ask_id is not None and isinstance(result, dict):
+                    result["ask_id"] = ask_id
         except Exception:  # noqa: BLE001
             logger.debug("ask_history logging skipped", exc_info=True)
         return result
+
+    @app.post("/ask/{ask_id}/feedback")
+    async def ask_feedback(ask_id: int, request: Request) -> dict[str, Any]:
+        body = await _safe_json(request)
+        try:
+            score = int(body.get("feedback"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="feedback must be 1 or -1")
+        if score not in (1, -1):
+            raise HTTPException(status_code=400, detail="feedback must be 1 or -1")
+        ok = _ask_store().set_feedback(ask_id, score)
+        if not ok:
+            raise HTTPException(status_code=404, detail="ask answer not found")
+        return {"status": "ok", "ask_id": ask_id, "feedback": score}
 
     @app.get("/apps")
     def list_apps() -> dict[str, Any]:

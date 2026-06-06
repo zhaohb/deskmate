@@ -1406,6 +1406,19 @@ a:hover {
   text-overflow: clip;
 }
 .home-ask-answer.hidden { display: none; }
+.home-ask-feedback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  padding: 6px 2px 2px;
+  font-size: 0.82rem;
+  color: var(--muted, #9ca3af);
+}
+.home-ask-feedback.hidden { display: none; }
+.home-ask-feedback .ask-fb-q { margin-right: 4px; }
+.home-ask-feedback .ask-fb-done { color: var(--online, #4ade80); }
 .home-ask-answer h2, .home-ask-answer h3, .home-ask-answer h4 {
   margin: 0.8rem 0 0.4rem;
   color: var(--fg, #fafafa);

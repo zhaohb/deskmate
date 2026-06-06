@@ -3,10 +3,9 @@
 ## Purpose
 
 An **opt-in, additive** subsystem that fine-tunes a small local causal LM with
-LoRA/QLoRA adapters using supervised pairs mined from DeskMate's own data. It is
-a port of OpenJarvis's LoRA training pipeline, adapted to DeskMate's local SQLite
-sources. None of the capture/storage code is modified; the miner only **reads**
-existing tables, and the heavy ML dependencies live behind an optional extra.
+LoRA/QLoRA adapters using supervised pairs mined from DeskMate's own data. None
+of the capture/storage code is modified; the miner only **reads** existing
+tables, and the heavy ML dependencies live behind an optional extra.
 
 Covers `deskmate/learning/training/`, the `TrainingConfig` config block, the
 `train-lora` CLI command, and the `/training/*` API routes.
@@ -16,7 +15,7 @@ Covers `deskmate/learning/training/`, the `TrainingConfig` config block, the
 | File | Role |
 |------|------|
 | `learning/training/lora.py` | `LoRATrainer` + `LoRATrainingConfig` — LoRA/QLoRA fine-tuning over `{input, output}` pairs (guarded torch/transformers/peft imports) |
-| `learning/training/data.py` | `DeskMateTrainingDataMiner` — mines SFT pairs from three local sources via its own read-only connection |
+| `learning/training/data.py` | `DeskMateTrainingDataMiner` — mines SFT pairs from five local sources via its own read-only connection |
 | `config.py` | `TrainingConfig` — model, data-mining and LoRA hyperparameters |
 | `engine/cli.py` | `deskmate train-lora` command (with `--dry-run` preview) |
 | `engine/api.py` | `GET /training/data` (preview) + `POST /training/lora` (train) |
@@ -28,9 +27,11 @@ flowchart TB
     subgraph Sources["Local data (read-only)"]
         HS["habit_suggestions<br/>feedback ≥ 1"]
         PE["pipe_executions<br/>status = success"]
-        CE["context_events<br/>unified timeline"]
+        BH["habit_profiles<br/>sample_days ≥ 2, freq ≥ 0.3"]
+        AK["ask_history<br/>feedback ≥ 1"]
+        CE["context_events<br/>timeline (opt-in)"]
     end
-    HS & PE & CE --> MINER["DeskMateTrainingDataMiner<br/>extract_sft_pairs()"]
+    HS & PE & BH & AK & CE --> MINER["DeskMateTrainingDataMiner<br/>extract_sft_pairs()"]
     MINER --> PAIRS["[{input, output, source, …}]<br/>(deduped)"]
     PAIRS --> TRAINER["LoRATrainer.train()"]
     TRAINER --> TOK["tokenize (chat template)"]
@@ -38,22 +39,69 @@ flowchart TB
     FIT --> ADP["adapter saved to<br/>~/.deskmate/checkpoints/lora/final"]
 ```
 
-### The three data sources
+### The five data sources
 
-The miner is the DeskMate analog of OpenJarvis's `TrainingDataMiner` (which read
-an agent trace store). DeskMate has no such store, so pairs come from:
+DeskMate derives supervised pairs from five local tables. Each source has its
+own **quality gate** so that
+only trustworthy, high-signal rows reach the training set. The `source` selector
+(`TrainingConfig.sources` / `--sources`) maps to a config key, and each config
+key maps to one extractor method on `DeskMateTrainingDataMiner`:
 
-| Source tag | From | input → output |
-|------------|------|----------------|
-| `habit_suggestion` | `habit_suggestions` the user marked useful (`feedback ≥ min_feedback`) | trigger context → the accepted coaching message |
-| `pipe_execution` | successful `pipe_executions` with non-empty output | "Run the '<pipe>' assistant…" → the produced report |
-| `timeline:<src>` | unified `context_events` | observable window state → the fused human-readable summary |
+| Config key | `source` tag | From table | Quality gate | input → output |
+|------------|--------------|-----------|--------------|----------------|
+| `habits`   | `habit_suggestion` | `habit_suggestions` | `feedback ≥ min_feedback` (user marked useful) | trigger context → the accepted coaching nudge |
+| `pipes`    | `pipe_execution`   | `pipe_executions`   | `status = 'success'` & non-empty output | "Run the '\<pipe\>' assistant…" → the produced report |
+| `behavior` | `behavior`         | `habit_profiles`    | `sample_days ≥ 2` & `frequency ≥ 0.3` | "What do I usually do on \<day\> around \<HH:MM\>?" → routine description |
+| `ask`      | `ask`              | `ask_history`       | `feedback ≥ min_feedback` (user clicked 👍 **有用**) | the user's own question → the grounded answer |
+| `timeline` | `timeline:<src>`   | `context_events`    | content kinds only + noise/echo filters | observable window state → fused human-readable summary |
 
-- Pairs shorter than `min_chars` (either side) are dropped.
-- Timeline rows whose summary merely restates the window title are skipped
-  (avoids degenerate pairs).
+**Defaults**: `sources = ["habits", "pipes", "behavior", "ask"]`. `timeline` is
+**deliberately excluded by default** — it is mostly raw echo ("what did I type in
+Code.exe?" → the literal typed text), which is low-signal and privacy-sensitive.
+It stays in `SOURCES` so it can still be selected manually in the UI / CLI.
+
+#### Per-source detail
+
+1. **`habits`** — `_from_habit_suggestions`. Every reminder the coaching rules fire
+   (overwork, break, late-night, …) is logged with its trigger context. Only rows
+   the user **rated useful** become pairs:
+   - input: `"My recent activity shows: <ctx>. What helpful nudge should I get?"`
+     (or `"The '<rule>' pattern was detected…"` when context is empty)
+   - output: the exact nudge message that was shown
+
+2. **`pipes`** — `_from_pipe_executions`. Each automation pipe run records its
+   produced report. Only **successful** runs with non-empty output are kept:
+   - input: `"Run the '<pipe>' assistant and report the result."`
+   - output: the report the pipe actually generated
+
+3. **`behavior`** — `_from_habit_profiles`. The learned routine profile (per
+   weekday/weekend × 30-min slot: dominant category, top app, avg minutes,
+   frequency). Only **statistically stable** slots (≥2 days, ≥30% frequency) are
+   turned into Q&A:
+   - input: `"What do I usually do on weekdays around 09:00?"`
+   - output: `"Typically Coding, usually in Code.exe, for about 25 min (on 80% of days)."`
+
+4. **`ask`** — `_from_ask_history`. Every answered Ask query is logged; the UI shows
+   a **👍 有用 / 👎 没用** control under each answer. Only answers the user marked
+   useful (`feedback ≥ min_feedback`) are mined — the same gate as `habits` — so a
+   casual or wrong answer never leaks into training:
+   - input: the user's original question
+   - output: the grounded answer that was accepted
+
+5. **`timeline`** (opt-in) — `_from_context_events`. The fused unified timeline.
+   Only content-bearing kinds (transcripts, clipboard, typed text) are mined;
+   coordinate/trigger/accessibility noise and title-echo rows are rejected. Still
+   off by default for the quality/privacy reasons above.
+
+#### Shared post-processing
+
+- Pairs shorter than `min_chars` (either side) are dropped via `_keep`.
+- Rows whose output merely restates the window title are skipped (avoids
+  degenerate pairs).
 - `(input, output)` duplicates are collapsed, first occurrence kept, capped at
   `max_pairs`.
+- The trainer only ever reads the `input` / `output` keys; the extra metadata
+  (`source`, `rule`, `pipe`, `kind`, `feedback`, `ts`) is for preview/debugging.
 
 ### The trainer
 
@@ -72,7 +120,10 @@ explicit hint > cuda > mps > cpu.
 deskmate train-lora --dry-run
 
 # Train (requires: pip install 'deskmate[training]')
-deskmate train-lora --epochs 3 --sources habits,pipes,timeline
+deskmate train-lora --epochs 3 --sources habits,pipes,behavior,ask
+
+# Opt in to the low-signal timeline source explicitly if you want it
+deskmate train-lora --sources habits,pipes,behavior,ask,timeline
 ```
 
 Flags: `--model`, `--output-dir`, `--sources`, `--epochs`, `--max-pairs`,
@@ -97,8 +148,8 @@ Flags: `--model`, `--output-dir`, `--sources`, `--epochs`, `--max-pairs`,
 | `enabled` | `true` | Whether the subsystem is exposed |
 | `model_name` | `Qwen/Qwen3-0.6B` | Base model to adapt |
 | `output_dir` | `""` → `~/.deskmate/checkpoints/lora` | Adapter output dir |
-| `sources` | `["habits","pipes","timeline"]` | Which sources to mine |
-| `min_feedback` / `min_chars` | `1` / `8` | Quality thresholds |
+| `sources` | `["habits","pipes","behavior","ask"]` | Which sources to mine (`timeline` available but off by default) |
+| `min_feedback` / `min_chars` | `1` / `8` | Quality thresholds (gates `habits` & `ask`) |
 | `limit_per_source` / `max_pairs` | `2000` / `5000` | Mining caps |
 | `lora_rank` / `lora_alpha` / `lora_dropout` | `16` / `32` / `0.05` | LoRA params |
 | `target_modules` | `["q_proj","v_proj"]` | Modules to adapt |
@@ -123,8 +174,13 @@ training is gated.
    it opens its own read connection, mirroring `fusion/store.py`.
 2. **Guarded ML imports + optional extra** — Keeps the base install light and the
    module importable everywhere; failures are explicit and actionable.
-3. **Three local sources with quality gates** — Reuses signals DeskMate already
-   has (user feedback, successful pipe outputs, the fused timeline) instead of
-   requiring a separate labeling step.
-4. **Opt-in only** — Nothing trains automatically; the user invokes the CLI or API
+3. **Five local sources, each with a quality gate** — Reuses signals DeskMate
+   already has (user 👍 feedback on nudges and Ask answers, successful pipe
+   outputs, statistically stable behavior profiles) instead of requiring a
+   separate labeling step. `habits` and `ask` gate on explicit user approval,
+   `pipes` on execution success, `behavior` on statistical significance.
+4. **Timeline off by default** — `context_events` echo pairs are low-signal and
+   privacy-sensitive, so they are excluded from the default `sources` but remain
+   manually selectable for users who want maximum data volume.
+5. **Opt-in only** — Nothing trains automatically; the user invokes the CLI or API
    explicitly.

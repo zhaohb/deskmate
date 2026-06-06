@@ -1,18 +1,21 @@
 """DeskMateTrainingDataMiner — extract supervised (input, output) SFT pairs.
 
-Analog of OpenJarvis's ``TrainingDataMiner`` (which mined an agent trace store).
-DeskMate has no agent trace store, so this miner derives SFT pairs from three
+DeskMate has no agent trace store, so this miner derives SFT pairs from five
 existing local data sources, none of which are modified:
 
 * **habits** — ``habit_suggestions`` rows the user marked useful (``feedback``
-  >= threshold). The closest analog to OpenJarvis's "trace + feedback": the
-  trigger context becomes the input and the accepted coaching message the
-  output.
+  >= threshold). The trigger context becomes the input and the accepted
+  coaching message the output.
 * **pipes** — successful ``pipe_executions``. The pipe invocation becomes the
   input and its produced report the output.
-* **timeline** — the unified ``context_events`` stream. The observable window
-  state becomes the input and the fused human-readable summary the output
-  (kept only when the summary adds information beyond the window title).
+* **behavior** — statistically stable ``habit_profiles`` slots. A routine
+  question becomes the input and the habit description the output.
+* **ask** — ``ask_history`` answers the user marked useful (``feedback`` >=
+  threshold). The original question becomes the input and the grounded answer
+  the output.
+* **timeline** — the unified ``context_events`` stream (opt-in). The observable
+  window state becomes the input and the fused human-readable summary the
+  output (kept only when the summary adds information beyond the window title).
 
 Each pair is a dict with keys ``input``, ``output``, ``source`` (provenance)
 plus light metadata. Duplicate ``(input, output)`` pairs are collapsed.
@@ -368,20 +371,21 @@ class DeskMateTrainingDataMiner:
         return pairs
 
     def _from_ask_history(self, limit: int) -> list[dict[str, Any]]:
-        """Answered Ask queries → (question, grounded answer) pairs.
+        """User-approved Ask answers → (question, grounded answer) pairs.
 
-        The user's own questions paired with the assistant's evidence-based
-        answers are the highest-signal SFT source. Empty answers and obvious
-        "no data / paused recording" non-answers are dropped.
+        Only answers the user explicitly marked useful (``feedback`` >=
+        threshold) are mined — the same quality gate as ``habit_suggestions`` —
+        so a casual or wrong answer never leaks into the training set.
         """
         try:
             rows = self._conn.execute(
                 """SELECT question, answer, created_at
                        FROM ask_history
                       WHERE answer IS NOT NULL AND TRIM(answer) <> ''
+                        AND feedback IS NOT NULL AND feedback >= ?
                    ORDER BY created_at DESC
                       LIMIT ?""",
-                (int(limit),),
+                (self._min_feedback, int(limit)),
             ).fetchall()
         except sqlite3.Error as exc:
             logger.debug("ask_history unavailable: %s", exc)

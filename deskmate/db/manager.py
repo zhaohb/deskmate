@@ -58,6 +58,16 @@ class DatabaseManager:
             self._conn.executescript(SCHEMA)
             self._record_migration(SCHEMA_VERSION)
             self._ensure_todo_columns()
+            self._ensure_ask_history_columns()
+
+    def _ensure_ask_history_columns(self) -> None:
+        """Add the ``feedback`` column to ``ask_history`` on pre-existing DBs."""
+        cols = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(ask_history)").fetchall()
+        }
+        if cols and "feedback" not in cols:
+            self._conn.execute("ALTER TABLE ask_history ADD COLUMN feedback INTEGER")
 
     def _ensure_todo_columns(self) -> None:
         """Add columns introduced after first install (CREATE IF NOT EXISTS is not enough)."""

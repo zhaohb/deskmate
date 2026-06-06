@@ -424,6 +424,7 @@ CREATE TABLE IF NOT EXISTS ask_history (
     question    TEXT    NOT NULL,
     answer      TEXT    NOT NULL,
     tool_count  INTEGER NOT NULL DEFAULT 0,     -- number of tool calls used
+    feedback    INTEGER,                        -- user rating: 1=useful, -1=not, NULL=unrated
     created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_ask_history_created ON ask_history(created_at);

@@ -633,12 +633,12 @@ const TRN_SOURCE_LABEL = {
 const TRN_SOURCE_DESC = {
   habits: "你点过「有用」的主动提醒 → 学会该在什么情境给你什么提醒",
   pipes: "成功运行过的本地 Apps 的输入/输出 → 学会你常用的任务",
-  timeline: "时间线里的语音转写、复制、输入文本 → 学会你的表达内容",
+  timeline: "时间线里的语音转写、复制、输入文本（不推荐：多为原文回显，质量低）",
   behavior: "作息热力图里的高频规律 → 学会你「几点通常做什么」",
   ask: "你问过 Ask 的问题和它的回答 → 学会你的提问方式与偏好",
 };
 const trainingUi = {
-  sources: { habits: true, pipes: true, timeline: true, behavior: true, ask: true },
+  sources: { habits: true, pipes: true, timeline: false, behavior: true, ask: true },
   paramsInit: false,
   running: false,
   breakdown: {},
@@ -2291,9 +2291,11 @@ async function runSearch(event) {
   const answer = $("#homeAskAnswer");
   const toolLog = $("#homeAskToolLog");
   const stats = $("#homeAskStats");
+  const feedback = $("#homeAskFeedback");
 
   if (answer) { answer.innerHTML = '<div class="ask-loading"><span class="ask-spinner"></span>Thinking and searching data…</div>'; answer.classList.remove("hidden"); }
   if (toolLog) { toolLog.innerHTML = ""; toolLog.classList.add("hidden"); }
+  if (feedback) { feedback.innerHTML = ""; feedback.classList.add("hidden"); }
   if (stats) stats.textContent = "Searching…";
 
   try {
@@ -2316,10 +2318,37 @@ async function runSearch(event) {
       toolLog.innerHTML = renderToolLog(result.tool_calls);
       toolLog.classList.remove("hidden");
     }
+
+    if (feedback && result.ask_id && !result.error) {
+      renderAskFeedback(feedback, result.ask_id);
+    }
   } catch (err) {
     if (stats) stats.textContent = "Error";
     if (answer) { answer.innerHTML = `<div class="ask-error">Ask failed: ${escHtml(err.message)}</div>`; answer.classList.remove("hidden"); }
   }
+}
+
+function renderAskFeedback(box, askId) {
+  box.innerHTML =
+    '<span class="ask-fb-q">这个回答有用吗？训练本地模型会用到你点「有用」的回答。</span>' +
+    '<button type="button" class="ghost" data-act="up">👍 有用</button>' +
+    '<button type="button" class="ghost" data-act="down">👎 没用</button>';
+  box.classList.remove("hidden");
+  const send = async (score) => {
+    try {
+      await api(`/ask/${askId}/feedback`, {
+        method: "POST",
+        body: JSON.stringify({ feedback: score }),
+      });
+      box.innerHTML = score === 1
+        ? '<span class="ask-fb-done">已标记「有用」✓ 会用于本地训练</span>'
+        : '<span class="ask-fb-done">已标记「没用」✓ 不会用于训练</span>';
+    } catch (err) {
+      box.innerHTML = `<span class="ask-fb-done">反馈失败：${escHtml(err.message)}</span>`;
+    }
+  };
+  box.querySelector('[data-act="up"]')?.addEventListener("click", () => send(1));
+  box.querySelector('[data-act="down"]')?.addEventListener("click", () => send(-1));
 }
 
 function cleanAskAnswerText(text) {
