@@ -162,6 +162,8 @@ CREATE TABLE IF NOT EXISTS audio_transcriptions (
     end_time REAL,
     text_length INTEGER NOT NULL DEFAULT 0,
     redacted_transcription TEXT,
+    translation TEXT,                          -- live-translation target text (nullable)
+    translation_lang TEXT,                     -- target language ISO code for `translation`
     FOREIGN KEY (audio_chunk_id) REFERENCES audio_chunks(id) ON DELETE SET NULL,
     FOREIGN KEY (speaker_id) REFERENCES speakers(id) ON DELETE SET NULL
 );

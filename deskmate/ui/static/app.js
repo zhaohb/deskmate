@@ -11,6 +11,10 @@ const state = {
   monitors: [],
   todos: [],
   meetings: [],
+  // Live translation view: ordered rows keyed by transcript id. Each row holds
+  // the original text (from AUDIO_TRANSCRIBED) and its translation (filled in
+  // when TRANSCRIPT_TRANSLATED arrives), so the UI shows "translating…" → text.
+  translate: { rows: [], byId: new Map(), loaded: false },
   email: {
     gmail: { status: null, instances: [], messages: [], error: null },
     outlook: { status: null, instances: [], messages: [], error: null },
@@ -28,6 +32,7 @@ const titles = {
   overview: ["Home", "Search, review recent activity, and run analysis apps"],
   timeline: ["Timeline", "Browse recent frames, screenshots, and metadata"],
   transcripts: ["Transcripts", "Recent audio transcriptions, devices, and segments"],
+  translate: ["Translate", "Live speech translation — original and translation side by side"],
   events: ["Events", "Keyboard, mouse, clipboard, window focus, and capture events"],
   apps: ["My Apps", "Local LLM analysis apps"],
   email: ["Email", "OAuth mail connections, recent messages, sending, and digest"],
@@ -356,6 +361,9 @@ function setView(name) {
   if (name === "reminders") {
     refreshRemindersView();
   }
+  if (name === "translate") {
+    refreshTranslateView();
+  }
 }
 
 async function refreshAll() {
@@ -503,6 +511,14 @@ function connectEventStream() {
       scheduleSection("frames", refreshFramesSection);
     } else if (type === "audio_transcribed") {
       scheduleSection("transcripts", refreshTranscriptsSection);
+      onTranslateTranscribed(payload.data || {});
+    } else if (type === "transcript_translated") {
+      // Live translation arrived for a transcript: try to patch the visible row
+      // in place (no flicker); fall back to a section refresh if it isn't shown.
+      if (!applyTranslationToRow(payload.data || {})) {
+        scheduleSection("transcripts", refreshTranscriptsSection);
+      }
+      onTranslateTranslated(payload.data || {});
     } else if (
       type === "click" ||
       type === "key_text" ||
@@ -1369,14 +1385,261 @@ function transcriptsEmptyMessage() {
 
 function renderTranscripts() {
   const transcripts = state.transcripts || [];
-  const render = (transcript) => listItem({
-    title: `${transcript.device || "audio"} · ${formatTime(transcript.timestamp)}`,
-    subtitle: textPreview(transcript.transcription || transcript.redacted_transcription, 220),
-    actionLabel: "Details",
-    onAction: () => selectTranscript(transcript),
-  });
+  const render = (transcript) => {
+    const node = listItem({
+      title: `${transcript.device || "audio"} · ${formatTime(transcript.timestamp)}`,
+      subtitle: textPreview(transcript.transcription || transcript.redacted_transcription, 220),
+      actionLabel: "Details",
+      onAction: () => selectTranscript(transcript),
+    });
+    // Tag the row so live TRANSCRIPT_TRANSLATED events can patch it in place,
+    // and render any translation we already have under the original text.
+    const li = node.querySelector(".list-item");
+    const tid = transcript.id || transcript.transcription_id;
+    if (li && tid != null) li.dataset.transcriptId = String(tid);
+    const sub = li ? li.querySelector(".item-subtitle") : null;
+    if (sub && transcript.translation) {
+      sub.appendChild(translationLine(transcript.translation));
+    }
+    return node;
+  };
   renderList("#transcriptsList", transcripts, render, transcriptsEmptyMessage());
   renderPagination("transcripts", transcripts.length);
+}
+
+// A muted, indented line holding a transcript's translated text.
+function translationLine(text) {
+  const div = document.createElement("div");
+  div.className = "transcript-translation";
+  div.textContent = text || "";
+  return div;
+}
+
+// Patch a visible transcript row with its translation when a TRANSCRIPT_TRANSLATED
+// event arrives. Returns true if the row was found and updated, false otherwise
+// (caller then falls back to a full section refresh).
+function applyTranslationToRow(payload) {
+  const tid = payload && payload.transcript_id;
+  const text = payload && payload.translation;
+  if (tid == null || !text) return false;
+  // Keep state in sync so a later re-render preserves the translation.
+  const row = (state.transcripts || []).find(
+    (t) => String(t.id || t.transcription_id) === String(tid),
+  );
+  if (row) row.translation = text;
+  const li = document.querySelector(`#transcriptsList .list-item[data-transcript-id="${tid}"]`);
+  if (!li) return false;
+  const sub = li.querySelector(".item-subtitle");
+  if (!sub) return false;
+  let line = sub.querySelector(".transcript-translation");
+  if (!line) {
+    line = translationLine(text);
+    sub.appendChild(line);
+  } else {
+    line.textContent = text;
+  }
+  return true;
+}
+
+// ── Live translation view ────────────────────────────────────────────────────
+
+// Load recent transcripts into the translate stream (most recent last) and
+// render. Called when the Translate view opens; afterwards the SSE handlers
+// keep it live without re-fetching.
+let _translateControlsWired = false;
+
+async function refreshTranslateView() {
+  wireTranslateControls();
+  // Pull the authoritative translate settings (config may have changed elsewhere).
+  try {
+    const s = await api("/config/audio/translate");
+    if (state.config && state.config.audio) Object.assign(state.config.audio, s);
+  } catch (e) {
+    console.error("[translate] settings load failed", e);
+  }
+  updateTranslateStatus();
+  try {
+    const rows = await api("/audio/list?limit=40");
+    const t = state.translate;
+    t.rows = [];
+    t.byId = new Map();
+    // API returns newest-first; show oldest-first so new lines append at the bottom.
+    for (const r of (rows || []).slice().reverse()) {
+      const id = r.id || r.transcription_id;
+      if (id == null) continue;
+      const row = {
+        id,
+        device: r.device || r.device_name || "audio",
+        source: r.transcription || r.redacted_transcription || "",
+        translation: r.translation || "",
+        lang: r.language || "",
+        ts: r.timestamp,
+      };
+      t.rows.push(row);
+      t.byId.set(String(id), row);
+    }
+    t.loaded = true;
+    renderTranslateStream();
+  } catch (e) {
+    console.error("[translate] load failed", e);
+  }
+}
+
+function updateTranslateStatus() {
+  const a = (state.config && state.config.audio) || {};
+  const on = a.translate_enabled === true;
+  const dot = $("#trxDot");
+  const txt = $("#trxStatusText");
+  const meta = $("#trxMeta");
+  if (dot) dot.classList.toggle("on", on);
+  if (txt) txt.textContent = on ? "Live translation on" : "Live translation off";
+  if (meta) {
+    meta.textContent = on
+      ? `${a.translate_target_lang || "zh"} · ${a.translate_latency_mode || "balanced"}`
+      : "Toggle on to start";
+  }
+  // Sync controls to current settings.
+  const enable = $("#trxEnable");
+  if (enable) enable.checked = on;
+  const tl = $("#trxTargetLang");
+  if (tl && a.translate_target_lang) tl.value = a.translate_target_lang;
+  const lat = $("#trxLatency");
+  if (lat && a.translate_latency_mode) lat.value = a.translate_latency_mode;
+  const tgt = $("#trxTgtLabel");
+  if (tgt) tgt.textContent = `Translation (${a.translate_target_lang || "zh"})`;
+}
+
+function wireTranslateControls() {
+  if (_translateControlsWired) return;
+  _translateControlsWired = true;
+  const enable = $("#trxEnable");
+  const tl = $("#trxTargetLang");
+  const lat = $("#trxLatency");
+  if (enable) enable.addEventListener("change", () => postTranslateConfig({ enabled: enable.checked }));
+  if (tl) tl.addEventListener("change", () => postTranslateConfig({ target_lang: tl.value }));
+  if (lat) lat.addEventListener("change", () => postTranslateConfig({ latency_mode: lat.value }));
+}
+
+async function postTranslateConfig(patch) {
+  try {
+    const res = await api("/config/audio/translate", {
+      method: "POST",
+      body: JSON.stringify(patch),
+    });
+    if (state.config && state.config.audio) Object.assign(state.config.audio, res);
+    updateTranslateStatus();
+  } catch (e) {
+    showError(e);
+  }
+}
+
+// One scroll container holding a 2-column grid. Each utterance contributes a
+// timestamp line (spanning both columns) plus an original cell and a
+// translation cell on the same grid row, so the two sides stay aligned and
+// share a single scrollbar.
+function renderTranslateStream() {
+  const grid = $("#trxGrid");
+  if (!grid) return;
+  const rows = state.translate.rows || [];
+  // Wipe everything except the two sticky column headers.
+  for (const el of Array.from(grid.querySelectorAll(".trx-meta-row, .trx-cell, .trx-grid-empty"))) {
+    el.remove();
+  }
+  if (!rows.length) {
+    const empty = document.createElement("div");
+    empty.id = "trxEmpty";
+    empty.className = "trx-grid-empty";
+    empty.textContent = "No speech yet — enable live translation and speak.";
+    grid.appendChild(empty);
+    return;
+  }
+  for (const row of rows) appendTranslateRowCells(grid, row);
+  scrollTranslateToEnd();
+}
+
+// Append one utterance's three grid items (meta line + src cell + tgt cell).
+function appendTranslateRowCells(grid, row) {
+  const meta = document.createElement("div");
+  meta.className = "trx-meta-row";
+  meta.dataset.transcriptId = String(row.id);
+  meta.textContent = `${row.device || "audio"} · ${formatTime(row.ts)}`;
+
+  const src = document.createElement("div");
+  src.className = "trx-cell trx-cell-src";
+  src.dataset.transcriptId = String(row.id);
+  src.textContent = row.source || "";
+
+  const tgt = document.createElement("div");
+  tgt.className = "trx-cell trx-cell-tgt";
+  tgt.dataset.transcriptId = String(row.id);
+  if (row.translation) {
+    tgt.textContent = row.translation;
+  } else {
+    tgt.classList.add("pending");
+    tgt.textContent = "翻译中…";
+  }
+  grid.append(meta, src, tgt);
+}
+
+// SSE: a new transcript was produced — append its original immediately and a
+// pending translation placeholder on the same grid row.
+function onTranslateTranscribed(payload) {
+  if (!state.translate.loaded) return; // not viewing/loaded yet; full load handles it
+  const id = payload && payload.transcript_id;
+  if (id == null) return;
+  const t = state.translate;
+  const key = String(id);
+  let row = t.byId.get(key);
+  if (!row) {
+    row = { id, device: payload.device || "audio", source: payload.text || "", translation: "", ts: new Date().toISOString() };
+    t.rows.push(row);
+    t.byId.set(key, row);
+    const grid = $("#trxGrid");
+    if (grid) {
+      const empty = $("#trxEmpty");
+      if (empty) empty.remove();
+      appendTranslateRowCells(grid, row);
+      scrollTranslateToEnd();
+    }
+  } else if (payload.text) {
+    row.source = payload.text;
+    patchTranslateRow(row);
+  }
+}
+
+// SSE: a translation arrived — fill the matching translation cell.
+function onTranslateTranslated(payload) {
+  const id = payload && payload.transcript_id;
+  const text = payload && payload.translation;
+  if (id == null || !text) return;
+  const row = state.translate.byId.get(String(id));
+  if (row) {
+    row.translation = text;
+    patchTranslateRow(row);
+    scrollTranslateToEnd();
+  }
+}
+
+function patchTranslateRow(row) {
+  const srcCell = document.querySelector(`#trxGrid .trx-cell-src[data-transcript-id="${row.id}"]`);
+  if (srcCell && row.source) srcCell.textContent = row.source;
+  const tgtCell = document.querySelector(`#trxGrid .trx-cell-tgt[data-transcript-id="${row.id}"]`);
+  if (tgtCell && row.translation) {
+    tgtCell.classList.remove("pending");
+    tgtCell.textContent = row.translation;
+  }
+}
+
+function translateViewActive() {
+  const v = document.getElementById("view-translate");
+  return v && v.classList.contains("active");
+}
+
+function scrollTranslateToEnd() {
+  const cb = $("#trxAutoscroll");
+  if (cb && !cb.checked) return;
+  const host = $("#trxScroll");
+  if (host) host.scrollTop = host.scrollHeight;
 }
 
 function renderPagination(kind, itemCount) {
@@ -1430,13 +1693,19 @@ function selectTranscript(transcript) {
     field("Audio chunk", transcript.audio_chunk_id),
     field("Segment", `${displayValue(transcript.start_time)}s → ${displayValue(transcript.end_time)}s`),
   );
+  if (transcript.translation) {
+    grid.append(field("Translation", transcript.translation_lang || ""));
+  }
 
   el.append(
     detailHero("audio transcript", textPreview(text, 96)),
     grid,
     bodyBlock(text),
-    rawBlock("raw transcript", transcript),
   );
+  if (transcript.translation) {
+    el.append(bodyBlock(transcript.translation));
+  }
+  el.append(rawBlock("raw transcript", transcript));
 }
 
 function rawEventData(event) {

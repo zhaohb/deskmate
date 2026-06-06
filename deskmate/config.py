@@ -78,6 +78,22 @@ class AudioConfig(BaseModel):
     enabled: bool = False
     sample_rate: int = 16000
     chunk_seconds: int = 30
+    # Chunking strategy for how raw audio is sliced into chunks for transcription:
+    #   fixed:    accumulate exactly `chunk_seconds` then emit (legacy, high latency
+    #             but cheap — one transcription per 30s).
+    #   endpoint: emit as soon as a speech utterance ends (VAD detects a pause), so
+    #             a sentence is transcribed/translated ~1-4s after it is spoken.
+    #             This is the low-latency path for live translation.
+    chunk_mode: Literal["fixed", "endpoint"] = "fixed"
+    # endpoint mode: a silence gap (ms) at the tail of the rolling buffer marks the
+    # end of an utterance and triggers an emit. Smaller => lower latency, choppier.
+    endpoint_silence_ms: int = 700
+    # endpoint mode: force-emit when the buffer reaches this many seconds even if the
+    # speaker hasn't paused, so a long monologue still streams out.
+    endpoint_max_chunk_s: float = 8.0
+    # endpoint mode: don't emit utterances shorter than this; carry them into the
+    # next chunk so "嗯"/"对" fragments aren't transcribed/translated on their own.
+    endpoint_min_chunk_s: float = 1.0
     loopback: bool = True
     microphone: bool = True
     # Default tier uses large-v3-turbo; small is a balanced default for Chinese
@@ -109,6 +125,27 @@ class AudioConfig(BaseModel):
     speaker_recognition: bool = False
     # Language codes for transcription (ISO 639-1). [] = auto-detect all languages.
     languages: list[str] = ["zh"]
+    # --- live translation (opt-in) ---
+    # When enabled, each transcript segment is translated by the local Ollama LLM
+    # into `translate_target_lang` and pushed to the UI in real time. Off by
+    # default; turning it on adds one LLM call per spoken utterance.
+    translate_enabled: bool = False
+    # Target language for translation (ISO 639-1, e.g. "zh", "en", "ja").
+    translate_target_lang: str = "zh"
+    # Skip translation when the transcript's detected language already equals the
+    # target language (no point translating zh→zh).
+    translate_skip_if_same: bool = True
+    # Latency/quality trade-off for live translation. Maps onto the endpoint
+    # silence threshold above when chunk_mode="endpoint":
+    #   fast:     ~400ms pause  — lowest latency, choppier segments
+    #   balanced: ~700ms pause  — a natural clause (default)
+    #   quality:  ~1000ms pause — fuller sentences, best translation
+    translate_latency_mode: Literal["fast", "balanced", "quality"] = "balanced"
+    # How many preceding utterances to feed the translator as context (improves
+    # pronoun/terminology consistency without re-translating them). 0 disables.
+    translate_context_window: int = 2
+    # Ollama model for translation. Empty => use the global [ollama] model.
+    translate_model: str = ""
 
 
 class RedactConfig(BaseModel):
@@ -360,6 +397,59 @@ def set_audio_languages(languages: list[str]) -> None:
     cfg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _render_toml_value(value: object) -> str:
+    """Render a Python scalar as a TOML literal (bool/str/number only)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return f'"{value}"'
+    return str(value)
+
+
+def set_audio_value(key: str, value: object) -> None:
+    """Persist a single ``[audio] <key> = <value>`` to config.toml in place.
+
+    Like :func:`set_audio_languages` but for a scalar key (bool/str/number),
+    rewriting just that line inside the ``[audio]`` table — or inserting it if
+    absent — so comments and other settings are preserved. Best-effort: a
+    missing file is created from defaults first.
+    """
+    import re  # noqa: PLC0415
+
+    cfg_path = paths.config_path()
+    if not cfg_path.exists():
+        cfg_path.write_text(_render_default_toml(), encoding="utf-8")
+
+    new_line = f"{key} = {_render_toml_value(value)}"
+    lines = cfg_path.read_text(encoding="utf-8").splitlines()
+    in_audio = False
+    audio_start = -1
+    replaced = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_audio = stripped == "[audio]"
+            if in_audio:
+                audio_start = i
+            continue
+        if in_audio and re.match(rf"^\s*{re.escape(key)}\s*=", line):
+            comment = ""
+            if "#" in line:
+                comment = "  " + line[line.index("#"):].rstrip()
+            lines[i] = new_line + comment
+            replaced = True
+            break
+
+    if not replaced:
+        if audio_start >= 0:
+            lines.insert(audio_start + 1, new_line)
+        else:
+            lines.append("[audio]")
+            lines.append(new_line)
+
+    cfg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _render_default_toml() -> str:
     return """# DeskMate configuration. See deskmate/config.py for all fields.
 
@@ -393,6 +483,11 @@ openvino_genai_model = "OpenVINO/whisper-medium-int8-ov"
 openvino_device = "NPU"            # NPU | GPU | CPU | AUTO (openvino_genai backend only)
 languages = ["zh"]
 vad_min_segment_ms = 1000
+# --- live translation (opt-in) ---
+chunk_mode = "fixed"               # fixed (30s, legacy) | endpoint (low-latency, per-utterance)
+translate_enabled = false          # translate each utterance via local Ollama
+translate_target_lang = "zh"       # ISO 639-1 target language
+translate_latency_mode = "balanced"  # fast | balanced | quality
 
 [redact]
 enabled = false

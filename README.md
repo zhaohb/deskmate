@@ -15,6 +15,7 @@ All data stays on your machine.
 - UI Automation text + OCR indexing (RapidOCR/PP-OCR, WinRT, or Tesseract)
 - Keyboard, mouse, clipboard, and window-focus events
 - Optional local audio transcription (Whisper + VAD; optional Intel NPU/GPU acceleration via OpenVINO)
+- **Live translation** — low-latency speech translation (per-utterance, via local Ollama) shown in the UI
 - **Video-call detection** (Teams, Zoom, Meet, Webex, …) with per-meeting transcripts
 - Full-text search and natural-language **Ask** (Ollama + 6 tool calls: search, activity, meetings, email)
 - **Gmail / Outlook OAuth** for real mailbox search in Ask and apps (not OCR-only)
@@ -81,6 +82,24 @@ The model is auto-downloaded from ModelScope on first use (default
 later starts load in seconds. If the chosen device can't load, it falls back to
 `onnx_cpu` automatically. See [docs/04-audio.md](docs/04-audio.md#whisper-backends)
 for device benchmarks and the full fallback chain.
+
+### Live translation (speech → target language)
+
+Translate spoken audio in near real time via the local Ollama LLM. It cuts audio
+at speech pauses (each chunk is a full clause, ~1–4s latency) and shows the
+translation under each transcript in the UI. In `~/.deskmate/config.toml`:
+
+```toml
+[audio]
+enabled = true
+chunk_mode = "endpoint"          # low-latency per-utterance chunking
+translate_enabled = true
+translate_target_lang = "zh"     # ISO 639-1 target
+translate_latency_mode = "balanced"   # fast | balanced | quality
+```
+
+Requires a running [Ollama](http://127.0.0.1:11434). See
+[docs/18-live-translation.md](docs/18-live-translation.md) for the design.
 
 ## Quick Start
 

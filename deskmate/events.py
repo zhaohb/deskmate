@@ -26,6 +26,7 @@ class EventType(str, Enum):
     FRAME_WRITTEN = "frame_written"
     A11Y_WRITTEN = "a11y_written"
     AUDIO_TRANSCRIBED = "audio_transcribed"
+    TRANSCRIPT_TRANSLATED = "transcript_translated"
     WORKFLOW = "workflow"
     MEETING_STARTED = "meeting_started"
     MEETING_ENDED = "meeting_ended"

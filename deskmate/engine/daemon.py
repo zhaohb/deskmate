@@ -10,7 +10,12 @@ from .. import events as bus
 from .. import paths
 from ..a11y import UiRecorder
 from ..a11y.ui_event_types import UiEventInsert
-from ..audio import AudioRecorder, SpeakerIdentifier, WhisperTranscriber
+from ..audio import (
+    AudioRecorder,
+    SpeakerIdentifier,
+    TranscriptTranslator,
+    WhisperTranscriber,
+)
 from ..capture import PairedCapture
 from ..capture.event_driven_capture import run_event_driven_capture_loop
 from ..capture.frame_linker import FrameLinkerActor
@@ -26,6 +31,19 @@ from ..redact import OnnxRedactor, RedactReconciler
 from .app_scheduler import AppScheduler
 
 logger = get("engine.daemon")
+
+# Maps the user-facing latency/quality preset onto the endpoint silence gap (ms).
+# Larger gap => waits for a fuller sentence => higher latency, better translation.
+_LATENCY_SILENCE_MS = {"fast": 400, "balanced": 700, "quality": 1000}
+
+
+def _endpoint_silence_ms(audio) -> int:
+    """Resolve the endpoint pause threshold from the translate latency preset,
+    falling back to the explicit ``endpoint_silence_ms`` for unknown presets."""
+    return _LATENCY_SILENCE_MS.get(
+        getattr(audio, "translate_latency_mode", "balanced"),
+        audio.endpoint_silence_ms,
+    )
 
 
 class Daemon:
@@ -51,6 +69,10 @@ class Daemon:
             chunk_seconds=self.cfg.audio.chunk_seconds,
             microphone=self.cfg.audio.microphone,
             loopback=self.cfg.audio.loopback,
+            chunk_mode=self.cfg.audio.chunk_mode,
+            endpoint_silence_ms=_endpoint_silence_ms(self.cfg.audio),
+            endpoint_max_chunk_s=self.cfg.audio.endpoint_max_chunk_s,
+            endpoint_min_chunk_s=self.cfg.audio.endpoint_min_chunk_s,
         ) if self.cfg.audio.enabled else None
         self.transcriber = WhisperTranscriber(
             self.cfg.audio.whisper_model,
@@ -66,6 +88,21 @@ class Daemon:
             openvino_cache_dir=self.cfg.audio.openvino_cache_dir or str(paths.ov_cache_dir()),
         ) if self.cfg.audio.enabled else None
         self.speaker = SpeakerIdentifier() if self.cfg.audio.enabled and self.cfg.audio.speaker_recognition else None
+
+        # Live translation (opt-in): translate each transcript utterance via the
+        # local LLM on a background worker so it never blocks the audio loop.
+        self.translator = (
+            TranscriptTranslator(
+                target_lang=self.cfg.audio.translate_target_lang,
+                model=self.cfg.audio.translate_model,
+                skip_if_same=self.cfg.audio.translate_skip_if_same,
+                context_window=self.cfg.audio.translate_context_window,
+            )
+            if self.cfg.audio.enabled and self.cfg.audio.translate_enabled
+            else None
+        )
+        # (transcript_id, text, source_lang, device) jobs for the translate worker.
+        self._translate_queue: "queue.Queue[tuple[int, str, str | None, str]]" = queue.Queue(maxsize=256)
 
         onnx_path = getattr(self.cfg.redact, "onnx_model_path", None)
         tok_path = getattr(self.cfg.redact, "onnx_tokenizer_path", None)
@@ -100,6 +137,56 @@ class Daemon:
 
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
+        self._translate_thread: threading.Thread | None = None
+
+    def set_translation(
+        self,
+        *,
+        enabled: bool | None = None,
+        target_lang: str | None = None,
+        latency_mode: str | None = None,
+    ) -> dict[str, object]:
+        """Hot-toggle / reconfigure live translation without a restart.
+
+        Builds (or tears down) the ``TranscriptTranslator`` and ensures the
+        background translate worker is running when enabled. Safe to call from
+        the API thread. Returns the resulting effective settings."""
+        if target_lang is not None:
+            self.cfg.audio.translate_target_lang = target_lang
+        if latency_mode is not None:
+            self.cfg.audio.translate_latency_mode = latency_mode
+
+        want = self.cfg.audio.translate_enabled if enabled is None else enabled
+        self.cfg.audio.translate_enabled = want
+
+        if not want:
+            # Leave the worker thread alive but idle; dropping the translator
+            # makes both the enqueue check and the worker no-op.
+            self.translator = None
+        else:
+            self.translator = TranscriptTranslator(
+                target_lang=self.cfg.audio.translate_target_lang,
+                model=self.cfg.audio.translate_model,
+                skip_if_same=self.cfg.audio.translate_skip_if_same,
+                context_window=self.cfg.audio.translate_context_window,
+            )
+            self._ensure_translate_worker()
+        return {
+            "translate_enabled": want,
+            "translate_target_lang": self.cfg.audio.translate_target_lang,
+            "translate_latency_mode": self.cfg.audio.translate_latency_mode,
+        }
+
+    def _ensure_translate_worker(self) -> None:
+        """Start the translate worker thread if it isn't already running."""
+        t = self._translate_thread
+        if t is not None and t.is_alive():
+            return
+        if self._stop.is_set():
+            return
+        t = threading.Thread(target=self._translate_loop, name="daemon-translate", daemon=True)
+        self._translate_thread = t
+        t.start()
 
     def _meeting_observe_insert(self, insert: UiEventInsert) -> None:
         self.meeting_detector.observe(
@@ -163,6 +250,10 @@ class Daemon:
             )
         for t in self._threads:
             t.start()
+        # Live translation worker (its own tracked thread so it can be toggled at
+        # runtime via set_translation without restarting the daemon).
+        if self.translator is not None:
+            self._ensure_translate_worker()
         logger.info("daemon started (event_driven=%s)", self.cfg.capture.event_driven)
 
     def stop(self) -> None:
@@ -223,6 +314,10 @@ class Daemon:
                 meeting_id = event.data.get("meeting_id")
                 if meeting_id is not None:
                     self._fire_meeting_summary(int(meeting_id))
+                # Drop the translator's rolling context so the next conversation
+                # doesn't inherit stale context from the meeting that just ended.
+                if self.translator is not None:
+                    self.translator.reset_context()
         except Exception as exc:  # noqa: BLE001
             logger.debug("bus event handler error: %s", exc)
 
@@ -349,9 +444,59 @@ class Daemon:
                         transcript_id=tid, device=label, text=seg.text[:200],
                         speaker_id=speaker_id,
                     )
+                    # Live translation: hand off to the background worker (never
+                    # block the transcribe loop on an LLM call). Drop silently if
+                    # the queue is saturated — translation is best-effort.
+                    if self.translator is not None and seg.text.strip():
+                        try:
+                            self._translate_queue.put_nowait(
+                                (tid, seg.text, seg.language, label)
+                            )
+                        except queue.Full:
+                            logger.debug("translate queue full; skipping transcript %s", tid)
                 self.db.mark_audio_chunk_status(chunk_id, "processed")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("transcribe loop err: %s", exc)
+
+    def _translate_loop(self) -> None:
+        """Background worker: translate queued transcript utterances via the LLM.
+
+        Runs while live translation is enabled. Each job is translated with the
+        per-device context window, the result is back-filled into the
+        ``audio_transcriptions`` row, and a ``TRANSCRIPT_TRANSLATED`` event is
+        emitted so the UI updates the matching line in real time. The translator
+        reference is read per-iteration so a runtime enable/disable toggle takes
+        effect immediately (jobs are dropped while disabled)."""
+        from .. import events as bus  # noqa: PLC0415
+
+        while not self._stop.is_set():
+            try:
+                job = self._translate_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            translator = self.translator
+            if translator is None:
+                continue  # disabled at runtime; drop the job
+            tid, text, source_lang, device = job
+            try:
+                translation = translator.translate(
+                    text, source_lang=source_lang, device=device
+                )
+                if not translation:
+                    continue
+                self.db.set_transcript_translation(
+                    tid, translation, self.cfg.audio.translate_target_lang
+                )
+                bus.send(
+                    bus.EventType.TRANSCRIPT_TRANSLATED,
+                    transcript_id=tid,
+                    device=device,
+                    translation=translation[:500],
+                    lang=self.cfg.audio.translate_target_lang,
+                    final=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("translate worker err for transcript %s: %s", tid, exc)
 
     def _retention_loop(self) -> None:
         while not self._stop.is_set():

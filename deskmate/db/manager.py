@@ -59,6 +59,7 @@ class DatabaseManager:
             self._record_migration(SCHEMA_VERSION)
             self._ensure_todo_columns()
             self._ensure_ask_history_columns()
+            self._ensure_transcript_translation_columns()
 
     def _ensure_ask_history_columns(self) -> None:
         """Add the ``feedback`` column to ``ask_history`` on pre-existing DBs."""
@@ -68,6 +69,22 @@ class DatabaseManager:
         }
         if cols and "feedback" not in cols:
             self._conn.execute("ALTER TABLE ask_history ADD COLUMN feedback INTEGER")
+
+    def _ensure_transcript_translation_columns(self) -> None:
+        """Add the live-translation columns to ``audio_transcriptions`` on
+        pre-existing DBs (CREATE IF NOT EXISTS won't alter an existing table)."""
+        cols = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(audio_transcriptions)"
+            ).fetchall()
+        }
+        if not cols:
+            return
+        if "translation" not in cols:
+            self._conn.execute("ALTER TABLE audio_transcriptions ADD COLUMN translation TEXT")
+        if "translation_lang" not in cols:
+            self._conn.execute("ALTER TABLE audio_transcriptions ADD COLUMN translation_lang TEXT")
 
     def _ensure_todo_columns(self) -> None:
         """Add columns introduced after first install (CREATE IF NOT EXISTS is not enough)."""
@@ -444,6 +461,21 @@ class DatabaseManager:
                 (tid, _now_iso(), speaker_id or 0, text or ""),
             )
             return tid
+
+    def set_transcript_translation(
+        self, transcription_id: int, translation: str, lang: str | None
+    ) -> None:
+        """Back-fill the live-translation columns for one transcript row.
+
+        Called asynchronously after the transcript is inserted (translation runs
+        on a background worker), so it only ever UPDATEs an existing row."""
+        with self._lock:
+            self._conn.execute(
+                """UPDATE audio_transcriptions
+                      SET translation = ?, translation_lang = ?
+                    WHERE id = ?""",
+                (translation or "", lang, transcription_id),
+            )
 
     def insert_speaker_embedding(
         self,

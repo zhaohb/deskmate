@@ -163,6 +163,7 @@
           <button class="nav-item" data-view="todos" type="button"><span>Todos</span></button>
           <button class="nav-item" data-view="meetings" type="button"><span>Meetings</span></button>
           <button class="nav-item" data-view="transcripts" type="button"><span>Transcripts</span></button>
+          <button class="nav-item" data-view="translate" type="button"><span>Translate</span></button>
           <button class="nav-item" data-view="events" type="button"><span>Events</span></button>
           <button class="nav-item" data-view="capture" type="button"><span>Capture</span></button>
           <button class="nav-item" data-view="training" type="button"><span>Training</span></button>
@@ -349,6 +350,48 @@
               <div class="panel-title">Transcript details</div>
               <div id="transcriptDetails" class="detail-card muted-detail">Select a transcript on the left to view details</div>
             </section>
+          </div>
+        </section>
+
+        <section id="view-translate" class="view">
+          <div class="trx-wrap">
+            <div class="trx-toolbar">
+              <label class="trx-switch" title="Enable live translation">
+                <input type="checkbox" id="trxEnable">
+                <span class="trx-dot" id="trxDot"></span>
+                <span id="trxStatusText">Live translation</span>
+              </label>
+              <label class="trx-ctl">To
+                <select id="trxTargetLang">
+                  <option value="zh">中文</option>
+                  <option value="en">English</option>
+                  <option value="ja">日本語</option>
+                  <option value="ko">한국어</option>
+                  <option value="fr">Français</option>
+                  <option value="de">Deutsch</option>
+                  <option value="es">Español</option>
+                  <option value="ru">Русский</option>
+                </select>
+              </label>
+              <label class="trx-ctl">Latency
+                <select id="trxLatency">
+                  <option value="fast">Fast</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="quality">Quality</option>
+                </select>
+              </label>
+              <div class="trx-meta" id="trxMeta"></div>
+              <label class="trx-autoscroll">
+                <input type="checkbox" id="trxAutoscroll" checked> Auto-scroll
+              </label>
+            </div>
+            <div id="trxScroll" class="trx-scroll">
+              <div id="trxGrid" class="trx-grid">
+                <div class="trx-ghead" id="trxSrcLabel">Original</div>
+                <div class="trx-ghead" id="trxTgtLabel">Translation</div>
+                <div id="trxEmpty" class="trx-grid-empty">No speech yet — enable live translation and speak.</div>
+              </div>
+            </div>
           </div>
         </section>
 

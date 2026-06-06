@@ -32,8 +32,11 @@ flowchart LR
 ```
 
 1. **Capture** grabs both the microphone and the system output (loopback) and
-   writes fixed-duration PCM chunks. Loopback lets DeskMate transcribe the *other*
-   side of calls, not just the local mic.
+   writes PCM chunks. Loopback lets DeskMate transcribe the *other* side of
+   calls, not just the local mic. `[audio] chunk_mode` chooses how audio is
+   sliced: `fixed` (default) accumulates `chunk_seconds` per chunk; `endpoint`
+   emits one chunk per spoken utterance (cut at a speech pause) for low-latency
+   live translation — see [18 — Live translation](18-live-translation.md).
 2. **VAD** classifies each chunk (or sub-window) as speech or silence. Silent
    chunks are dropped so Whisper never runs on empty audio — the single biggest
    cost/noise saver.

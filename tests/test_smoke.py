@@ -639,6 +639,7 @@ def test_ui_routes_registered() -> None:
     assert "/frames/{frame_id}/context" in routes
     assert "/tags/{content_type}/{item_id}" in routes
     assert "/memories" in routes
+    assert "/config/audio/translate" in routes
 
 
 def test_classify_model_load_error_ssl() -> None:

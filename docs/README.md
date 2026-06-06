@@ -101,6 +101,7 @@ and the web `ui` all talk to.
 | 15 | [Fusion & timeline](15-fusion-timeline.md) | `fusion/` — unified `context_events` timeline + capture control (pause/forget/per-source) |
 | 16 | [Learning & LoRA](16-learning-training.md) | `learning/` — opt-in LoRA training from local data |
 | 17 | [User profile](17-user-profile.md) | `profile` training source — synthesized "who is this user" identity pairs |
+| 18 | [Live translation](18-live-translation.md) | Low-latency speech translation — endpoint chunking + per-utterance Ollama translation |
 
 ## Conventions used in these docs
 

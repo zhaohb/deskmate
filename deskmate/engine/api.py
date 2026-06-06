@@ -96,6 +96,8 @@ def _content_item_for_transcript(row: dict[str, Any]) -> dict[str, Any]:
             "end_time": row.get("end_time"),
             "text_length": row.get("text_length"),
             "redacted_transcription": row.get("redacted_transcription"),
+            "translation": row.get("translation"),
+            "translation_lang": row.get("translation_lang"),
             "tags": [],
         },
     }
@@ -1152,6 +1154,67 @@ def create_app(
             transcriber.set_languages(languages)
             applied = True
         return {"languages": languages, "hot_applied": applied}
+
+    @app.get("/config/audio/translate")
+    def get_audio_translate() -> dict[str, Any]:
+        """Return the current live-translation settings for the UI controls."""
+        a = cfg.audio
+        return {
+            "translate_enabled": a.translate_enabled,
+            "translate_target_lang": a.translate_target_lang,
+            "translate_latency_mode": a.translate_latency_mode,
+        }
+
+    @app.post("/config/audio/translate")
+    async def set_audio_translate(request: Request) -> dict[str, Any]:
+        """Hot-toggle / reconfigure live translation from the UI.
+
+        Persists each provided key to config.toml and, when the daemon runs in
+        this process, applies it live (building/dropping the translator and
+        starting the worker) so no restart is needed. ``enabled`` (re)takes
+        effect on the next utterance; ``target_lang`` also drives the next
+        translation; ``latency_mode`` changes the endpoint pause threshold for
+        new audio chunks. Split API/daemon deployments still get persistence.
+        """
+        from ..config import set_audio_value  # noqa: PLC0415
+
+        body = await request.json()
+        enabled = body.get("enabled")
+        target_lang = body.get("target_lang")
+        latency_mode = body.get("latency_mode")
+
+        if enabled is not None:
+            enabled = bool(enabled)
+            set_audio_value("translate_enabled", enabled)
+            cfg.audio.translate_enabled = enabled
+        if target_lang is not None:
+            target_lang = str(target_lang).strip().lower()
+            if not target_lang:
+                raise HTTPException(status_code=400, detail="target_lang must be non-empty")
+            set_audio_value("translate_target_lang", target_lang)
+            cfg.audio.translate_target_lang = target_lang
+        if latency_mode is not None:
+            latency_mode = str(latency_mode).strip().lower()
+            if latency_mode not in {"fast", "balanced", "quality"}:
+                raise HTTPException(status_code=400, detail="latency_mode must be fast|balanced|quality")
+            set_audio_value("translate_latency_mode", latency_mode)
+            cfg.audio.translate_latency_mode = latency_mode
+
+        applied = False
+        daemon = app.state.daemon
+        if daemon is not None and hasattr(daemon, "set_translation"):
+            daemon.set_translation(
+                enabled=enabled,
+                target_lang=target_lang,
+                latency_mode=latency_mode,
+            )
+            applied = True
+        return {
+            "translate_enabled": cfg.audio.translate_enabled,
+            "translate_target_lang": cfg.audio.translate_target_lang,
+            "translate_latency_mode": cfg.audio.translate_latency_mode,
+            "hot_applied": applied,
+        }
 
     # ─── tags / memories ──────────────────────────────────────────────────
     @app.post("/tags/vision/batch")
