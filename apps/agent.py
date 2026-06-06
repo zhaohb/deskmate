@@ -1595,8 +1595,13 @@ def _do_meeting_summary(
         "2. Output a 5-8 word plain-english TITLE on the first line, prefixed exactly with 'TITLE: '.\n"
         "   No quotes, no 'meeting about' prefix.\n"
         "3. Then a blank line, then the summary body starting with '## Summary'.\n"
-        "4. Cover: key topics, decisions, and action items (use bullet lists).\n"
-        "5. Be concise. If something is unclear in the transcript, omit it.\n\n"
+        "4. Cover: key topics and decisions (use bullet lists).\n"
+        "5. Then a '## Action Items' section. Put EACH action item on its own line in EXACTLY "
+        "this format (machine-parsed — keep the separators):\n"
+        "   - [ ] <task> | owner: <name or unknown> | due: <YYYY-MM-DD or none>\n"
+        "   Only list action items explicitly stated or clearly implied in the transcript. "
+        "If there are none, write the single line 'NONE' under the heading.\n"
+        "6. Be concise. If something is unclear in the transcript, omit it.\n\n"
         f"{skill_text}\n"
     )
     user_prompt = (
@@ -1648,7 +1653,95 @@ def _do_meeting_summary(
             echo_stderr(f"  [meeting] patch error: {exc}")
         status = f"_(Could not write back to meeting #{meeting_id}: {exc})_"
 
-    return f"{summary_section}\n\n{status}"
+    # Extract structured action items into the todos table (deduped per meeting).
+    todo_count = 0
+    try:
+        action_items = _parse_action_items(summary_body)
+        todo_count = _write_meeting_todos(
+            meeting_id, title_to_set or current_title, action_items, verbose=verbose
+        )
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            echo_stderr(f"  [meeting] action-item extraction error: {exc}")
+
+    todo_note = f" · {todo_count} todo(s) extracted" if todo_count else ""
+    return f"{summary_section}\n\n{status}{todo_note}"
+
+
+_ACTION_ITEM_RE = re.compile(
+    r"^\s*[-*]\s*\[[ xX]?\]\s*(?P<task>.+?)"
+    r"(?:\s*\|\s*owner:\s*(?P<owner>[^|]*?))?"
+    r"(?:\s*\|\s*due:\s*(?P<due>[^|]*?))?\s*$"
+)
+
+
+def _parse_action_items(summary_body: str) -> list[dict[str, str]]:
+    """Extract `- [ ] task | owner: X | due: Y` lines from the Action Items
+    section into structured dicts. Returns [] when the section is NONE/empty."""
+    items: list[dict[str, str]] = []
+    in_section = False
+    for line in summary_body.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("## action item"):
+            in_section = True
+            continue
+        if in_section and stripped.startswith("## "):
+            break  # next section
+        if not in_section or not stripped or stripped.upper() == "NONE":
+            continue
+        m = _ACTION_ITEM_RE.match(line)
+        if not m:
+            continue
+        task = (m.group("task") or "").strip()
+        if not task:
+            continue
+        owner = (m.group("owner") or "").strip()
+        due = (m.group("due") or "").strip()
+        if due.lower() in ("none", "n/a", ""):
+            due = ""
+        items.append({"task": task, "owner": owner, "due": due})
+    return items
+
+
+def _write_meeting_todos(
+    meeting_id: int,
+    meeting_name: str,
+    items: list[dict[str, str]],
+    *,
+    verbose: bool = False,
+) -> int:
+    """Upsert extracted action items into the todos table via POST /todos.
+
+    Deduped per meeting by a stable key so re-running the summary doesn't create
+    duplicates. Returns the number of todos written."""
+    if not items:
+        return 0
+    payload = []
+    for it in items:
+        task = it["task"]
+        owner = it.get("owner") or ""
+        text = f"{task} (owner: {owner})" if owner and owner.lower() != "unknown" else task
+        payload.append({
+            "text": text,
+            "source": "meeting",
+            "source_ref": meeting_name or f"meeting #{meeting_id}",
+            "source_detail": f"meeting:{meeting_name}" if meeting_name else "meeting",
+            "meeting_id": meeting_id,
+            "due": it.get("due") or "",
+            "origin_app": "meeting-summary",
+            # Stable per-meeting+task key so repeated summaries upsert, not dup.
+            "dedup_key": f"meeting:{meeting_id}:{task.lower()[:80]}",
+        })
+    try:
+        resp = _http_post(f"{API_BASE}/todos", {"todos": payload})
+        count = int(resp.get("count") or 0) if isinstance(resp, dict) else 0
+        if verbose:
+            echo_stderr(f"  [meeting] wrote {count} action item(s) to todos")
+        return count
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            echo_stderr(f"  [meeting] todo write failed: {exc}")
+        return 0
 
 
 def _split_title_and_summary(content: str) -> tuple[str, str]:
@@ -2208,6 +2301,14 @@ AI_PROMPT_JOURNAL_TARGETS: dict[str, dict[str, list[str]]] = {
         "title_like": ["%visual studio code%"],
         "app_in": ["code.exe"],
     },
+    # Claude Code's VS Code extension (the sidebar chat, not the terminal CLI).
+    # Shares code.exe with the editor, so it is ambiguous and only accepted when
+    # its chat-composer name signal is present (see _CHAT_INPUT_NAME_SIGNALS).
+    "Claude Code (VS Code)": {
+        "url_like": [],
+        "title_like": ["%visual studio code%"],
+        "app_in": ["code.exe"],
+    },
     "Grok": {"url_like": ["%grok.com%", "%x.com/i/grok%"], "title_like": ["%grok%"], "app_in": []},
     "DeepSeek": {"url_like": ["%chat.deepseek.com%", "%deepseek.com%"], "title_like": ["%deepseek%"], "app_in": []},
     "Mistral": {"url_like": ["%chat.mistral.ai%"], "title_like": ["%mistral%"], "app_in": []},
@@ -2471,7 +2572,7 @@ def _classify_tool(
 # focused text is ordinary code/markdown editing, terminals, or webview chrome,
 # not a Copilot Chat prompt. We only accept rows that also carry a positive
 # chat-context signal (precision over recall — 宁缺毋滥).
-_AMBIGUOUS_APP_TOOLS = frozenset({"VS Code Copilot", "Cursor"})
+_AMBIGUOUS_APP_TOOLS = frozenset({"VS Code Copilot", "Cursor", "Claude Code (VS Code)"})
 
 # Focused-control ClassName substrings that uniquely identify an AI chat
 # composer sharing a generic ``EditControl`` role. This is the highest-precision
@@ -2490,9 +2591,20 @@ _CHAT_INPUT_CLASSES: dict[str, str] = {
 # only surfaces when VS Code's screen-reader / accessibility mode is enabled
 # (``"editor.accessibilitySupport": "on"``); otherwise the Monaco editor refuses
 # to expose its value via UIA and the Name is unavailable.
+#   • ``claude code``/``claude opus``/``claude sonnet``/``message input`` —
+#     Claude Code's VS Code extension chat composer (verified: Name is either
+#     ``"Message input"`` or ``"Chat Input (Agent), … Claude Opus 4.8. Press
+#     Enter to send out the request. …"``).
 #   • ``chat input``  — VS Code GitHub Copilot Chat composer (verified: Name
 #     begins ``"Chat Input (Agent), …"``).
+# Order matters: _classify_tool returns the first match, so the Claude-specific
+# signals are listed before the generic ``chat input`` (which Copilot shares).
 _CHAT_INPUT_NAME_SIGNALS: dict[str, str] = {
+    "claude code": "Claude Code (VS Code)",
+    "claude opus": "Claude Code (VS Code)",
+    "claude sonnet": "Claude Code (VS Code)",
+    "claude haiku": "Claude Code (VS Code)",
+    "message input": "Claude Code (VS Code)",
     "chat input": "VS Code Copilot",
 }
 

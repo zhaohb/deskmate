@@ -1378,6 +1378,12 @@ def create_app(
 
         api_base = f"http://{cfg.server.host}:{cfg.server.port}"
         result = await asyncio.to_thread(run_ask, question, api_base=api_base)
+        # Drop the internal evidence pool (raw tool results kept for grounding
+        # checks) — the UI only needs the tool/args/length summary.
+        if isinstance(result, dict):
+            for entry in result.get("tool_calls") or []:
+                if isinstance(entry, dict):
+                    entry.pop("result", None)
         # Additive: log answered queries as future LoRA training pairs.
         try:
             answer = (result or {}).get("answer") or ""

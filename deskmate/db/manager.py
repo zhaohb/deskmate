@@ -587,6 +587,16 @@ class DatabaseManager:
                 (meeting_id,),
             ).fetchall()
 
+    def get_speaker_name(self, speaker_id: int) -> str:
+        """Return a speaker's display name, or '' if unknown/unnamed."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT name FROM speakers WHERE id = ?", (speaker_id,)
+            ).fetchone()
+        if not row:
+            return ""
+        return str(row.get("name") or "").strip()
+
     # ─── todos ───────────────────────────────────────────────────────────────
     def upsert_todo(
         self,

@@ -636,6 +636,81 @@ def _no_data_answer(
     )
 
 
+# ─── grounding / anti-hallucination ──────────────────────────────────────────
+# A tool result counts as "carrying real evidence" only if it has more than
+# these structural markers. Empty searches, empty meeting lists, connection
+# errors and no-mailbox notices all decode to objects that fail this test.
+_EMPTY_RESULT_MARKERS = (
+    '"result_count":0', '"result_count": 0',
+    '"meeting_count":0', '"meeting_count": 0',
+    '"event_count":0', '"event_count": 0',
+    '"error"', '"no_mailbox_connected"',
+    '"data_status":"no_capture', '"data_status": "no_capture',
+)
+
+
+def _result_has_evidence(result_text: str) -> bool:
+    """Heuristic: does one tool result contain usable data (not empty/error)?"""
+    if not result_text:
+        return False
+    low = result_text.strip()
+    if low in ("{}", "[]", '""'):
+        return False
+    # An explicit empty/error marker with no offsetting data array.
+    has_empty_marker = any(m in low for m in _EMPTY_RESULT_MARKERS)
+    has_payload = any(
+        key in low
+        for key in ('"messages":[{', '"meetings":[{', '"events":[{',
+                    '"segments":[{', '"data":[{', '"apps":[{', '"snippets":[{',
+                    '"text":"', '"key_texts":[')
+    )
+    if has_payload:
+        return True
+    return not has_empty_marker
+
+
+def _evidence_is_empty(tool_log: list[dict[str, Any]]) -> bool:
+    """True when every tool call came back empty / errored — i.e. no grounding
+    exists, so any substantive answer would be fabricated."""
+    if not tool_log:
+        return True
+    return not any(_result_has_evidence(str(e.get("result") or "")) for e in tool_log)
+
+
+# Year-prefixed and bare clock timestamps the model may cite, e.g.
+# "2026-06-06T15:04", "15:04", "3:04 PM". We verify each against the evidence.
+_ANSWER_TIME_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"      # ISO datetime
+    r"|\b\d{1,2}:\d{2}\s*(?:[AaPp][Mm])?"       # HH:MM or HH:MM AM/PM
+)
+
+
+def _verify_answer_grounding(answer: str, tool_log: list[dict[str, Any]]) -> list[str]:
+    """Return clock/timestamps cited in the answer that are NOT present in any
+    tool result — these are likely fabricated. Empty list = fully grounded.
+
+    Conservative: only flags time references (the most common and most checkable
+    hallucination); normalizes ``HH:MM`` so "3:04 PM" matches an evidence
+    "15:04" only when the digits line up. We do not flag prose.
+    """
+    evidence = "\n".join(str(e.get("result") or "") for e in tool_log)
+    if not evidence:
+        return []
+    suspicious: list[str] = []
+    for m in _ANSWER_TIME_RE.findall(answer):
+        token = m.strip()
+        # Compare on the bare HH:MM digits; that string appears verbatim in
+        # ISO timestamps inside tool results when the citation is real.
+        hhmm = re.search(r"(\d{1,2}):(\d{2})", token)
+        if not hhmm:
+            continue
+        h, mm = hhmm.group(1), hhmm.group(2)
+        variants = {f"{int(h):02d}:{mm}", f"{int(h)}:{mm}"}
+        if not any(v in evidence for v in variants):
+            suspicious.append(token)
+    return suspicious
+
+
 def _connected_instances(api_base: str, provider: str) -> list[str]:
     """Return connected account emails for a provider, or [] if none/unreachable."""
     try:
@@ -981,6 +1056,33 @@ def _chat_ollama(
     )
 
 
+def _grounded_final_answer(
+    answer: str,
+    tool_log: list[dict[str, Any]],
+    *,
+    api_base: str,
+    question: str,
+) -> str:
+    """Gate a model answer through the grounding checks before returning it.
+
+    1. No evidence at all → replace with the honest no-data message (a 4B model
+       will otherwise pad the gap with plausible-sounding fabrication).
+    2. Evidence exists but the answer cites timestamps absent from it → append a
+       visible caution rather than silently trusting them.
+    """
+    if _evidence_is_empty(tool_log):
+        return _no_data_answer(tool_log, api_base=api_base, question=question)
+    suspicious = _verify_answer_grounding(answer, tool_log)
+    if suspicious:
+        shown = "、".join(suspicious[:5])
+        answer = (
+            f"{answer}\n\n"
+            f"> ⚠️ 注意：回答中的时间 {shown} 未能在检索到的记录中核实，"
+            f"可能不准确，请以下方“数据来源”为准。"
+        )
+    return answer
+
+
 def run_ask(
     question: str,
     *,
@@ -1063,7 +1165,13 @@ def run_ask(
         "connect Gmail/Outlook on the Email tab.\n"
         "11. When citing emails, copy the full `preview` field from email_search verbatim "
         "for 摘要/摘要内容. NEVER prefix or suffix with '...' or '…'. Never shorten with ellipsis.\n"
-        "12. Answer in the user's language (Chinese or English). Be concise; use bullet points.\n\n"
+        "12. Answer in the user's language (Chinese or English). Be concise; use bullet points.\n"
+        "13. GROUNDING: every factual claim (an app used, a file, what was said, a time) MUST "
+        "come from a tool result in this conversation. Cite the supporting timestamp in "
+        "parentheses, e.g. '编辑了 config.toml (15:04)'. If the tools returned no relevant "
+        "data, reply that you found no matching records for the range — do NOT produce a "
+        "plausible-sounding answer from prior knowledge. A confident answer with no tool "
+        "evidence is a failure, not a success.\n\n"
         f"## Context\n{context}\n"
         f"{skill_text}\n"
     )
@@ -1083,6 +1191,9 @@ def run_ask(
         if not tool_calls:
             answer = _finalize_answer(response.get("content", ""))
             if answer:
+                answer = _grounded_final_answer(
+                    answer, tool_log, api_base=api_base, question=question
+                )
                 return {"answer": answer, "tool_calls": tool_log, "error": None}
             if round_idx == 0:
                 messages.append({
@@ -1119,6 +1230,9 @@ def run_ask(
                 "tool": fn_name,
                 "args": fn_args,
                 "result_length": len(tool_result),
+                # Kept internally as the evidence pool for grounding checks; the
+                # API strips this before returning to the UI (see api.run_ask).
+                "result": tool_result,
             })
             messages.append({
                 "role": "tool",
@@ -1133,5 +1247,10 @@ def run_ask(
     })
     final = _chat_ollama(messages, tools=None, model=model)
     answer = _finalize_answer(final.get("content", ""))
-    empty = _no_data_answer(tool_log, api_base=api_base, question=question)
-    return {"answer": answer or empty, "tool_calls": tool_log, "error": None}
+    if answer:
+        answer = _grounded_final_answer(
+            answer, tool_log, api_base=api_base, question=question
+        )
+    else:
+        answer = _no_data_answer(tool_log, api_base=api_base, question=question)
+    return {"answer": answer, "tool_calls": tool_log, "error": None}

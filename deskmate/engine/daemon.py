@@ -6,6 +6,7 @@ import queue
 import threading
 from datetime import datetime, timedelta, timezone
 
+from .. import events as bus
 from .. import paths
 from ..a11y import UiRecorder
 from ..a11y.ui_event_types import UiEventInsert
@@ -128,6 +129,10 @@ class Daemon:
         if self.fusion_bus:
             self.fusion_bus.start()
 
+        # Auto-summarize a meeting the moment it ends: the detector emits
+        # MEETING_ENDED, and we fire the meeting-summary app in the background.
+        self._meeting_unsub = bus.subscribe(self._on_bus_event)
+
         self._threads = [
             threading.Thread(target=self._audio_loop, name="daemon-audio", daemon=True),
             threading.Thread(target=self._retention_loop, name="daemon-retention", daemon=True),
@@ -173,6 +178,9 @@ class Daemon:
         if self.pipe_scheduler:
             self.pipe_scheduler.stop()
         self.app_scheduler.stop()
+        unsub = getattr(self, "_meeting_unsub", None)
+        if callable(unsub):
+            unsub()
         if self.habit_watcher:
             self.habit_watcher.stop()
         if self.fusion_bus:
@@ -207,6 +215,50 @@ class Daemon:
             browser_url=browser_url,
             text=text,
         )
+
+    def _on_bus_event(self, event: "bus.Event") -> None:
+        """React to in-process events. Currently: auto-summarize ended meetings."""
+        try:
+            if event.type == bus.EventType.MEETING_ENDED:
+                meeting_id = event.data.get("meeting_id")
+                if meeting_id is not None:
+                    self._fire_meeting_summary(int(meeting_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("bus event handler error: %s", exc)
+
+    def _fire_meeting_summary(self, meeting_id: int) -> None:
+        """Launch the meeting-summary app for a just-ended meeting, detached.
+
+        Runs in a daemon thread so the (Ollama-backed) summary never blocks the
+        capture pipeline. The app scopes itself to ``--meeting-id`` and writes
+        the summary + extracted todos back to the DB."""
+        import subprocess  # noqa: PLC0415
+        import sys  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
+        app_py = Path(__file__).resolve().parents[2] / "apps" / "meeting-summary" / "app.py"
+        if not app_py.is_file():
+            logger.debug("meeting-summary app not found at %s", app_py)
+            return
+
+        def _run() -> None:
+            try:
+                logger.info("auto meeting-summary firing for meeting %s", meeting_id)
+                proc = subprocess.run(  # noqa: S603
+                    [sys.executable, str(app_py), "--meeting-id", str(meeting_id)],
+                    capture_output=True, text=True, timeout=900, check=False,
+                )
+                if proc.returncode == 0:
+                    logger.info("auto meeting-summary ok for meeting %s", meeting_id)
+                else:
+                    logger.warning(
+                        "auto meeting-summary meeting %s exit=%d stderr=%s",
+                        meeting_id, proc.returncode, (proc.stderr or "")[-400:],
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("auto meeting-summary failed for %s: %s", meeting_id, exc)
+
+        threading.Thread(target=_run, name=f"meeting-summary-{meeting_id}", daemon=True).start()
 
     def _heartbeat_loop(self) -> None:
         """Legacy polling path when `capture.event_driven=false`."""

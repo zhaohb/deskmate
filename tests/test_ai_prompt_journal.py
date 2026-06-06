@@ -178,6 +178,49 @@ def test_build_range_display_includes_multi_day_report(app: ModuleType) -> None:
     assert "AI Prompts — 2026-05-31 … 2026-06-02" in display
 
 
+def test_header_datetime_parses_variants(app: ModuleType) -> None:
+    from datetime import date, datetime
+
+    day = date(2026, 6, 6)
+    # 12-hour with AM/PM, no date prefix → use journal_day
+    assert app._header_datetime("3:11 PM — Tool — t", day) == datetime(2026, 6, 6, 15, 11)
+    assert app._header_datetime("11:23 PM — Tool — t", day) == datetime(2026, 6, 6, 23, 23)
+    # date prefix overrides journal_day
+    assert app._header_datetime("2026-06-02 8:40 PM — X — y", day) == datetime(2026, 6, 2, 20, 40)
+    # 24-hour form
+    assert app._header_datetime("15:27 — X — y", day) == datetime(2026, 6, 6, 15, 27)
+    # unparseable → None (caller keeps the block)
+    assert app._header_datetime("no time here", day) is None
+
+
+def test_merge_journals_filters_to_precise_window(app: ModuleType, tmp_path) -> None:
+    """The real bug: 'last 1 hour' must not surface earlier-today prompts."""
+    from datetime import date
+
+    journal = app._journal_for_date(date(2026, 6, 6))
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    journal.write_text(
+        "---\ndate: 2026-06-06\n---\n\n# AI Prompts — 2026-06-06\n\n"
+        "## 3:11 PM — Copilot — early\n**Category**: other | **Length**: short\n\n"
+        "> afternoon prompt\n\n---\n\n"
+        "## 11:10 PM — Claude Code (VS Code) — late\n**Category**: other | **Length**: short\n\n"
+        "> night prompt\n\n---\n",
+        encoding="utf-8",
+    )
+    # "last 1 hour" window 23:00–23:30 → only the 11:10 PM block
+    body = app._merge_journals_in_range(
+        "2026-06-06T23:00:00+08:00", "2026-06-06T23:30:00+08:00"
+    )
+    assert "night prompt" in body
+    assert "afternoon prompt" not in body
+    # A window covering the afternoon includes only that one
+    body2 = app._merge_journals_in_range(
+        "2026-06-06T15:00:00+08:00", "2026-06-06T15:30:00+08:00"
+    )
+    assert "afternoon prompt" in body2
+    assert "night prompt" not in body2
+
+
 # ── agent.py: Claude Code (terminal CLI) detection ───────────────────────────
 
 
@@ -254,4 +297,40 @@ def test_claude_code_extract_placeholder_hint_returns_blank(agent: ModuleType) -
 
 def test_claude_code_label_is_registered(agent: ModuleType) -> None:
     assert "Claude Code" in agent.AI_PROMPT_JOURNAL_TARGETS
+
+
+def test_claude_code_vscode_label_is_registered(agent: ModuleType) -> None:
+    assert "Claude Code (VS Code)" in agent.AI_PROMPT_JOURNAL_TARGETS
+    assert "Claude Code (VS Code)" in agent._AMBIGUOUS_APP_TOOLS
+
+
+def test_claude_code_vscode_classified_by_focused_name(agent: ModuleType) -> None:
+    """The Claude Code extension composer (code.exe) is classified by its name,
+    distinct from Copilot, and accepted as a chat context."""
+    title = "config.toml - hongbo - Visual Studio Code"
+    # Both observed composer names from the VS Code extension.
+    for name in (
+        "Message input",
+        "Chat Input (Agent), edit files in your workspace., Claude Opus 4.8. "
+        "Press Enter to send out the request. Use Alt+F1 for Chat Accessibility Help.",
+    ):
+        tool = agent._classify_tool("code.exe", title, "", "", name)
+        assert tool == "Claude Code (VS Code)", name
+        assert agent._is_ai_chat_context(tool, title, "", "", name) is True
+
+
+def test_vscode_copilot_not_misclassified_as_claude(agent: ModuleType) -> None:
+    """A Copilot chat composer (no 'claude' in the name) stays VS Code Copilot."""
+    title = "main.py - proj - Visual Studio Code"
+    tool = agent._classify_tool("code.exe", title, "", "", "Chat Input (Agent), GPT-4o")
+    assert tool == "VS Code Copilot"
+
+
+def test_ordinary_vscode_editing_dropped(agent: ModuleType) -> None:
+    """Plain code editing in code.exe (no chat signal) is not a chat context."""
+    title = "main.py - proj - Visual Studio Code"
+    tool = agent._classify_tool("code.exe", title, "", "", "main.py")
+    # It may match code.exe as an ambiguous tool, but without a chat signal it
+    # must be rejected as a chat context (so it is never reported as a prompt).
+    assert agent._is_ai_chat_context(tool, title, "", "", "main.py") is False
 

@@ -17,6 +17,19 @@ from ..logger import get
 logger = get("meeting.detector")
 
 
+def _emit_meeting_event(event_name: str, **data: object) -> None:
+    """Emit a meeting lifecycle event on the in-process bus (best-effort).
+
+    Imported lazily so the detector keeps working in contexts where the events
+    module or its dependencies aren't available (e.g. isolated unit tests)."""
+    try:
+        from .. import events as bus  # noqa: PLC0415
+
+        bus.send(bus.EventType(event_name), **data)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("meeting event %s emit skipped: %s", event_name, exc)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().replace(microsecond=0).isoformat()
 
@@ -95,6 +108,8 @@ class MeetingDetector:
         self._meeting_id: int | None = None
         self._profile_name: str | None = None
         self._last_seen = 0.0
+        # speaker_id → display name, accumulated across the live meeting.
+        self._participants: dict[int, str] = {}
 
     @property
     def active_meeting_id(self) -> int | None:
@@ -111,12 +126,14 @@ class MeetingDetector:
         window_title: str,
         browser_url: str | None = None,
         text: str = "",
+        audio_active: bool | None = None,
     ) -> MeetingObservation:
         observation = detect_meeting(
             app_name=app_name,
             window_title=window_title,
             browser_url=browser_url,
             text=text,
+            audio_active=audio_active,
         )
         now = time.time()
         if observation.in_meeting:
@@ -135,6 +152,11 @@ class MeetingDetector:
                 )
                 self._profile_name = observation.profile_name
                 logger.info("meeting started id=%s profile=%s", self._meeting_id, self._profile_name)
+                _emit_meeting_event(
+                    "meeting_started",
+                    meeting_id=self._meeting_id,
+                    profile_name=self._profile_name,
+                )
             elif observation.profile_name and observation.profile_name != self._profile_name:
                 self._profile_name = observation.profile_name
                 self.db.update_meeting_metadata(
@@ -159,10 +181,15 @@ class MeetingDetector:
             return
         meeting_id = self._meeting_id
         self.db.end_meeting(meeting_id, ended_at=_now_iso())
+        # Persist participants gathered during the call before we forget them.
+        self._persist_participants(meeting_id)
         logger.info("meeting ended id=%s", meeting_id)
+        profile_name = self._profile_name
         self._meeting_id = None
         self._profile_name = None
         self._last_seen = 0.0
+        self._participants = {}
+        _emit_meeting_event("meeting_ended", meeting_id=meeting_id, profile_name=profile_name)
 
     def link_transcript(
         self,
@@ -176,6 +203,10 @@ class MeetingDetector:
         self.expire_if_idle()
         if self._meeting_id is None:
             return None
+        # Track distinct speakers as the meeting's participants (best source we
+        # have when no roster UI is captured). Names are resolved at end time.
+        if speaker_id is not None:
+            self._participants.setdefault(int(speaker_id), "")
         return self.db.insert_meeting_segment(
             meeting_id=self._meeting_id,
             transcription_id=transcription_id,
@@ -185,6 +216,46 @@ class MeetingDetector:
             end_time=end_time or start_time or 0.0,
         )
 
+    def note_participant(self, name: str) -> None:
+        """Record a participant name seen in the meeting UI (roster/caption).
+
+        Stored under a sentinel key (negative ids) so UI-sourced names coexist
+        with audio speaker ids. Deduped by name on persist."""
+        clean = (name or "").strip()
+        if not clean or self._meeting_id is None:
+            return
+        # Use a stable negative pseudo-id derived from the name.
+        key = -(abs(hash(clean)) % 1_000_000 + 1)
+        self._participants[key] = clean
+
+    def _persist_participants(self, meeting_id: int) -> None:
+        """Resolve speaker ids to names and write the participant list to the
+        meeting metadata. Best-effort; never raises into the caller."""
+        try:
+            names: list[str] = []
+            seen: set[str] = set()
+            for sid, ui_name in self._participants.items():
+                name = ui_name
+                if not name and sid >= 0:
+                    name = self._speaker_name(sid)
+                name = (name or "").strip()
+                if name and name.lower() not in seen and name.lower() != "unknown":
+                    seen.add(name.lower())
+                    names.append(name)
+            if names:
+                self.db.update_meeting_metadata(meeting_id, {"participants": names})
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("persist participants failed for meeting %s: %s", meeting_id, exc)
+
+    def _speaker_name(self, speaker_id: int) -> str:
+        try:
+            getter = getattr(self.db, "get_speaker_name", None)
+            if callable(getter):
+                return str(getter(speaker_id) or "")
+        except Exception:  # noqa: BLE001
+            pass
+        return ""
+
 
 def detect_meeting(
     *,
@@ -192,7 +263,16 @@ def detect_meeting(
     window_title: str,
     browser_url: str | None = None,
     text: str = "",
+    audio_active: bool | None = None,
 ) -> MeetingObservation:
+    """Detect whether the focused window is an active call.
+
+    ``audio_active`` is an optional corroboration signal: when explicitly False
+    and the only evidence is a meeting URL (no active-call control like a
+    hang-up button), we treat it as a lobby / idle tab and do NOT open a
+    meeting — this cuts the most common false positive (a parked Meet/Zoom tab).
+    When None (unknown), behavior is unchanged and backward-compatible.
+    """
     app_l = (app_name or "").lower()
     title_l = (window_title or "").lower()
     url_l = (browser_url or "").lower()
@@ -207,8 +287,13 @@ def detect_meeting(
             continue
 
         matched = tuple(signal for signal in profile.call_signals if signal.lower() in combined)
-        # Browser meeting URLs are stronger than app/title identity, but still
-        # require either an active-call control or a meeting-specific URL.
+        # An explicit active-call control (hang up / leave) is the strongest
+        # evidence. A meeting-specific URL is next, but a parked lobby tab also
+        # carries that URL — so when we KNOW audio is silent, require a call
+        # control. Unknown audio (None) keeps the original URL-only behavior.
+        url_only = url_match and not matched
+        if url_only and audio_active is False:
+            continue
         in_meeting = bool(matched) or url_match
         if in_meeting:
             return MeetingObservation(

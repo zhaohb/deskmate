@@ -130,6 +130,40 @@ def _header_journal_date(header: str) -> date | None:
         return None
 
 
+# Header time token, e.g. "3:11 PM", "11:23 PM", or 24h "15:11" — the part
+# before the first " — " separator (after any optional leading YYYY-MM-DD).
+_HEADER_TIME_RE = re.compile(
+    r"^(?:(?P<date>\d{4}-\d{2}-\d{2})\s+)?(?P<time>\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?)\b"
+)
+
+
+def _header_datetime(header: str, journal_day: date) -> datetime | None:
+    """Parse a block header into a naive local datetime for window filtering.
+
+    Handles both ``## 3:27 PM — …`` and ``## 2026-06-06 3:27 PM — …`` forms,
+    plus 24-hour ``## 15:27 — …``. The date comes from the header when present,
+    otherwise from ``journal_day`` (the file the block lives in). Returns None
+    if no time can be parsed (caller should keep such blocks rather than drop).
+    """
+    m = _HEADER_TIME_RE.match(header.strip())
+    if not m:
+        return None
+    day = journal_day
+    if m.group("date"):
+        try:
+            day = date.fromisoformat(m.group("date"))
+        except ValueError:
+            pass
+    raw = m.group("time").strip().upper().replace(" ", "")
+    for fmt in ("%I:%M%p", "%H:%M"):
+        try:
+            t = datetime.strptime(raw, fmt).time()
+            return datetime.combine(day, t)
+        except ValueError:
+            continue
+    return None
+
+
 def _prompt_key(body: str) -> str:
     """First 80 chars of the unquoted prompt body, normalized for dedup."""
     text = normalize_capture_text(_BLOCKQUOTE_LINE_RE.sub("", body))
@@ -261,13 +295,29 @@ def _wrap_range_display(start_iso: str, end_iso: str, body: str) -> str:
 
 
 def _merge_journals_in_range(start_iso: str, end_iso: str) -> str:
-    """Collect blocks from daily journal files inside the selected window."""
+    """Collect journal blocks whose header timestamp falls inside the window.
+
+    Filtering is to the precise [start, end] instant, not just the calendar
+    day, so a "last 1 hour" window shows only that hour's prompts even though
+    the daily journal file accumulates the whole day. Blocks whose header time
+    can't be parsed are kept (fail-open) so nothing silently disappears.
+    """
+    start_dt = _parse_iso_datetime(start_iso)
+    end_dt = _parse_iso_datetime(end_iso)
+    # Compare against naive-local bounds (header times are naive local).
+    start_naive = start_dt.replace(tzinfo=None) if start_dt else None
+    end_naive = end_dt.replace(tzinfo=None) if end_dt else None
+
     merged: dict[str, tuple[str, str]] = {}
     for day in _window_calendar_days(start_iso, end_iso):
         path = _journal_for_date(day)
         if not path.exists():
             continue
         for header, body in _split_blocks(path.read_text(encoding="utf-8")):
+            ts = _header_datetime(header, day)
+            if ts is not None and start_naive is not None and end_naive is not None:
+                if ts < start_naive or ts > end_naive:
+                    continue  # outside the selected window
             metadata_stripped = "\n".join(
                 ln for ln in body.splitlines() if not ln.startswith("**Category**")
             )
@@ -382,21 +432,17 @@ def main() -> int:
         else:
             appended = _append_new_blocks(journal_path, blocks)
 
-    # Default (rolling hours, same-day): show today's cumulative journal.
-    # Custom --start/--end or multi-day window: show this run's window report.
-    if custom_range or multi_day:
-        window_note = (
-            f"\n\n---\n_时间窗：{start_iso} → {end_iso}；"
-            f"本 run 追加 **{appended}** 条新提示。_\n"
-        )
-        display = _build_range_display(start_iso, end_iso, report).rstrip() + window_note
-    else:
-        if journal_path.exists():
-            journal_text = journal_path.read_text(encoding="utf-8")
-        else:
-            journal_text = "_no prompts captured yet today._\n"
-        window_note = f"\n\n---\n_Appended **{appended}** new prompt(s) this run._\n"
-        display = journal_text.rstrip() + window_note
+    # Display only prompts whose timestamp falls inside the selected window —
+    # for every mode, including rolling "last N hours". The daily journal file
+    # still accumulates the full day; we just scope what is shown so "last 1
+    # hour" never surfaces earlier prompts. The journal file already contains
+    # this run's appended blocks, so we render from it via the window filter.
+    body = _merge_journals_in_range(start_iso, end_iso)
+    window_note = (
+        f"\n\n---\n_时间窗：{start_iso} → {end_iso}；"
+        f"本 run 追加 **{appended}** 条新提示。_\n"
+    )
+    display = _wrap_range_display(start_iso, end_iso, body).rstrip() + window_note
 
     out = output_dir(APP_NAME)
     write_markdown(out / "ai-prompt-journal.md", display)

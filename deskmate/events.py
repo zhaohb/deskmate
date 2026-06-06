@@ -27,6 +27,8 @@ class EventType(str, Enum):
     A11Y_WRITTEN = "a11y_written"
     AUDIO_TRANSCRIBED = "audio_transcribed"
     WORKFLOW = "workflow"
+    MEETING_STARTED = "meeting_started"
+    MEETING_ENDED = "meeting_ended"
 
 
 class PermissionKind(str, Enum):

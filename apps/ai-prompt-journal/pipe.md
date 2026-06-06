@@ -19,7 +19,7 @@ Read DeskMate skill first.
 The agent runner has already done the heavy lifting and pre-fetched the highest-signal data via SQL against the DeskMate database. You receive two sections:
 
 - **Source A — sent-prompt snapshots** (highest confidence). Rows from `ui_events` where `event_type='text'` and `data_json.source='send'`, scoped to the time range and to a window/URL/process belonging to a known AI tool. Each line is a UIA snapshot of the chat input box taken the moment the user pressed Enter / Ctrl+Enter to send — i.e. the complete, already-composed prompt. Individual keystrokes are never recorded.
-- **Source B — focused input field snapshots**. Rows from `frame_accessibility` where `focused_role IN ('Edit','Document','RichEdit','TextArea','AXTextArea','AXTextField','Entry','Text')` joined with `frames` matching the same AI tool whitelist. The `focused_value` is the text sitting in the active chat input box at capture time.
+- **Source B — focused input field snapshots**. Rows from `frame_accessibility` where `focused_role` is a known text-input role (DeskMate UIA names like `EditControl`/`DocumentControl`/`TextControl`, plus bare `Edit`/`Document`/`RichEdit`/`TextArea`/`AXTextArea`/`AXTextField`/`Entry`/`Text`) joined with `frames` matching the same AI tool whitelist. The `focused_value` is the text sitting in the active chat input box at capture time. For editors that share one role between the code editor and the chat box (VS Code, Cursor), a row is kept only when a positive chat signal is present — the focused control's ClassName or accessibility Name (e.g. `Message input` / `Chat Input (Agent), … Claude Opus …` for Claude Code, `Chat Input` for Copilot) or a chat-panel window title.
 
 Tool whitelist (matched on `browser_url`, `window_name`/`window_title`, or process name):
 
@@ -38,8 +38,10 @@ Tool whitelist (matched on `browser_url`, `window_name`/`window_title`, or proce
 | OpenRouter | openrouter.ai |
 | You.com | you.com/search, you.com/chat |
 | Pi | pi.ai |
-| Cursor | Cursor.exe |
-| VS Code Copilot | Code.exe |
+| Cursor | Cursor.exe (chat composer class `aislash-editor-input`) |
+| VS Code Copilot | Code.exe (focused name `Chat Input …`) |
+| Claude Code (VS Code) | Code.exe (focused name `Message input` / `Chat Input (Agent), … Claude Opus …`) |
+| Claude Code (terminal) | structural markers in the captured terminal screen |
 | LM Studio / Ollama / Jan / GPT4All / Msty / AnythingLLM | native process name |
 
 If both sources are empty, the runner falls back to a `/search`-based prefetch and you may also receive `### <Tool> | substantive_hits=N` blocks; treat them with the same prompt-vs-response discipline below.
