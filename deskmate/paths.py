@@ -46,6 +46,11 @@ def pipes_dir() -> Path:
     return root() / "pipes"
 
 
+def ov_cache_dir() -> Path:
+    """OpenVINO compiled-model cache (CACHE_DIR for the openvino_genai backend)."""
+    return root() / "ov_cache"
+
+
 def paused_flag() -> Path:
     return root() / ".paused"
 

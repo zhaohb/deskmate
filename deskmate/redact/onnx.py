@@ -12,8 +12,8 @@ callable that maps `str → list[int]` if you bring an exotic model.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from ..logger import get
 

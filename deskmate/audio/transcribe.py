@@ -1,8 +1,19 @@
-"""Whisper transcription via `faster-whisper`.
+"""Whisper transcription orchestrator.
 
-This module returns time-aligned segments so the caller can persist multiple
-`audio_transcriptions` rows per chunk. Silero VAD pre-segmentation is applied
-before sending to Whisper.
+This module owns the backend-agnostic transcription pipeline — RMS gating,
+Silero VAD pre-segmentation, per-clip writing, language resolution and offset
+fixup — and delegates the actual inference to a pluggable
+:class:`~deskmate.audio.transcribe_backends.TranscriptionBackend`:
+
+- ``onnx_cpu``       → faster-whisper (CTranslate2 + ONNX Runtime)
+- ``openvino_genai`` → OpenVINO GenAI WhisperPipeline (NPU/GPU/CPU)
+
+The backend is selected from config (``[audio] whisper_backend``); if the
+preferred backend can't load, the orchestrator falls back along
+:data:`~deskmate.audio.transcribe_backends.FALLBACK_BACKEND`.
+
+Returns time-aligned segments so the caller can persist multiple
+`audio_transcriptions` rows per chunk.
 """
 
 from __future__ import annotations
@@ -12,35 +23,31 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from ..logger import get
-from .pipeline_status import classify_model_load_error
+
+# Re-exported for backward compatibility (tests / external callers import these
+# names from this module).
+from .transcribe_backends import (  # noqa: F401
+    BACKENDS,
+    FALLBACK_BACKEND,
+    WHISPER_COMPRESSION_RATIO_THRESHOLD,
+    WHISPER_LOG_PROB_THRESHOLD,
+    WHISPER_NO_SPEECH_THRESHOLD,
+    WHISPER_TRANSLATE,
+    ZH_INITIAL_PROMPT,
+    FasterWhisperBackend,
+    TranscriptionBackend,
+    WhisperGenAIBackend,
+    _set_translate,
+)
 from .vad import SileroVAD, SpeechSegment
 
 logger = get("audio.transcribe")
-
-# Whisper translation is always disabled: we transcribe in the source language.
-WHISPER_TRANSLATE = False
 
 # Skip near-silent audio below this RMS energy (Whisper hallucinates on silence).
 MIN_RMS_ENERGY = 0.015
 
 # Minimum VAD clip duration; shorter clips produce garbage Chinese fragments
 MIN_CLIP_DURATION_S = 1.0
-
-# Hallucination-suppression thresholds for faster-whisper.
-WHISPER_NO_SPEECH_THRESHOLD = 0.6
-WHISPER_LOG_PROB_THRESHOLD = -2.0
-WHISPER_COMPRESSION_RATIO_THRESHOLD = 2.4
-
-ZH_INITIAL_PROMPT = "以下是普通话简体中文内容。"
-
-
-def _set_translate(transcribe_kwargs: dict, translate: bool) -> None:
-    """Map a translate flag onto the faster-whisper task.
-
-    translate=False -> task="transcribe" (keep source language)
-    translate=True  -> task="translate"  (translate to English; unused here)
-    """
-    transcribe_kwargs["task"] = "translate" if translate else "transcribe"
 
 
 @dataclass
@@ -53,6 +60,14 @@ class TranscriptSegment:
 
 
 class WhisperTranscriber:
+    """Backend-agnostic transcription orchestrator.
+
+    Owns VAD segmentation, RMS gating, clip writing and language resolution;
+    delegates inference to a :class:`TranscriptionBackend` chosen by ``backend``
+    (``"onnx_cpu"`` | ``"openvino_genai"``). On load failure it walks the
+    :data:`FALLBACK_BACKEND` chain before giving up.
+    """
+
     def __init__(
         self,
         model_size: str = "base",
@@ -63,10 +78,19 @@ class WhisperTranscriber:
         vad_padding_ms: int = 200,
         compute_type: str = "int8",
         languages: list[str] | None = None,
+        backend: str = "onnx_cpu",
+        openvino_genai_model: str = "OpenVINO/whisper-medium-int8-ov",
+        openvino_device: str = "NPU",
+        openvino_cache_dir: str | None = None,
     ) -> None:
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
+        self.requested_backend = backend  # what config asked for
+        # openvino_genai backend settings
+        self.openvino_genai_model = openvino_genai_model
+        self.openvino_device = openvino_device
+        self.openvino_cache_dir = openvino_cache_dir
         self.vad_min_segment_ms = vad_min_segment_ms
         self.vad_padding_ms = vad_padding_ms
         # Language handling:
@@ -74,11 +98,11 @@ class WhisperTranscriber:
         #   ["zh"] = force Simplified Chinese (skip detection, always use "zh")
         #   ["zh", "en"] = constrained detect (must be one of these)
         self.languages: list[str] = [l for l in (languages or []) if l]
-        self._model = None
+        self._backend: TranscriptionBackend | None = None
         self.load_error_code: str | None = None
         self.load_error_detail: str | None = None
         self.user_hint: str | None = None
-        self._available = self._try_load()
+        self._available = self._load_backend_chain(backend)
         self._vad = SileroVAD(threshold=vad_threshold)
         if not self._available and self.user_hint:
             logger.warning("transcription unavailable: %s", self.user_hint)
@@ -87,41 +111,58 @@ class WhisperTranscriber:
     def available(self) -> bool:
         return self._available
 
-    def _try_load(self) -> bool:
-        try:
-            from faster_whisper import WhisperModel  # noqa: PLC0415
-        except ImportError:
-            self.load_error_code = "missing_deps"
-            self.load_error_detail = "faster-whisper not installed"
-            self.user_hint = 'Install audio extras: pip install -e ".[audio,vad]"'
-            logger.warning("faster-whisper not installed; transcription disabled")
-            return False
-        try:
-            from ..model_status import loading, whisper_cached  # noqa: PLC0415
+    @property
+    def backend(self) -> str:
+        """The backend actually in use (may differ from requested after fallback)."""
+        return self._backend.name if self._backend else self.requested_backend
 
-            cached = whisper_cached(self.model_size)
-            with loading(
-                f"Whisper ({self.model_size})",
-                cached=cached,
-                detail=f"device={self.device}, compute={self.compute_type}",
-            ):
-                self._model = WhisperModel(
-                    self.model_size,
-                    device=self.device,
-                    compute_type=self.compute_type,
-                )
-            self.load_error_code = None
-            self.load_error_detail = None
-            self.user_hint = None
-            return True
-        except Exception as exc:  # noqa: BLE001
-            code, hint = classify_model_load_error(exc)
-            self.load_error_code = code
-            self.load_error_detail = str(exc)
-            self.user_hint = hint
-            logger.warning("faster-whisper init failed: %s", exc)
-            logger.warning("hint: %s", hint)
-            return False
+    def _build_backend(self, name: str) -> TranscriptionBackend:
+        """Instantiate a backend by name, wiring backend-specific options."""
+        cls = BACKENDS[name]
+        if cls is FasterWhisperBackend:
+            return cls(
+                self.model_size,
+                self.languages,
+                device=self.device,
+                compute_type=self.compute_type,
+            )
+        if cls is WhisperGenAIBackend:
+            return cls(
+                self.openvino_genai_model,
+                self.languages,
+                device=self.openvino_device,
+                cache_dir=self.openvino_cache_dir or None,
+            )
+        return cls(self.model_size, self.languages)
+
+    def _load_backend_chain(self, name: str | None) -> bool:
+        """Try ``name``, then walk FALLBACK_BACKEND until one loads or all fail."""
+        while name is not None:
+            if name not in BACKENDS:
+                logger.warning("unknown whisper backend %r; using onnx_cpu", name)
+                name = "onnx_cpu"
+            backend = self._build_backend(name)
+            status = backend.load()
+            if status.available:
+                self._backend = backend
+                self.load_error_code = None
+                self.load_error_detail = None
+                self.user_hint = None
+                if name != self.requested_backend:
+                    logger.warning(
+                        "whisper backend %r unavailable; using %r instead",
+                        self.requested_backend, name,
+                    )
+                return True
+            # Record the failure, then try the fallback.
+            self.load_error_code = status.error_code
+            self.load_error_detail = status.error_detail
+            self.user_hint = status.user_hint
+            nxt = FALLBACK_BACKEND.get(name)
+            if nxt is not None:
+                logger.warning("whisper backend %r failed to load; trying %r", name, nxt)
+            name = nxt
+        return False
 
     def transcribe(self, wav_path: Path) -> tuple[str, str | None]:
         """Backwards-compat one-shot transcription. Returns (text, language)."""
@@ -133,7 +174,7 @@ class WhisperTranscriber:
     def transcribe_segments(self, wav_path: Path) -> list[TranscriptSegment]:
         """Return per-segment transcription with start/end times in seconds.
         Each `TranscriptSegment` matches one row in `audio_transcriptions`."""
-        if not self._available or self._model is None:
+        if not self._available or self._backend is None:
             return []
 
         speech_segments = self._speech_segments(wav_path)
@@ -212,6 +253,12 @@ class WhisperTranscriber:
         base_offset: float,
         vad_filter: bool,
     ) -> list[TranscriptSegment]:
+        """Backend-agnostic single-clip transcription.
+
+        Applies shared RMS gating, delegates raw inference to the active
+        backend, then resolves the language and shifts each segment by
+        ``base_offset`` to recover absolute (recording-relative) times.
+        """
         try:
             rms = self._audio_rms(wav_path)
             if rms is not None and rms < MIN_RMS_ENERGY:
@@ -221,45 +268,18 @@ class WhisperTranscriber:
                 )
                 return []
 
-            # Build Whisper params:
-            # - set_language(lang): force or constrain language
-            # - set_translate(false): transcribe only, no translation
-            transcribe_kwargs: dict = {
-                "beam_size": 1,
-                "vad_filter": vad_filter,
-                "word_timestamps": False,
-                "no_speech_threshold": WHISPER_NO_SPEECH_THRESHOLD,
-                "log_prob_threshold": WHISPER_LOG_PROB_THRESHOLD,
-                "compression_ratio_threshold": WHISPER_COMPRESSION_RATIO_THRESHOLD,
-            }
-            _set_translate(transcribe_kwargs, WHISPER_TRANSLATE)
-
-            if len(self.languages) == 1:
-                # Force single language
-                transcribe_kwargs["language"] = self.languages[0]
-                if self.languages[0] == "zh":
-                    transcribe_kwargs["initial_prompt"] = ZH_INITIAL_PROMPT
-            elif len(self.languages) > 1:
-                # Let faster-whisper detect, then we constrain below
-                pass
-            # else: [] = fully automatic
-
-            segments, info = self._model.transcribe(
-                str(wav_path), **transcribe_kwargs,
-            )
-
-            detected_lang = getattr(info, "language", None)
-            language = self._resolve_language(detected_lang)
+            result = self._backend.transcribe(str(wav_path), vad_filter=vad_filter)
+            language = self._resolve_language(result.detected_language)
 
             out: list[TranscriptSegment] = []
-            for s in segments:
-                text = (s.text or "").strip()
+            for seg in result.segments:
+                text = (seg.text or "").strip()
                 if not text:
                     continue
                 out.append(TranscriptSegment(
                     text=text,
-                    start_time=base_offset + (float(s.start) if s.start is not None else 0.0),
-                    end_time=base_offset + (float(s.end) if s.end is not None else 0.0),
+                    start_time=base_offset + seg.start,
+                    end_time=base_offset + seg.end,
                     language=language,
                 ))
             return out

@@ -40,6 +40,12 @@ pip install -e ".[ocr-winrt,audio,mcp]"
 
 Common extras: `[ocr-tesseract]`, `[vad]`, `[speaker]`, `[redact-onnx]`, `[full,mcp]`
 
+**OpenVINO GenAI Whisper backend** (NPU / GPU / CPU acceleration):
+```powershell
+pip install -e ".[audio-openvino]"
+```
+Then set `whisper_backend = "openvino_genai"` (default device NPU). See [docs/04-audio.md](docs/04-audio.md#whisper-backends) for configuration, device benchmarks, and fallback behavior.
+
 ## Quick Start
 
 ```powershell

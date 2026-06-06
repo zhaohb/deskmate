@@ -14,8 +14,8 @@ shaped identically.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Iterator
 
 from ..logger import get
 
@@ -46,7 +46,10 @@ class SileroVAD:
         if self._model is not None or self._backend == "energy":
             return True
         try:
-            from silero_vad import load_silero_vad, get_speech_timestamps  # type: ignore[import-not-found]
+            from silero_vad import (  # type: ignore[import-not-found]
+                get_speech_timestamps,
+                load_silero_vad,
+            )
 
             from ..model_status import loading  # noqa: PLC0415
 

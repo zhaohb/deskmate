@@ -59,12 +59,19 @@ class Daemon:
             vad_padding_ms=self.cfg.audio.vad_padding_ms,
             compute_type=self.cfg.audio.compute_type,
             languages=self.cfg.audio.languages,
+            backend=self.cfg.audio.whisper_backend,
+            openvino_genai_model=self.cfg.audio.openvino_genai_model,
+            openvino_device=self.cfg.audio.openvino_device,
+            openvino_cache_dir=self.cfg.audio.openvino_cache_dir or str(paths.ov_cache_dir()),
         ) if self.cfg.audio.enabled else None
         self.speaker = SpeakerIdentifier() if self.cfg.audio.enabled and self.cfg.audio.speaker_recognition else None
 
         onnx_path = getattr(self.cfg.redact, "onnx_model_path", None)
         tok_path = getattr(self.cfg.redact, "onnx_tokenizer_path", None)
-        self.redactor = OnnxRedactor(onnx_path, tokenizer_path=tok_path) if onnx_path else None
+        self.redactor = OnnxRedactor(
+            onnx_path,
+            tokenizer_path=tok_path,
+        ) if onnx_path else None
         self.reconciler = RedactReconciler(self.db, self.redactor) if self.redactor else None
 
         pipes_dir = paths.config_dir() / "pipes"

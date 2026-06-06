@@ -79,8 +79,26 @@ class AudioConfig(BaseModel):
     microphone: bool = True
     # Default tier uses large-v3-turbo; small is a balanced default for Chinese
     whisper_model: str = "small"
+    # Inference backend:
+    #   onnx_cpu:       faster-whisper (CTranslate2 + ONNX Runtime). Default, most
+    #                   compatible; uses `whisper_model` + `device`/`compute_type`.
+    #   openvino_genai: OpenVINO GenAI WhisperPipeline. Runs on NPU/GPU/CPU; uses
+    #                   `openvino_genai_model` + `openvino_device`.
+    whisper_backend: Literal["onnx_cpu", "openvino_genai"] = "onnx_cpu"
+    # device/compute_type apply to the onnx_cpu (faster-whisper) backend only.
     device: str = "cpu"
     compute_type: str = "int8"
+    # --- openvino_genai backend settings ---
+    # ModelScope model id (auto-downloaded on first run) or a local path to a
+    # GenAI-format OpenVINO IR directory (encoder/decoder/tokenizer .xml+.bin).
+    openvino_genai_model: str = "OpenVINO/whisper-medium-int8-ov"
+    # OpenVINO device for openvino_genai: NPU | GPU | CPU | AUTO. NPU is fastest
+    # here but its first compile is slow; results are cached so later starts are
+    # fast. Falls back to CPU if the chosen device can't load.
+    openvino_device: str = "NPU"
+    # Directory for OpenVINO's compiled-model cache (CACHE_DIR). Empty =>
+    # ~/.deskmate/ov_cache. Avoids recompiling the model on every start.
+    openvino_cache_dir: str = ""
     vad_threshold: float = 0.5
     # Avoid very short clips; 300ms fragments cause Whisper hallucinations
     vad_min_segment_ms: int = 1000
@@ -315,8 +333,12 @@ languages = ["zh-CN", "en-US"]
 
 [audio]
 enabled = false
-whisper_model = "small"
-device = "cpu"
+whisper_model = "small"            # onnx_cpu backend model tier
+whisper_backend = "onnx_cpu"       # onnx_cpu (faster-whisper) | openvino_genai (OpenVINO NPU/GPU/CPU)
+device = "cpu"                     # faster-whisper device (onnx_cpu backend only)
+# openvino_genai backend: ModelScope id (auto-downloaded) or local IR dir
+openvino_genai_model = "OpenVINO/whisper-medium-int8-ov"
+openvino_device = "NPU"            # NPU | GPU | CPU | AUTO (openvino_genai backend only)
 languages = ["zh"]
 vad_min_segment_ms = 1000
 

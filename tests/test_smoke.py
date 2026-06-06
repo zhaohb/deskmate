@@ -202,37 +202,28 @@ def test_pyaudio_stream_cleanup_tolerates_closed_stream() -> None:
 
 def test_transcriber_offsets_vad_segments() -> None:
     from deskmate.audio.transcribe import WhisperTranscriber
+    from deskmate.audio.transcribe_backends import RawSegment, TranscribeResult
     from deskmate.audio.vad import SpeechSegment
 
-    class Segment:
-        text = " hello "
-        start = 0.25
-        end = 0.75
+    class FakeBackend:
+        """Stand-in TranscriptionBackend recording the vad_filter it received."""
 
-    class Info:
-        language = "en"
+        name = "fake"
 
-    class Model:
         def __init__(self) -> None:
             self.vad_filters: list[bool] = []
 
-        def transcribe(
-            self,
-            _path: str,
-            *,
-            beam_size: int,
-            vad_filter: bool,
-            word_timestamps: bool,
-            task: str = "transcribe",
-        ):  # noqa: ARG002
+        def transcribe(self, _path: str, *, vad_filter: bool) -> TranscribeResult:
             self.vad_filters.append(vad_filter)
-            self.last_task = task
-            return [Segment()], Info()
+            return TranscribeResult(
+                segments=[RawSegment(text=" hello ", start=0.25, end=0.75)],
+                detected_language="en",
+            )
 
     transcriber = WhisperTranscriber.__new__(WhisperTranscriber)
     transcriber.languages = ["zh"]
     transcriber._available = True
-    transcriber._model = Model()
+    transcriber._backend = FakeBackend()
     transcriber._speech_segments = lambda _path: [SpeechSegment(start_s=10.0, end_s=12.0)]
     transcriber._load_clip_source = lambda _source: None
     transcriber._write_clip = lambda source, _segment, _target, *, clip_source=None: source
@@ -242,8 +233,116 @@ def test_transcriber_offsets_vad_segments() -> None:
     assert out[0].text == "hello"
     assert out[0].start_time == 10.25
     assert out[0].end_time == 10.75
-    assert transcriber._model.vad_filters == [False]
-    assert transcriber._model.last_task == "transcribe"
+    # Silero already segmented, so the engine's own VAD must be off for clips.
+    assert transcriber._backend.vad_filters == [False]
+
+
+def test_faster_whisper_backend_builds_transcribe_kwargs() -> None:
+    """The onnx_cpu backend forces zh + initial prompt and task=transcribe."""
+    from deskmate.audio.transcribe_backends import FasterWhisperBackend, ZH_INITIAL_PROMPT
+
+    class Segment:
+        text = " ni hao "
+        start = 0.1
+        end = 0.5
+
+    class Info:
+        language = "zh"
+
+    class Model:
+        def transcribe(self, _path: str, **kwargs):
+            self.kwargs = kwargs
+            return [Segment()], Info()
+
+    backend = FasterWhisperBackend.__new__(FasterWhisperBackend)
+    backend.languages = ["zh"]
+    backend._model = Model()
+
+    result = backend.transcribe("clip.wav", vad_filter=False)
+    assert backend._model.kwargs["task"] == "transcribe"
+    assert backend._model.kwargs["vad_filter"] is False
+    assert backend._model.kwargs["language"] == "zh"
+    assert backend._model.kwargs["initial_prompt"] == ZH_INITIAL_PROMPT
+    assert result.detected_language == "zh"
+    assert result.segments[0].text == " ni hao "
+
+
+def test_genai_backend_parses_chunks(monkeypatch) -> None:
+    """The openvino_genai backend maps WhisperPipeline result.chunks to RawSegments."""
+    import deskmate.audio.transcribe_backends as tb
+    from deskmate.audio.transcribe_backends import WhisperGenAIBackend
+
+    class Chunk:
+        def __init__(self, text, start, end):
+            self.text, self.start_ts, self.end_ts = text, start, end
+
+    class Result:
+        chunks = [Chunk(" hello ", 0.0, 1.0), Chunk("", 1.0, 1.2)]
+
+    class Pipeline:
+        def generate(self, raw, **kwargs):
+            self.raw, self.kwargs = raw, kwargs
+            return Result()
+
+    # GenAI takes a raw audio array; stub the file read.
+    monkeypatch.setattr(tb, "_read_audio_16k", lambda _p: [0.0, 0.1, 0.2])
+
+    backend = WhisperGenAIBackend.__new__(WhisperGenAIBackend)
+    backend.languages = ["zh"]
+    backend._model = Pipeline()
+
+    result = backend.transcribe("clip.wav", vad_filter=True)
+    # zh forces the special-token language form + initial prompt + return_timestamps.
+    assert backend._model.kwargs["task"] == "transcribe"
+    assert backend._model.kwargs["language"] == "<|zh|>"
+    assert backend._model.kwargs["return_timestamps"] is True
+    assert backend._model.kwargs["initial_prompt"] == tb.ZH_INITIAL_PROMPT
+    assert result.detected_language == "zh"
+    assert [s.text for s in result.segments] == [" hello ", ""]
+    assert result.segments[0].end == 1.0
+
+
+def test_backend_fallback_chain() -> None:
+    """openvino_genai that fails to load falls back to onnx_cpu."""
+    from deskmate.audio.transcribe import WhisperTranscriber
+    from deskmate.audio.transcribe_backends import LoadStatus
+
+    transcriber = WhisperTranscriber.__new__(WhisperTranscriber)
+    transcriber.model_size = "base"
+    transcriber.device = "cpu"
+    transcriber.compute_type = "int8"
+    transcriber.openvino_genai_model = "OpenVINO/whisper-medium-int8-ov"
+    transcriber.openvino_device = "NPU"
+    transcriber.openvino_cache_dir = None
+    transcriber.languages = []
+    transcriber.requested_backend = "openvino_genai"
+    transcriber._backend = None
+    transcriber.load_error_code = None
+    transcriber.load_error_detail = None
+    transcriber.user_hint = None
+
+    attempts: list[str] = []
+
+    class LoadableBackend:
+        def __init__(self, name: str, ok: bool) -> None:
+            self.name = name
+            self._ok = ok
+
+        def load(self) -> LoadStatus:
+            attempts.append(self.name)
+            return LoadStatus.ok() if self._ok else LoadStatus.fail(
+                "missing_deps", "nope", "install it"
+            )
+
+    def fake_build(name: str):
+        return LoadableBackend(name, ok=(name == "onnx_cpu"))
+
+    transcriber._build_backend = fake_build
+    available = transcriber._load_backend_chain("openvino_genai")
+
+    assert available is True
+    assert attempts == ["openvino_genai", "onnx_cpu"]
+    assert transcriber.backend == "onnx_cpu"
 
 
 def test_set_translate() -> None:
