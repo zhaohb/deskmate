@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from typing import Any
+from xml.sax.saxutils import escape
 
 from ..logger import get
 from .store import HabitStore
@@ -41,23 +42,47 @@ def in_quiet_hours(now: datetime, spec: str) -> bool:
     return h >= start or h < end
 
 
+# AppUserModelID the toast is shown under. Pointing at the stock Windows
+# PowerShell app id lets the toast display on any Win10/11 box without having
+# to register a custom Start-menu shortcut for DeskMate.
+_TOAST_APP_ID = (
+    r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"
+)
+
+
 def _try_windows_toast(title: str, message: str) -> bool:
-    """Attempt a native Windows toast. Returns True on success, never raises."""
+    """Show a native Windows toast in-process via the ``winrt`` projection.
+
+    Single, deterministic delivery method — no subprocess, no backend probing.
+    User text is XML-escaped (injection-safe). Never raises; returns ``True``
+    only when the toast was actually shown.
+    """
     try:
-        from winrt.windows.ui.notifications import (  # type: ignore[import-not-found]
+        from winrt.windows.data.xml.dom import XmlDocument
+        from winrt.windows.ui.notifications import (
             ToastNotification,
             ToastNotificationManager,
         )
-        from winrt.windows.data.xml.dom import XmlDocument  # type: ignore[import-not-found]
 
+        # scenario="reminder" keeps the toast on screen until the user acts on
+        # it (instead of auto-dismissing after ~5s), so an away-from-keyboard
+        # user still sees it. A reminder needs at least one action, so a single
+        # system "知道了" dismiss button is provided. The audio element adds a
+        # reminder chime to catch attention even when the user isn't looking.
         xml = (
-            "<toast><visual><binding template='ToastGeneric'>"
-            f"<text>{title}</text><text>{message}</text>"
-            "</binding></visual></toast>"
+            "<toast scenario='reminder'>"
+            "<visual><binding template='ToastGeneric'>"
+            f"<text>{escape(title)}</text><text>{escape(message)}</text>"
+            "</binding></visual>"
+            "<audio src='ms-winsoundevent:Notification.Reminder' loop='false'/>"
+            "<actions>"
+            "<action content='知道了' arguments='dismiss' activationType='system'/>"
+            "</actions>"
+            "</toast>"
         )
         doc = XmlDocument()
         doc.load_xml(xml)
-        notifier = ToastNotificationManager.create_toast_notifier("DeskMate")
+        notifier = ToastNotificationManager.create_toast_notifier_with_id(_TOAST_APP_ID)
         notifier.show(ToastNotification(doc))
         return True
     except Exception as exc:  # noqa: BLE001 — toasts are best-effort only

@@ -123,7 +123,7 @@ class HabitWatcher:
 
         # Highest-priority hit wins; at most one suggestion per tick.
         for rule in store.enabled_rules():
-            hit, message, ctx = rules_mod.evaluate_rule(rule, state, profiles)
+            hit, message, ctx = rules_mod.evaluate_rule(rule, state, profiles, now)
             if hit:
                 result = notifier.deliver(rule, message, ctx, now)
                 return {"status": "evaluated", "fired": rule["name"], "result": result}

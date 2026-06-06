@@ -78,6 +78,24 @@ class HabitStore:
         with self._lock:
             return self._conn.execute(sql, (start_iso, end_iso)).fetchall()
 
+    def activity_timestamps_since(self, start_iso: str) -> list[str]:
+        """Ascending union of ``frames`` and ``ui_events`` timestamps since
+        ``start_iso``.
+
+        These are the "the user was present at the screen" signals used to
+        measure continuous on-screen time across app switches (a heartbeat frame
+        every ~60s while active, plus any UI events in between).
+        """
+        sql = """
+            SELECT timestamp FROM frames    WHERE timestamp >= ?
+            UNION
+            SELECT timestamp FROM ui_events WHERE timestamp >= ?
+            ORDER BY timestamp
+        """
+        with self._lock:
+            rows = self._conn.execute(sql, (start_iso, start_iso)).fetchall()
+        return [r["timestamp"] for r in rows if r.get("timestamp")]
+
     def last_app_switch_ts(self, app_name: str, before_iso: str) -> str | None:
         """Timestamp of the most recent switch INTO ``app_name`` before ``before_iso``.
 
