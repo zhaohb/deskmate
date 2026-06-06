@@ -263,6 +263,22 @@ a:hover {
   font-size: 0.82rem;
 }
 
+.lang-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.lang-row input {
+  flex: 1 1 200px;
+  max-width: 320px;
+}
+
+.lang-row .muted-copy {
+  margin: 0;
+}
+
 .email-grid {
   align-items: stretch;
 }

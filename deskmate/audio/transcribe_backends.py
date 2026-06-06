@@ -288,6 +288,11 @@ class WhisperGenAIBackend(TranscriptionBackend):
                 ):
                     self._model = ov_genai.WhisperPipeline(model_dir, dev, **kwargs)
                 self._active_device = dev
+                # Warm up: the very first inference right after an NPU compile can
+                # raise a transient "roi_end <= max_dim" before the device settles.
+                # A throwaway run on 1 s of silence absorbs it so the first real
+                # clip succeeds.
+                self._warmup()
                 if dev != self.device:
                     logger.warning(
                         "openvino_genai device %r unavailable; using %r", self.device, dev
@@ -300,6 +305,17 @@ class WhisperGenAIBackend(TranscriptionBackend):
 
         code, hint = classify_model_load_error(last_exc or RuntimeError("load failed"))
         return LoadStatus.fail(code, str(last_exc), hint)
+
+    def _warmup(self) -> None:
+        """Run one throwaway inference on silence to settle the device.
+
+        Best-effort: a failure here is non-fatal (the real call retries), so we
+        only log it."""
+        try:
+            silence = [0.0] * 16000  # 1 s @ 16 kHz
+            self._model.generate(silence, task="transcribe")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("openvino_genai warmup failed (non-fatal): %s", exc)
 
     def transcribe(self, wav_path: str, *, vad_filter: bool) -> TranscribeResult:
         # GenAI handles its own decoding; Silero pre-segmentation upstream
@@ -315,10 +331,11 @@ class WhisperGenAIBackend(TranscriptionBackend):
         language = None
         if len(self.languages) == 1:
             language = self.languages[0]
-            # GenAI expects the special-token form, e.g. "<|zh|>".
+            # GenAI expects the special-token form, e.g. "<|zh|>". Forcing the
+            # language already steers Simplified-Chinese output, so we do NOT add
+            # ZH_INITIAL_PROMPT here: on the NPU, an initial_prompt makes the
+            # pipeline raise "roi_end <= max_dim" and the clip fails entirely.
             gen_kwargs["language"] = f"<|{language}|>"
-            if language == "zh":
-                gen_kwargs["initial_prompt"] = ZH_INITIAL_PROMPT
 
         result = self._model.generate(raw_speech, **gen_kwargs)
 

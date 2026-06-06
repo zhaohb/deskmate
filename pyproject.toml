@@ -31,6 +31,9 @@ dependencies = [
 
 [project.optional-dependencies]
 ocr-tesseract = ["pytesseract>=0.3.10"]
+# RapidOCR = PP-OCR mobile (det+rec) on the OpenVINO CPU backend. Strong on
+# Chinese + small UI text. Models (~16MB) ship with the rapidocr package.
+ocr-rapidocr = ["rapidocr>=3.0", "openvino>=2024.0", "numpy>=1.26"]
 ocr-winrt = ["winrt-Windows.Foundation>=2.0; platform_system=='Windows'", "winrt-Windows.Foundation.Collections>=2.0; platform_system=='Windows'", "winrt-Windows.Globalization>=2.0; platform_system=='Windows'", "winrt-Windows.Media.Ocr>=2.0; platform_system=='Windows'", "winrt-Windows.Graphics.Imaging>=2.0; platform_system=='Windows'", "winrt-Windows.Storage.Streams>=2.0; platform_system=='Windows'"]
 notify = ["winrt-Windows.UI.Notifications>=2.0; platform_system=='Windows'", "winrt-Windows.Data.Xml.Dom>=2.0; platform_system=='Windows'"]
 audio = ["sounddevice>=0.4.6", "faster-whisper>=1.0", "numpy>=1.26", "soundfile>=0.12", "pyaudiowpatch>=0.2; platform_system=='Windows'"]

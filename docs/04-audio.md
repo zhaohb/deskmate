@@ -78,20 +78,47 @@ engine is one subclass + one registry entry — the orchestrator never changes.
 (VAD and the PII redactor are independent of this choice — VAD always uses
 silero-vad, the redactor always uses ONNX Runtime.)
 
+### Demo 1 — `onnx_cpu` (faster-whisper, default)
+
+The most compatible option. Runs on CPU, no special hardware.
+
+```powershell
+pip install -e ".[audio,vad]"
+```
+
 ```toml
 [audio]
 enabled = true
-whisper_backend = "openvino_genai"  # onnx_cpu | openvino_genai
-whisper_model = "small"             # onnx_cpu size tier (tiny|base|small|medium)
-# openvino_genai settings:
-openvino_genai_model = "OpenVINO/whisper-medium-int8-ov"  # ModelScope id or local IR dir
-openvino_device = "NPU"             # NPU | GPU | CPU | AUTO
+whisper_backend = "onnx_cpu"
+whisper_model = "small"       # tiny | base | small | medium | large-v3
+device = "cpu"                # faster-whisper device
+compute_type = "int8"         # int8 | int8_float16 | float16 | float32
+languages = ["zh"]            # [] = auto-detect
 ```
 
-Install with `pip install -e ".[audio-openvino]"` (pulls `openvino-genai` +
-`modelscope`). On first use the model is auto-downloaded from ModelScope (or
-loaded from a local GenAI-IR directory) and cached under
-`~/.cache/modelscope/`.
+The model is downloaded from HuggingFace on first use and cached under
+`~/.cache/huggingface/`. `openvino_*` keys are ignored by this backend.
+
+### Demo 2 — `openvino_genai` (OpenVINO, NPU/GPU/CPU)
+
+Faster on Intel hardware (NPU/GPU). Uses a pre-converted GenAI-IR model.
+
+```powershell
+pip install -e ".[audio-openvino,vad]"
+```
+
+```toml
+[audio]
+enabled = true
+whisper_backend = "openvino_genai"
+openvino_genai_model = "OpenVINO/whisper-medium-int8-ov"  # ModelScope id or local IR dir
+openvino_device = "NPU"       # NPU | GPU | CPU | AUTO
+languages = ["zh"]            # [] = auto-detect
+```
+
+The model is auto-downloaded from ModelScope on first use (or loaded from a
+local GenAI-IR directory) and cached under `~/.cache/modelscope/`. `whisper_model`
+/ `device` / `compute_type` are ignored by this backend.
 
 ### OpenVINO GenAI device notes
 

@@ -501,6 +501,18 @@
         </section>
 
         <section id="view-settings" class="view">
+          <section class="panel">
+            <div class="panel-title">Transcription languages</div>
+            <p class="muted-copy">
+              Comma-separated ISO codes (e.g. <code>zh, en</code>). Empty = auto-detect.
+              Applies to the next audio clip — no model reload.
+            </p>
+            <div class="lang-row">
+              <input id="langInput" type="text" placeholder="zh, en" autocomplete="off" />
+              <button id="langSaveBtn" type="button">Save</button>
+              <span id="langStatus" class="muted-copy"></span>
+            </div>
+          </section>
           <div class="grid two">
             <section class="panel">
               <div class="panel-title">Configuration</div>

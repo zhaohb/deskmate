@@ -23,7 +23,7 @@ snapshot storage, image redaction).
 | File | Role |
 |------|------|
 | `capture.py` | Multi-monitor enumeration + screenshot via `mss`, with JPEG resize |
-| `ocr.py` | Pluggable OCR (Windows.Media.Ocr / Tesseract / off) → text + per-word boxes + confidence |
+| `ocr.py` | Pluggable OCR (RapidOCR/PP-OCR / Windows.Media.Ocr / Tesseract / off) → text + per-word boxes + confidence |
 | `snapshot.py` | JPEG writer with date-sharded layout (`YYYY-MM-DD/YYYYMMDDTHHMMSS_mN.jpg`) |
 | `redact_image.py` | Pixel-level redaction: OCR regions matching PII → solid black rectangles |
 | `video_chunks.py` | Path builder for video chunk files |
@@ -64,11 +64,33 @@ sequenceDiagram
 
 ## OCR engine selection
 
-`screen/ocr.py` resolves an engine with a fallback chain: **WinRT
-(Windows.Media.Ocr, native async)** → **Tesseract (system binary)** → **off**.
-Each is lazily imported so a missing dependency degrades gracefully. OCR returns
-the full text, a per-word bounding-box JSON (stored as strings to preserve JSON
-field semantics across consumers), and a confidence score.
+`screen/ocr.py` exposes four engines, selected by `[ocr] engine`:
+
+| Engine | Backend | Notes |
+|--------|---------|-------|
+| `rapidocr` | PP-OCR mobile (det+rec) via RapidOCR on **OpenVINO CPU** | Best for Chinese + small UI text; ~16 MB models ship with the package |
+| `winrt` (default) | Windows.Media.Ocr (native async) | No extra deps on Windows |
+| `tesseract` | pytesseract (system binary) | Weak on Chinese screen text |
+| `off` | — | Disabled |
+
+Engines degrade gracefully via a fallback chain: `rapidocr → winrt → tesseract`
+when a dependency is missing or a model fails to load. Each is lazily imported;
+the RapidOCR engine is built once (≈15 s model load) and reused. OCR returns the
+full text, a per-word bounding-box JSON (values stored as **strings**, with
+boxes normalized 0–1, to preserve field semantics across consumers), and a
+confidence score.
+
+Install RapidOCR with `pip install -e ".[ocr-rapidocr]"`. Measured on an Intel
+Core Ultra X7 358H: ~166 ms/frame after warm-up, confidence 0.97–0.99 on
+Chinese+English UI text (vs. WinRT/Tesseract which struggle with small Chinese
+glyphs). It pins to the OpenVINO **CPU** device — PP-OCR's det/rec models are
+fully dynamic-shape, which the NPU compiler rejects, and CPU is already fast
+enough.
+
+**Resolution:** OCR runs on the *full-resolution* grab, while the on-disk
+snapshot is downscaled to `screenshot_max_width` separately. This keeps small /
+high-DPI text legible to OCR without bloating stored frames; normalized word
+boxes map onto the stored (downscaled) snapshot unchanged.
 
 ## Design trade-offs
 

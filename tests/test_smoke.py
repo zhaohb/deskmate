@@ -182,6 +182,66 @@ def test_winrt_language_mapping() -> None:
     assert _winrt_languages(["chi_sim"]) == ["zh-Hans"]
 
 
+def test_rapidocr_maps_result_to_normalized_words(monkeypatch) -> None:
+    """RapidOCR boxes/txts/scores → stringified, 0–1 normalized word JSON."""
+    import json
+
+    import deskmate.screen.ocr as ocr
+    from PIL import Image
+
+    class FakeResult:
+        # one 100x20 box at (50,10) on a 200x100 image, plus a blank line
+        boxes = [
+            [[50, 10], [150, 10], [150, 30], [50, 30]],
+            [[0, 0], [10, 0], [10, 10], [0, 10]],
+        ]
+        txts = (" hello ", "  ")  # second is blank → dropped
+        scores = (0.95, 0.4)
+
+    # Bypass the real engine/singleton.
+    monkeypatch.setattr(ocr, "_rapidocr_engine", lambda: (lambda _arr: FakeResult()))
+    ocr._RAPIDOCR_UNAVAILABLE = False
+
+    img = Image.new("RGB", (200, 100), "white")
+    text, jstr, conf = ocr._rapidocr(img)
+
+    assert text == "hello"
+    words = json.loads(jstr)
+    assert len(words) == 1
+    w = words[0]
+    assert w["text"] == "hello"
+    # normalized: left 50/200=0.25, top 10/100=0.1, width 100/200=0.5, height 20/100=0.2
+    assert abs(float(w["left"]) - 0.25) < 1e-6
+    assert abs(float(w["top"]) - 0.10) < 1e-6
+    assert abs(float(w["width"]) - 0.50) < 1e-6
+    assert abs(float(w["height"]) - 0.20) < 1e-6
+    assert w["conf"] == "0.95"  # stringified
+    assert conf == 0.95
+
+
+def test_rapidocr_unavailable_returns_none(monkeypatch) -> None:
+    """When the engine can't load, _rapidocr returns None so perform_ocr falls back."""
+    import deskmate.screen.ocr as ocr
+    from PIL import Image
+
+    monkeypatch.setattr(ocr, "_rapidocr_engine", lambda: None)
+    ocr._RAPIDOCR_UNAVAILABLE = False
+    assert ocr._rapidocr(Image.new("RGB", (10, 10), "white")) is None
+
+
+def test_downscale_only_shrinks() -> None:
+    from deskmate.screen.capture import downscale
+    from PIL import Image
+
+    big = Image.new("RGB", (3840, 2160), "white")
+    out = downscale(big, 1920)
+    assert out.size == (1920, 1080)
+    # no upscale / no-op when already small or max_width=0
+    small = Image.new("RGB", (800, 600), "white")
+    assert downscale(small, 1920).size == (800, 600)
+    assert downscale(small, 0).size == (800, 600)
+
+
 def test_pyaudio_stream_cleanup_tolerates_closed_stream() -> None:
     from deskmate.audio.capture import _close_pyaudio_stream
 
@@ -292,11 +352,12 @@ def test_genai_backend_parses_chunks(monkeypatch) -> None:
     backend._model = Pipeline()
 
     result = backend.transcribe("clip.wav", vad_filter=True)
-    # zh forces the special-token language form + initial prompt + return_timestamps.
+    # zh forces the special-token language form + return_timestamps. We must NOT
+    # send initial_prompt: it crashes the NPU pipeline ("roi_end <= max_dim").
     assert backend._model.kwargs["task"] == "transcribe"
     assert backend._model.kwargs["language"] == "<|zh|>"
     assert backend._model.kwargs["return_timestamps"] is True
-    assert backend._model.kwargs["initial_prompt"] == tb.ZH_INITIAL_PROMPT
+    assert "initial_prompt" not in backend._model.kwargs
     assert result.detected_language == "zh"
     assert [s.text for s in result.segments] == [" hello ", ""]
     assert result.segments[0].end == 1.0

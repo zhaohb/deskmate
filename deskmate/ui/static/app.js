@@ -2194,6 +2194,44 @@ function renderSettings() {
     subtitle: `id=${monitor.id} stable_id=${monitor.stable_id} default=${monitor.is_default}`,
     actionLabel: "",
   }));
+  setupLanguageControl();
+}
+
+function setupLanguageControl() {
+  const input = $("#langInput");
+  const btn = $("#langSaveBtn");
+  const status = $("#langStatus");
+  if (!input || !btn || input.dataset.bound) {
+    if (input) input.value = ((state.config?.audio?.languages) || []).join(", ");
+    return;
+  }
+  input.dataset.bound = "1";
+  input.value = ((state.config?.audio?.languages) || []).join(", ");
+
+  const save = async () => {
+    const languages = input.value.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+    btn.disabled = true;
+    status.textContent = "Saving…";
+    try {
+      const res = await api("/config/audio/languages", {
+        method: "POST",
+        body: JSON.stringify({ languages }),
+      });
+      if (state.config?.audio) state.config.audio.languages = res.languages;
+      $("#configDump").textContent = JSON.stringify(state.config || {}, null, 2);
+      input.value = res.languages.join(", ");
+      status.textContent = res.hot_applied
+        ? "Saved — applied to next clip."
+        : "Saved — restart to apply (daemon not in this process).";
+    } catch (err) {
+      status.textContent = `Error: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  btn.addEventListener("click", save);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); });
 }
 
 async function selectFrame(frameId) {

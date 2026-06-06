@@ -65,8 +65,11 @@ class A11yConfig(BaseModel):
 
 
 class OcrConfig(BaseModel):
-    engine: Literal["off", "winrt", "tesseract"] = "winrt"
-    # WinRT: zh-CN → zh-Hans; include en-US for mixed UI (bookmarks, URLs)
+    # rapidocr: PP-OCR mobile via OpenVINO CPU — best for Chinese + small text.
+    # winrt: Windows.Media.Ocr. tesseract: pytesseract. off: disabled.
+    engine: Literal["off", "winrt", "tesseract", "rapidocr"] = "winrt"
+    # WinRT: zh-CN → zh-Hans; include en-US for mixed UI (bookmarks, URLs).
+    # (rapidocr ignores this — its PP-OCR model is already zh+en.)
     languages: list[str] = ["zh-CN", "en-US"]
     tesseract_cmd: str | None = None
 
@@ -308,6 +311,55 @@ def load() -> Config:
     return cfg
 
 
+def set_audio_languages(languages: list[str]) -> None:
+    """Persist ``[audio] languages`` to config.toml, preserving everything else.
+
+    We avoid a full TOML round-trip (which would drop the file's comments) by
+    rewriting just the ``languages = [...]`` line inside the ``[audio]`` table,
+    or inserting it if absent. Best-effort: a malformed/missing file is created
+    from defaults first.
+    """
+    import re  # noqa: PLC0415
+
+    cfg_path = paths.config_path()
+    if not cfg_path.exists():
+        cfg_path.write_text(_render_default_toml(), encoding="utf-8")
+
+    text = cfg_path.read_text(encoding="utf-8")
+    # TOML array of the (already-validated) language strings.
+    rendered = "[" + ", ".join(f'"{l}"' for l in languages) + "]"
+    new_line = f"languages = {rendered}"
+
+    lines = text.splitlines()
+    in_audio = False
+    audio_start = -1
+    replaced = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_audio = stripped == "[audio]"
+            if in_audio:
+                audio_start = i
+            continue
+        if in_audio and re.match(r"^\s*languages\s*=", line):
+            # Preserve any trailing comment after the value.
+            comment = ""
+            if "#" in line:
+                comment = "  " + line[line.index("#"):].rstrip()
+            lines[i] = new_line + comment
+            replaced = True
+            break
+
+    if not replaced:
+        if audio_start >= 0:
+            lines.insert(audio_start + 1, new_line)
+        else:
+            lines.append("[audio]")
+            lines.append(new_line)
+
+    cfg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _render_default_toml() -> str:
     return """# DeskMate configuration. See deskmate/config.py for all fields.
 
@@ -328,7 +380,7 @@ capture_clipboard = true
 persist_elements = false
 
 [ocr]
-engine = "winrt"     # winrt | tesseract | off
+engine = "winrt"     # rapidocr | winrt | tesseract | off
 languages = ["zh-CN", "en-US"]
 
 [audio]

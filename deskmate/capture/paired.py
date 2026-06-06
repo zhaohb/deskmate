@@ -22,7 +22,7 @@ from typing import Any
 
 from .. import events as bus
 from ..a11y.browser_url import resolve_browser_url
-from ..a11y.uia_tree import foreground_window, walk_focused_window, INTERACTIVE_TYPES
+from ..a11y.uia_tree import INTERACTIVE_TYPES, foreground_window, walk_focused_window
 from ..a11y.win_events import foreground_app_name
 from ..config import Config
 from ..core import is_app_excluded, is_title_private
@@ -30,7 +30,7 @@ from ..core.filter import WindowFilter
 from ..db import DatabaseManager
 from ..logger import get
 from ..redact import maybe_redact
-from ..screen.capture import Monitor, grab_monitor, list_monitors
+from ..screen.capture import Monitor, downscale, grab_monitor, list_monitors
 from ..screen.ocr import OcrEngine, perform_ocr
 from ..screen.snapshot import SnapshotWriter
 
@@ -192,17 +192,19 @@ class PairedCapture:
     ) -> int | None:
         snapshot_path: str | None = None
         width = height = 0
+        # Grab at full resolution; OCR runs on this so small/high-DPI text isn't
+        # lost. The on-disk snapshot is downscaled separately (storage only).
+        ocr_img = None
         if self.cfg.capture.include_screenshot:
-            img = grab_monitor(monitor, max_width=self.cfg.capture.screenshot_max_width)
-            if img is not None:
+            ocr_img = grab_monitor(monitor)
+            if ocr_img is not None:
+                img = downscale(ocr_img, self.cfg.capture.screenshot_max_width)
                 width, height = img.size
                 p = self.snapshot.write(
                     img, monitor_id=monitor.id, captured_at=captured_at,
                     quality=self.cfg.capture.screenshot_jpeg_quality,
                 )
                 snapshot_path = str(p)
-        else:
-            img = None
 
         frame_id = self.db.insert_frame(
             monitor_id=monitor.id,
@@ -217,12 +219,14 @@ class PairedCapture:
             timestamp=captured_at.replace(microsecond=0).isoformat(),
         )
 
-        # OCR (best-effort; never blocks frame insertion above).
-        if img is not None and self.cfg.ocr.engine != "off":
+        # OCR (best-effort; never blocks frame insertion above). Runs on the
+        # full-resolution grab; word boxes are normalized 0–1 so they map onto
+        # the (possibly downscaled) stored snapshot unchanged.
+        if ocr_img is not None and self.cfg.ocr.engine != "off":
             try:
                 engine = OcrEngine(self.cfg.ocr.engine)
                 text, words_json, conf = perform_ocr(
-                    img,
+                    ocr_img,
                     engine,
                     self.cfg.ocr.languages,
                     tesseract_cmd=self.cfg.ocr.tesseract_cmd,

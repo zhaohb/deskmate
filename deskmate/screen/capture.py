@@ -49,9 +49,14 @@ def grab_monitor(monitor: Monitor, *, max_width: int = 0) -> Image.Image | None:
     with mss.mss() as sct:
         raw = sct.grab({"left": monitor.left, "top": monitor.top, "width": monitor.width, "height": monitor.height})
         img = Image.frombytes("RGB", raw.size, raw.rgb)
+    return downscale(img, max_width)
+
+
+def downscale(img: Image.Image, max_width: int) -> Image.Image:
+    """Return `img` shrunk so its width is at most `max_width` (no-op if 0/smaller)."""
     if max_width and img.width > max_width:
         ratio = max_width / img.width
-        img = img.resize((max_width, int(img.height * ratio)), Image.Resampling.LANCZOS)
+        return img.resize((max_width, int(img.height * ratio)), Image.Resampling.LANCZOS)
     return img
 
 

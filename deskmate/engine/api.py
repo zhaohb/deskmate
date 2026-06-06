@@ -1116,6 +1116,43 @@ def create_app(
             gmail_cfg["client_secret"] = "********"
         return data
 
+    @app.post("/config/audio/languages")
+    async def set_audio_languages(request: Request) -> dict[str, Any]:
+        """Hot-update the Whisper transcription language list.
+
+        `languages` is read per audio clip, not at model load, so this takes
+        effect on the next chunk without reloading the (possibly NPU-compiled)
+        model. The value is also persisted to config.toml so it survives a
+        restart. Hot-update only reaches a transcriber when the daemon runs in
+        this process; split API/daemon deployments still get persistence.
+        """
+        from ..config import set_audio_languages as persist_languages  # noqa: PLC0415
+
+        body = await request.json()
+        raw = body.get("languages", [])
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            raise HTTPException(status_code=400, detail="languages must be a list of codes")
+        # Normalize: trim, drop blanks, lowercase ISO-639-1-ish codes, dedupe.
+        seen: set[str] = set()
+        languages: list[str] = []
+        for item in raw:
+            code = str(item).strip().lower()
+            if code and code not in seen:
+                seen.add(code)
+                languages.append(code)
+
+        # Persist first (works regardless of daemon presence), then hot-apply.
+        persist_languages(languages)
+        cfg.audio.languages = languages
+        applied = False
+        transcriber = getattr(app.state.daemon, "transcriber", None)
+        if transcriber is not None and hasattr(transcriber, "set_languages"):
+            transcriber.set_languages(languages)
+            applied = True
+        return {"languages": languages, "hot_applied": applied}
+
     # ─── tags / memories ──────────────────────────────────────────────────
     @app.post("/tags/vision/batch")
     async def tags_batch(request: Request) -> dict[str, Any]:
@@ -1504,6 +1541,7 @@ def create_app(
                 "/memories/{id}", "/monitors",
                 "/pipes", "/pipes/{name}/run", "/pipes/{name}/executions",
                 "/raw_sql", "/add", "/capture", "/workflow/classify", "/activity/params", "/config",
+                "/config/audio/languages",
                 "/connections/gmail/connect", "/connections/gmail/status",
                 "/connections/gmail/instances", "/connections/gmail/messages",
                 "/connections/gmail/messages/{id}", "/connections/gmail/send",

@@ -12,7 +12,7 @@ All data stays on your machine.
 ## Features
 
 - Event-driven screen capture with adaptive FPS
-- UI Automation text + OCR indexing (WinRT or Tesseract)
+- UI Automation text + OCR indexing (RapidOCR/PP-OCR, WinRT, or Tesseract)
 - Keyboard, mouse, clipboard, and window-focus events
 - Optional local audio transcription (Whisper + VAD)
 - **Video-call detection** (Teams, Zoom, Meet, Webex, …) with per-meeting transcripts
@@ -38,7 +38,7 @@ python -m venv .venv
 pip install -e ".[ocr-winrt,audio,mcp]"
 ```
 
-Common extras: `[ocr-tesseract]`, `[vad]`, `[speaker]`, `[redact-onnx]`, `[full,mcp]`
+Common extras: `[ocr-rapidocr]` (PP-OCR, best for Chinese), `[ocr-tesseract]`, `[vad]`, `[speaker]`, `[redact-onnx]`, `[full,mcp]`
 
 **OpenVINO GenAI Whisper backend** (NPU / GPU / CPU acceleration):
 ```powershell

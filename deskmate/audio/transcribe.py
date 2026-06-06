@@ -116,6 +116,22 @@ class WhisperTranscriber:
         """The backend actually in use (may differ from requested after fallback)."""
         return self._backend.name if self._backend else self.requested_backend
 
+    def set_languages(self, languages: list[str]) -> list[str]:
+        """Hot-swap the transcription language list — no model reload.
+
+        ``languages`` is read per clip (not at model load), so updating it takes
+        effect on the next audio chunk. Safe to call from another thread: we
+        assign a fresh list to both the orchestrator and the active backend, so
+        the audio loop only ever sees a complete old or new list, never a torn
+        one. Returns the normalized list that is now in effect.
+        """
+        normalized = [l for l in (languages or []) if l]
+        self.languages = normalized
+        if self._backend is not None:
+            self._backend.languages = normalized
+        logger.info("transcription languages updated to %r", normalized)
+        return normalized
+
     def _build_backend(self, name: str) -> TranscriptionBackend:
         """Instantiate a backend by name, wiring backend-specific options."""
         cls = BACKENDS[name]

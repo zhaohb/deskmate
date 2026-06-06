@@ -1,7 +1,10 @@
-"""OCR engines for Windows-native OCR and Tesseract.
+"""OCR engines for Windows-native OCR, Tesseract, and RapidOCR (PP-OCR).
 
 `winrt`     → uses Windows.Media.Ocr via `winrt` Python bindings.
 `tesseract` → uses pytesseract (must have Tesseract installed on PATH).
+`rapidocr`  → PP-OCR mobile (det+rec) via RapidOCR on the OpenVINO CPU backend;
+              strong on Chinese + small UI text. Falls back to winrt/tesseract
+              if the package isn't installed.
 `off`       → no-op, returns empty text.
 
 Output shape: `(text, words_json, confidence)` where words_json is JSON of
@@ -31,6 +34,7 @@ class OcrEngine(str, Enum):
     OFF = "off"
     WINRT = "winrt"
     TESSERACT = "tesseract"
+    RAPIDOCR = "rapidocr"
 
 
 @lru_cache(maxsize=1)
@@ -60,6 +64,15 @@ def perform_ocr(
         return "", "[]", None
     if image.width == 0 or image.height == 0:
         return "", "[]", None
+    if engine == OcrEngine.RAPIDOCR:
+        result = _rapidocr(image)
+        if result is not None:
+            return result  # may be ("", "[]", None) for a genuinely blank frame
+        # RapidOCR engine unavailable (deps missing / load failed) → degrade.
+        logger.info("rapidocr unavailable, falling back to winrt")
+        if _winrt_available():
+            return _winrt(image, languages or ["en-US"])
+        return _tesseract(image, _tesseract_languages(languages), tesseract_cmd=tesseract_cmd)
     if engine == OcrEngine.WINRT and _winrt_available():
         return _winrt(image, languages or ["en-US"])
     if engine == OcrEngine.TESSERACT:
@@ -68,6 +81,104 @@ def perform_ocr(
         logger.info("winrt OCR unavailable, falling back to tesseract")
         return _tesseract(image, _tesseract_languages(languages), tesseract_cmd=tesseract_cmd)
     return "", "[]", None
+
+
+# ─── RapidOCR (PP-OCR mobile via OpenVINO CPU) ───────────────────────────────
+# Loading the det+rec models takes ~15 s, so the engine is built once and
+# reused. _rapidocr returns None when RapidOCR is unavailable (so the caller can
+# fall back to another engine) and a normal ("", "[]", None) for a blank frame.
+_RAPIDOCR_UNAVAILABLE = False
+
+
+@lru_cache(maxsize=1)
+def _rapidocr_engine() -> Any | None:
+    """Build a singleton RapidOCR engine on the OpenVINO CPU backend.
+
+    PP-OCR's det/rec models are fully dynamic-shape, which the NPU compiler
+    rejects, and the iGPU path is unverified — OpenVINO CPU runs the whole
+    PP-OCR mobile pipeline in ~150 ms with 0.97+ confidence, so we pin to CPU.
+    """
+    try:
+        from rapidocr import EngineType, RapidOCR  # noqa: PLC0415
+    except ImportError as exc:
+        logger.warning("rapidocr not installed (%s); RapidOCR engine disabled", exc)
+        return None
+    try:
+        from ..model_status import loading  # noqa: PLC0415
+
+        with loading("RapidOCR (PP-OCR mobile)", cached=True, detail="backend=openvino, device=CPU"):
+            return RapidOCR(params={
+                "Det.engine_type": EngineType.OPENVINO,
+                "Cls.engine_type": EngineType.OPENVINO,
+                "Rec.engine_type": EngineType.OPENVINO,
+            })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RapidOCR init failed: %s; engine disabled", exc)
+        return None
+
+
+def _rapidocr(image: Image.Image) -> tuple[str, str, float | None] | None:
+    """Run RapidOCR. Returns None if the engine is unavailable (triggers
+    fallback); otherwise the standard `(text, words_json, confidence)`."""
+    global _RAPIDOCR_UNAVAILABLE
+    if _RAPIDOCR_UNAVAILABLE:
+        return None
+    engine = _rapidocr_engine()
+    if engine is None:
+        _RAPIDOCR_UNAVAILABLE = True
+        return None
+
+    try:
+        import numpy as np  # noqa: PLC0415
+
+        # RapidOCR accepts an RGB ndarray; PP-OCR expects BGR internally but the
+        # wrapper handles channel order, so pass RGB as-is.
+        arr = np.asarray(image.convert("RGB"))
+        result = engine(arr)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RapidOCR inference failed: %s", exc)
+        return ("", "[]", None)
+
+    boxes = getattr(result, "boxes", None)
+    txts = getattr(result, "txts", None)
+    scores = getattr(result, "scores", None)
+    if boxes is None or not txts:
+        return ("", "[]", None)
+
+    w = float(image.width) if image.width > 0 else 1.0
+    h = float(image.height) if image.height > 0 else 1.0
+
+    words: list[dict[str, str]] = []
+    parts: list[str] = []
+    confs: list[float] = []
+    for i, txt in enumerate(txts):
+        t = (txt or "").strip()
+        if not t:
+            continue
+        parts.append(t)
+        # box i is a 4-point polygon [[x,y],...]; reduce to a normalized rect.
+        try:
+            poly = boxes[i]
+            xs = [float(pt[0]) for pt in poly]
+            ys = [float(pt[1]) for pt in poly]
+            left, top = min(xs), min(ys)
+            bw, bh = max(xs) - left, max(ys) - top
+        except Exception:  # noqa: BLE001
+            left = top = bw = bh = 0.0
+        conf = float(scores[i]) if scores is not None and i < len(scores) else 1.0
+        confs.append(conf)
+        words.append({
+            "text": t,
+            "left":   str(left / w),
+            "top":    str(top / h),
+            "width":  str(bw / w),
+            "height": str(bh / h),
+            "conf":   f"{conf:.2f}",
+        })
+
+    text = " ".join(parts)
+    confidence = (sum(confs) / len(confs)) if confs else None
+    return text, json.dumps(words, ensure_ascii=False), confidence
 
 
 # ─── tesseract ─────────────────────────────────────────────────────────────
