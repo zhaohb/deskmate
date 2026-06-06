@@ -153,10 +153,14 @@ class LoRATrainer:
     # -- Public API ----------------------------------------------------------
 
     def prepare_dataset(self, pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Convert SFT pairs to tokenized examples.
+        """Convert SFT pairs to tokenized examples with prompt-masked labels.
 
-        Each returned dict contains ``input_ids``, ``attention_mask`` and
-        ``text`` (the raw formatted string before tokenization).
+        Each returned dict contains ``input_ids``, ``attention_mask``,
+        ``labels`` and ``text``. ``labels`` mask the prompt tokens with -100 so
+        the loss is computed ONLY over the assistant's response — the standard
+        SFT objective. Sequences are NOT padded here; padding happens per-batch
+        in the collator so we don't waste compute padding every row to
+        ``max_seq_length``.
 
         Parameters
         ----------
@@ -167,20 +171,28 @@ class LoRATrainer:
         self._ensure_tokenizer()
 
         dataset: list[dict[str, Any]] = []
+        max_len = self.config.max_seq_length
         for pair in pairs:
-            text = self._format_pair(pair)
-            encoding = self.tokenizer(
-                text,
-                truncation=True,
-                max_length=self.config.max_seq_length,
-                padding="max_length",
-                return_tensors="pt",
-            )
+            prompt_text, full_text = self._format_pair_with_prompt(pair)
+            full_ids = self.tokenizer(full_text, add_special_tokens=False)["input_ids"]
+            prompt_ids = self.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+            full_ids = full_ids[:max_len]
+            n_prompt = min(len(prompt_ids), len(full_ids))
+
+            # Mask the prompt so loss is computed only on the response tokens.
+            labels = list(full_ids)
+            for i in range(n_prompt):
+                labels[i] = -100
+            # A pair whose response was entirely truncated away teaches nothing.
+            if all(t == -100 for t in labels):
+                continue
+
             dataset.append(
                 {
-                    "input_ids": encoding["input_ids"].squeeze(0),
-                    "attention_mask": encoding["attention_mask"].squeeze(0),
-                    "text": text,
+                    "input_ids": torch.tensor(full_ids, dtype=torch.long),
+                    "attention_mask": torch.ones(len(full_ids), dtype=torch.long),
+                    "labels": torch.tensor(labels, dtype=torch.long),
+                    "text": full_text,
                 }
             )
 
@@ -338,28 +350,42 @@ class LoRATrainer:
         )
 
     def _format_pair(self, pair: dict[str, Any]) -> str:
-        """Format an SFT pair as a chat-style training string."""
+        """Format an SFT pair as a chat-style training string (full text)."""
+        return self._format_pair_with_prompt(pair)[1]
+
+    def _format_pair_with_prompt(self, pair: dict[str, Any]) -> tuple[str, str]:
+        """Return ``(prompt_text, full_text)`` for an SFT pair.
+
+        ``prompt_text`` is everything up to and including the assistant
+        generation prefix (no response); ``full_text`` appends the response.
+        The two share an identical prefix so token-length subtraction gives the
+        exact boundary used to mask the prompt in the loss.
+        """
         user_input = pair.get("input", "")
         assistant_output = pair.get("output", "")
 
-        if self.tokenizer is not None and hasattr(
-            self.tokenizer, "apply_chat_template"
-        ):
+        if self.tokenizer is not None and hasattr(self.tokenizer, "apply_chat_template"):
             try:
-                messages = [
-                    {"role": "user", "content": user_input},
-                    {"role": "assistant", "content": assistant_output},
-                ]
-                return self.tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=False
+                user_msg = [{"role": "user", "content": user_input}]
+                prompt_text = self.tokenizer.apply_chat_template(
+                    user_msg, tokenize=False, add_generation_prompt=True
                 )
+                full_text = self.tokenizer.apply_chat_template(
+                    user_msg + [{"role": "assistant", "content": assistant_output}],
+                    tokenize=False, add_generation_prompt=False,
+                )
+                # Guard: full must extend prompt; otherwise fall through.
+                if full_text.startswith(prompt_text):
+                    return prompt_text, full_text
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Auto chat template failed, using manual format: %s", exc)
 
         eos = ""
         if self.tokenizer is not None:
             eos = getattr(self.tokenizer, "eos_token", "") or ""
-        return f"<|user|>\n{user_input}\n<|assistant|>\n{assistant_output}{eos}"
+        prompt_text = f"<|user|>\n{user_input}\n<|assistant|>\n"
+        full_text = f"{prompt_text}{assistant_output}{eos}"
+        return prompt_text, full_text
 
     def _train_epoch(
         self,
@@ -378,23 +404,42 @@ class LoRATrainer:
 
         return total_loss / num_batches if num_batches else 0.0
 
+    def _collate(self, batch_items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Right-pad a variable-length micro-batch to its own longest sequence.
+
+        Pads input_ids with the tokenizer pad id, attention_mask with 0, and
+        labels with -100 (ignored by the loss). Far cheaper than padding every
+        row to max_seq_length up front."""
+        pad_id = getattr(self.tokenizer, "pad_token_id", None)
+        if pad_id is None:
+            pad_id = getattr(self.tokenizer, "eos_token_id", 0) or 0
+        max_len = max(item["input_ids"].size(0) for item in batch_items)
+
+        ids, masks, labels = [], [], []
+        for item in batch_items:
+            seq = item["input_ids"]
+            pad = max_len - seq.size(0)
+            ids.append(torch.cat([seq, torch.full((pad,), pad_id, dtype=torch.long)]))
+            masks.append(torch.cat([item["attention_mask"], torch.zeros(pad, dtype=torch.long)]))
+            labels.append(torch.cat([item["labels"], torch.full((pad,), -100, dtype=torch.long)]))
+        return {
+            "input_ids": torch.stack(ids).to(self.device),
+            "attention_mask": torch.stack(masks).to(self.device),
+            "labels": torch.stack(labels).to(self.device),
+        }
+
     def _train_step(
         self,
         batch_items: list[dict[str, Any]],
         optimizer: Any,
     ) -> float:
         """Execute a single training step on a micro-batch."""
-        input_ids = torch.stack([item["input_ids"] for item in batch_items]).to(
-            self.device
-        )
-        attention_mask = torch.stack(
-            [item["attention_mask"] for item in batch_items]
-        ).to(self.device)
+        batch = self._collate(batch_items)
 
         outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=input_ids,
+            input_ids=batch["input_ids"],
+            attention_mask=batch["attention_mask"],
+            labels=batch["labels"],  # prompt tokens are -100 → loss on response only
         )
         loss = outputs.loss
 

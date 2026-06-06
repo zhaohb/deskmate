@@ -1746,7 +1746,15 @@ def create_app(
         return [s.strip() for s in raw.split(",") if s.strip() in SOURCES]
 
     @app.get("/training/data")
-    def training_data(sources: str | None = None, sample: int = 5) -> dict[str, Any]:
+    def training_data(
+        sources: str | None = None, sample: int = 5, full: bool = False
+    ) -> dict[str, Any]:
+        """Preview the mined SFT dataset.
+
+        ``sample`` controls how many example pairs are returned (capped at 200);
+        ``full=true`` returns every mined pair so the UI can show the exact
+        dataset that training will use.
+        """
         from ..learning.training import DeskMateTrainingDataMiner  # noqa: PLC0415
 
         src = _training_sources(sources)
@@ -1759,12 +1767,38 @@ def create_app(
             )
         finally:
             miner.close()
+        shown = pairs if full else pairs[: max(0, min(sample, 200))]
         return {
             "sources": src,
             "breakdown": breakdown,
             "total": len(pairs),
-            "sample": pairs[: max(0, min(sample, 50))],
+            "returned": len(shown),
+            "sample": shown,
         }
+
+    @app.get("/training/data/export")
+    def training_data_export(sources: str | None = None) -> Response:
+        """Download the full mined dataset as JSONL (one pair per line).
+
+        This is exactly what a training run would consume, so the user can
+        inspect or archive the dataset before fine-tuning."""
+        from ..learning.training import DeskMateTrainingDataMiner  # noqa: PLC0415
+
+        src = _training_sources(sources)
+        tc = cfg.training
+        miner = DeskMateTrainingDataMiner(min_feedback=tc.min_feedback, min_chars=tc.min_chars)
+        try:
+            pairs = miner.extract_sft_pairs(
+                sources=src, limit_per_source=tc.limit_per_source, max_pairs=tc.max_pairs,
+            )
+        finally:
+            miner.close()
+        body = "\n".join(json.dumps(p, ensure_ascii=False) for p in pairs) + ("\n" if pairs else "")
+        return Response(
+            content=body,
+            media_type="application/x-ndjson",
+            headers={"Content-Disposition": 'attachment; filename="deskmate_sft_dataset.jsonl"'},
+        )
 
     @app.post("/training/lora")
     async def training_lora(request: Request) -> dict[str, Any]:

@@ -27,11 +27,11 @@ flowchart TB
     subgraph Sources["Local data (read-only)"]
         HS["habit_suggestions<br/>feedback ≥ 1"]
         PE["pipe_executions<br/>status = success"]
-        BH["habit_profiles<br/>sample_days ≥ 2, freq ≥ 0.3"]
+        BH["habit_profiles (per-slot)<br/>sample_days ≥ 2, freq ≥ 0.3"]
         AK["ask_history<br/>feedback ≥ 1"]
-        CE["context_events<br/>timeline (opt-in)"]
+        PR["habit_profiles (aggregated)<br/>profile / identity"]
     end
-    HS & PE & BH & AK & CE --> MINER["DeskMateTrainingDataMiner<br/>extract_sft_pairs()"]
+    HS & PE & BH & AK & PR --> MINER["DeskMateTrainingDataMiner<br/>extract_sft_pairs()"]
     MINER --> PAIRS["[{input, output, source, …}]<br/>(deduped)"]
     PAIRS --> TRAINER["LoRATrainer.train()"]
     TRAINER --> TOK["tokenize (chat template)"]
@@ -41,7 +41,7 @@ flowchart TB
 
 ### The five data sources
 
-DeskMate derives supervised pairs from five local tables. Each source has its
+DeskMate derives supervised pairs from local tables. Each source has its
 own **quality gate** so that
 only trustworthy, high-signal rows reach the training set. The `source` selector
 (`TrainingConfig.sources` / `--sources`) maps to a config key, and each config
@@ -53,12 +53,20 @@ key maps to one extractor method on `DeskMateTrainingDataMiner`:
 | `pipes`    | `pipe_execution`   | `pipe_executions`   | `status = 'success'` & non-empty output | "Run the '\<pipe\>' assistant…" → the produced report |
 | `behavior` | `behavior`         | `habit_profiles`    | `sample_days ≥ 2` & `frequency ≥ 0.3` | "What do I usually do on \<day\> around \<HH:MM\>?" → routine description |
 | `ask`      | `ask`              | `ask_history`       | `feedback ≥ min_feedback` (user clicked 👍 **有用**) | the user's own question → the grounded answer |
-| `timeline` | `timeline:<src>`   | `context_events`    | content kinds only + noise/echo filters | observable window state → fused human-readable summary |
+| `profile`  | `profile`          | `habit_profiles` (aggregated) | `sample_days ≥ 3` & `frequency ≥ 0.4`, ≥ 3 rows | synthesized "who is this user" identity Q&A — see [17 — User profile](17-user-profile.md) |
 
-**Defaults**: `sources = ["habits", "pipes", "behavior", "ask"]`. `timeline` is
-**deliberately excluded by default** — it is mostly raw echo ("what did I type in
-Code.exe?" → the literal typed text), which is low-signal and privacy-sensitive.
-It stays in `SOURCES` so it can still be selected manually in the UI / CLI.
+**Defaults**: `sources = ["habits", "pipes", "behavior", "ask", "profile"]`.
+
+The earlier `timeline` source (mining `context_events`) was **removed**: it was
+mostly raw echo ("what did I type in Code.exe?" → the literal typed text), which
+is low-signal and privacy-sensitive. The unified timeline still exists for
+browsing in the Capture view ([15 — Fusion & timeline](15-fusion-timeline.md));
+it is just no longer a training source.
+
+All pairs additionally pass a shared quality gate — min length, an output-length
+cap, a natural-language check, and `input ≠ output` — and are deduplicated
+whitespace/case-insensitively with a cap on identical outputs so no handful of
+rows dominates the gradient.
 
 #### Per-source detail
 
@@ -88,17 +96,20 @@ It stays in `SOURCES` so it can still be selected manually in the UI / CLI.
    - input: the user's original question
    - output: the grounded answer that was accepted
 
-5. **`timeline`** (opt-in) — `_from_context_events`. The fused unified timeline.
-   Only content-bearing kinds (transcripts, clipboard, typed text) are mined;
-   coordinate/trigger/accessibility noise and title-echo rows are rejected. Still
-   off by default for the quality/privacy reasons above.
+5. **`profile`** — `_from_user_profile`. Aggregates the whole `habit_profiles`
+   table into a few high-level identity pairs (top apps, dominant categories,
+   weekday/weekend rhythm) so the model learns *who the user is*, not just
+   isolated slots. Skipped entirely when there is too little signal. Full
+   write-up: [17 — User profile](17-user-profile.md).
 
-#### Shared post-processing
+#### Shared post-processing (quality gate)
 
-- Pairs shorter than `min_chars` (either side) are dropped via `_keep`.
-- Rows whose output merely restates the window title are skipped (avoids
-  degenerate pairs).
-- `(input, output)` duplicates are collapsed, first occurrence kept, capped at
+- `_keep` drops a pair when: either side is shorter than `min_chars`; the output
+  exceeds the output-length cap (length-teaching, not preference); the output
+  isn't natural language; or `input == output` (echo).
+- `(input, output)` duplicates are collapsed whitespace/case-insensitively
+  (first occurrence kept), with a cap on how many times the **same output** may
+  recur so a few repeated rows can't dominate the gradient; total capped at
   `max_pairs`.
 - The trainer only ever reads the `input` / `output` keys; the extra metadata
   (`source`, `rule`, `pipe`, `kind`, `feedback`, `ts`) is for preview/debugging.
@@ -120,14 +131,14 @@ explicit hint > cuda > mps > cpu.
 deskmate train-lora --dry-run
 
 # Train (requires: pip install 'deskmate[training]')
-deskmate train-lora --epochs 3 --sources habits,pipes,behavior,ask
+deskmate train-lora --epochs 3 --sources habits,pipes,behavior,ask,profile
 
-# Opt in to the low-signal timeline source explicitly if you want it
-deskmate train-lora --sources habits,pipes,behavior,ask,timeline
+# Inspect the exact dataset a run would use, as JSONL, without training
+deskmate train-lora --export ~/.deskmate/sft_preview.jsonl
 ```
 
 Flags: `--model`, `--output-dir`, `--sources`, `--epochs`, `--max-pairs`,
-`--dry-run`. Defaults come from `TrainingConfig`.
+`--dry-run`, `--export`. Defaults come from `TrainingConfig`.
 
 ## API surface
 
@@ -148,7 +159,7 @@ Flags: `--model`, `--output-dir`, `--sources`, `--epochs`, `--max-pairs`,
 | `enabled` | `true` | Whether the subsystem is exposed |
 | `model_name` | `Qwen/Qwen3-0.6B` | Base model to adapt |
 | `output_dir` | `""` → `~/.deskmate/checkpoints/lora` | Adapter output dir |
-| `sources` | `["habits","pipes","behavior","ask"]` | Which sources to mine (`timeline` available but off by default) |
+| `sources` | `["habits","pipes","behavior","ask","profile"]` | Which sources to mine |
 | `min_feedback` / `min_chars` | `1` / `8` | Quality thresholds (gates `habits` & `ask`) |
 | `limit_per_source` / `max_pairs` | `2000` / `5000` | Mining caps |
 | `lora_rank` / `lora_alpha` / `lora_dropout` | `16` / `32` / `0.05` | LoRA params |
@@ -174,13 +185,17 @@ training is gated.
    it opens its own read connection, mirroring `fusion/store.py`.
 2. **Guarded ML imports + optional extra** — Keeps the base install light and the
    module importable everywhere; failures are explicit and actionable.
-3. **Five local sources, each with a quality gate** — Reuses signals DeskMate
+3. **Local sources, each with a quality gate** — Reuses signals DeskMate
    already has (user 👍 feedback on nudges and Ask answers, successful pipe
    outputs, statistically stable behavior profiles) instead of requiring a
    separate labeling step. `habits` and `ask` gate on explicit user approval,
-   `pipes` on execution success, `behavior` on statistical significance.
-4. **Timeline off by default** — `context_events` echo pairs are low-signal and
-   privacy-sensitive, so they are excluded from the default `sources` but remain
-   manually selectable for users who want maximum data volume.
-5. **Opt-in only** — Nothing trains automatically; the user invokes the CLI or API
+   `pipes` on execution success, `behavior` and `profile` on statistical
+   significance.
+4. **Raw timeline echo dropped** — the former `context_events` source produced
+   mostly low-signal, privacy-sensitive echo pairs and was removed entirely; the
+   unified timeline remains for browsing only ([15](15-fusion-timeline.md)).
+5. **Identity vs routine split** — `profile` ([17](17-user-profile.md))
+   synthesizes a few "who is this user" pairs, complementing `behavior`'s
+   per-slot routine pairs, so the model gains a stable self-image.
+6. **Opt-in only** — Nothing trains automatically; the user invokes the CLI or API
    explicitly.

@@ -588,18 +588,63 @@ async function loadUnifiedTimeline() {
   const box = $("#capTimeline");
   if (!box) return;
   if (!rows.length) { box.innerHTML = '<p class="cap-empty">No data</p>'; return; }
+  // Stash rows so the expand handler can read full content/payload by index.
+  trainingUi._timelineRows = rows;
   box.innerHTML = `<div class="cap-scroll"><table>
-    <thead><tr><th>Time</th><th>Source</th><th>Kind</th><th>App</th><th>Summary</th><th>Conf.</th></tr></thead>
-    <tbody>${rows.map((ev) => `
-      <tr>
+    <thead><tr><th></th><th>Time</th><th>Source</th><th>Kind</th><th>App</th><th>Summary</th><th>Conf.</th></tr></thead>
+    <tbody>${rows.map((ev, i) => `
+      <tr class="cap-row-main" data-idx="${i}">
+        <td class="cap-expand-cell"><span class="cap-caret">▸</span></td>
         <td>${capFmtTime(ev.ts)}</td>
         <td><span class="cap-badge cap-b-${ev.source}">${CAP_SRC_LABEL[ev.source] || ev.source}</span></td>
         <td>${CAP_KIND_LABEL[ev.kind] || ev.kind}</td>
         <td>${capEscape(ev.app_name || "")}</td>
-        <td class="cap-summary" title="${capEscape(ev.summary)}">${capEscape(ev.summary)}</td>
+        <td class="cap-summary">${capEscape(ev.summary)}</td>
         <td class="cap-conf">${(ev.confidence ?? 1).toFixed(2)}</td>
-      </tr>`).join("")}</tbody>
+      </tr>
+      <tr class="cap-row-detail hidden" data-detail="${i}"><td colspan="7"></td></tr>`).join("")}</tbody>
   </table></div>`;
+
+  for (const tr of box.querySelectorAll(".cap-row-main")) {
+    tr.onclick = () => toggleCapTimelineDetail(box, Number(tr.dataset.idx));
+  }
+}
+
+function toggleCapTimelineDetail(box, idx) {
+  const rows = trainingUi._timelineRows || [];
+  const ev = rows[idx];
+  if (!ev) return;
+  const detailRow = box.querySelector(`tr[data-detail="${idx}"]`);
+  const mainRow = box.querySelector(`tr.cap-row-main[data-idx="${idx}"]`);
+  if (!detailRow) return;
+  const caret = mainRow?.querySelector(".cap-caret");
+  const open = detailRow.classList.contains("hidden");
+  detailRow.classList.toggle("hidden", !open);
+  if (caret) caret.textContent = open ? "▾" : "▸";
+  if (!open) return;
+
+  // Build the detail panel lazily on first open.
+  const cell = detailRow.querySelector("td");
+  if (cell.dataset.filled) return;
+  cell.dataset.filled = "1";
+  const rowsHtml = [];
+  const full = ev.summary || "";
+  if (full) rowsHtml.push(`<div class="cap-d-row"><span class="cap-d-k">完整内容</span><span class="cap-d-v">${capEscape(full)}</span></div>`);
+  if (ev.window_title) rowsHtml.push(`<div class="cap-d-row"><span class="cap-d-k">窗口</span><span class="cap-d-v">${capEscape(ev.window_title)}</span></div>`);
+  rowsHtml.push(`<div class="cap-d-row"><span class="cap-d-k">时间</span><span class="cap-d-v">${capEscape(ev.ts || "")}</span></div>`);
+  const payload = ev.payload && typeof ev.payload === "object" ? ev.payload : {};
+  for (const [k, v] of Object.entries(payload)) {
+    if (v === null || v === undefined || v === "") continue;
+    rowsHtml.push(`<div class="cap-d-row"><span class="cap-d-k">${capEscape(k)}</span><span class="cap-d-v">${capEscape(String(v))}</span></div>`);
+  }
+  if (ev.frame_id) {
+    rowsHtml.push(`<div class="cap-d-row"><span class="cap-d-k">画面</span><span class="cap-d-v"><a href="#" data-frame="${ev.frame_id}" class="cap-frame-link">查看截图 #${ev.frame_id}</a></span></div>`);
+  }
+  cell.innerHTML = `<div class="cap-detail">${rowsHtml.join("")}</div>`;
+  const link = cell.querySelector(".cap-frame-link");
+  if (link) {
+    link.onclick = (e) => { e.preventDefault(); selectFrame(Number(link.dataset.frame)); };
+  }
 }
 
 async function loadTimelineBreakdown() {
@@ -622,26 +667,27 @@ function captureViewActive() {
 }
 
 // ─── LoRA training view ─────────────────────────────────────────────────
-const TRN_SOURCES = ["habits", "pipes", "timeline", "behavior", "ask"];
+const TRN_SOURCES = ["habits", "pipes", "behavior", "ask", "profile"];
 const TRN_SOURCE_LABEL = {
   habits: "习惯建议",
   pipes: "Apps 运行",
-  timeline: "统一时间线",
   behavior: "行为习惯",
   ask: "问答记录",
+  profile: "用户画像",
 };
 const TRN_SOURCE_DESC = {
   habits: "你点过「有用」的主动提醒 → 学会该在什么情境给你什么提醒",
   pipes: "成功运行过的本地 Apps 的输入/输出 → 学会你常用的任务",
-  timeline: "时间线里的语音转写、复制、输入文本（不推荐：多为原文回显，质量低）",
   behavior: "作息热力图里的高频规律 → 学会你「几点通常做什么」",
   ask: "你问过 Ask 的问题和它的回答 → 学会你的提问方式与偏好",
+  profile: "汇总你的常用应用、主攻方向、工作日/周末作息 → 让模型「懂你是谁」",
 };
 const trainingUi = {
-  sources: { habits: true, pipes: true, timeline: false, behavior: true, ask: true },
+  sources: { habits: true, pipes: true, behavior: true, ask: true, profile: true },
   paramsInit: false,
   running: false,
   breakdown: {},
+  showAll: false,
 };
 
 function selectedTrainingSources() {
@@ -712,7 +758,10 @@ async function loadTrainingData() {
     return;
   }
   if (meta) meta.textContent = "加载中…";
-  const qs = new URLSearchParams({ sources: sources.join(","), sample: "10" });
+  // showAll → request the FULL dataset that training will use; else preview 10.
+  const qs = new URLSearchParams({ sources: sources.join(",") });
+  if (trainingUi.showAll) qs.set("full", "true");
+  else qs.set("sample", "10");
   const j = await api(`/training/data?${qs.toString()}`);
   const breakdown = j.breakdown || {};
   trainingUi.breakdown = breakdown;
@@ -740,7 +789,26 @@ async function loadTrainingData() {
       }).join("")}</div>`;
     }
   }
-  if (meta) meta.textContent = `共 ${j.total ?? 0} 条样本 · 预览前 ${rows.length} 条`;
+  if (meta) {
+    const total = j.total ?? 0;
+    const viewLabel = trainingUi.showAll
+      ? `显示全部 ${rows.length} 条`
+      : `预览前 ${rows.length} 条`;
+    const toggleLabel = trainingUi.showAll ? "只看预览" : "查看完整数据集";
+    meta.innerHTML =
+      `共 <b>${total}</b> 条将用于训练的样本 · ${viewLabel}` +
+      ` · <a href="#" id="trnToggleAll">${toggleLabel}</a>` +
+      ` · <a href="/training/data/export?sources=${encodeURIComponent(sources.join(","))}"` +
+      ` id="trnDownload" download>下载 JSONL</a>`;
+    const toggle = $("#trnToggleAll");
+    if (toggle) {
+      toggle.onclick = (e) => {
+        e.preventDefault();
+        trainingUi.showAll = !trainingUi.showAll;
+        loadTrainingData().catch(showError);
+      };
+    }
+  }
 }
 
 function refreshTrainingView() {

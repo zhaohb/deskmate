@@ -253,7 +253,7 @@ class TrainingConfig(BaseModel):
     # intentionally excluded by default — those pairs echo raw user input and
     # make poor SFT targets. It can still be opted into explicitly.
     sources: list[str] = Field(
-        default_factory=lambda: ["habits", "pipes", "behavior", "ask"]
+        default_factory=lambda: ["habits", "pipes", "behavior", "ask", "profile"]
     )
     min_feedback: int = 1
     min_chars: int = 8

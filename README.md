@@ -14,7 +14,7 @@ All data stays on your machine.
 - Event-driven screen capture with adaptive FPS
 - UI Automation text + OCR indexing (RapidOCR/PP-OCR, WinRT, or Tesseract)
 - Keyboard, mouse, clipboard, and window-focus events
-- Optional local audio transcription (Whisper + VAD)
+- Optional local audio transcription (Whisper + VAD; optional Intel NPU/GPU acceleration via OpenVINO)
 - **Video-call detection** (Teams, Zoom, Meet, Webex, …) with per-meeting transcripts
 - Full-text search and natural-language **Ask** (Ollama + 6 tool calls: search, activity, meetings, email)
 - **Gmail / Outlook OAuth** for real mailbox search in Ask and apps (not OCR-only)
@@ -26,7 +26,12 @@ All data stays on your machine.
 
 - Windows 10/11
 - Python 3.10+
-- Optional: [Tesseract](https://github.com/tesseract-ocr/tesseract) for OCR, microphone or WASAPI loopback for audio, [Ollama](http://127.0.0.1:11434) for Ask and apps
+- Optional, by feature:
+  - **OCR** — nothing extra for `winrt` (built-in); [Tesseract](https://github.com/tesseract-ocr/tesseract) on PATH for `tesseract`; the `ocr-rapidocr` extra for PP-OCR (best on Chinese)
+  - **Audio** — a microphone or WASAPI loopback device
+  - **OpenVINO acceleration** (Whisper) — an Intel CPU; an **Intel Core Ultra (NPU)** or Arc/iGPU unlocks NPU/GPU inference
+  - **Ask & apps** — a local [Ollama](http://127.0.0.1:11434) server
+  - **LoRA training** — a GPU is recommended (CPU works but is slow)
 
 ## Install
 
@@ -35,16 +40,47 @@ git clone <repo-url>
 cd deskmate
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e ".[ocr-winrt,audio,mcp]"
+
+# Default recipe — Windows OCR + faster-whisper audio + MCP
+pip install -e ".[ocr-winrt,audio,vad,mcp]"
 ```
 
-Common extras: `[ocr-rapidocr]` (PP-OCR, best for Chinese), `[ocr-tesseract]`, `[vad]`, `[speaker]`, `[redact-onnx]`, `[full,mcp]`
+### Pick extras by what you need
 
-**OpenVINO GenAI Whisper backend** (NPU / GPU / CPU acceleration):
+| Extra | Adds | Notes |
+|-------|------|-------|
+| `ocr-winrt` | Windows.Media.Ocr | No extra binaries; default |
+| `ocr-rapidocr` | PP-OCR mobile via OpenVINO CPU | **Best for Chinese / small UI text** |
+| `ocr-tesseract` | pytesseract | Needs Tesseract on PATH |
+| `audio` | faster-whisper transcription (`onnx_cpu`) | The default Whisper backend |
+| `audio-openvino` | OpenVINO GenAI Whisper + ModelScope | NPU / GPU / CPU; see below |
+| `vad` | Silero VAD | Gates silence before Whisper |
+| `speaker` | speaker diarization | "who said what" |
+| `redact-onnx` | ONNX PII detector | Optional redaction model |
+| `semantic` | embeddings (fastembed) | Hybrid semantic search |
+| `training` | torch + transformers + peft | On-device LoRA fine-tuning |
+| `mcp` | MCP stdio server | Agent integrations |
+| `full` | tesseract + audio + vad + redact-onnx + semantic + notify | Everything except OpenVINO & training |
+
+### OpenVINO Whisper (Intel NPU / GPU / CPU)
+
 ```powershell
-pip install -e ".[audio-openvino]"
+pip install -e ".[audio-openvino,vad]"
 ```
-Then set `whisper_backend = "openvino_genai"` (default device NPU). See [docs/04-audio.md](docs/04-audio.md#whisper-backends) for configuration, device benchmarks, and fallback behavior.
+
+Then in `~/.deskmate/config.toml`:
+
+```toml
+[audio]
+whisper_backend = "openvino_genai"   # vs the default "onnx_cpu"
+openvino_device = "NPU"              # NPU | GPU | CPU | AUTO
+```
+
+The model is auto-downloaded from ModelScope on first use (default
+`OpenVINO/whisper-medium-int8-ov`). NPU's first compile is slow but cached, so
+later starts load in seconds. If the chosen device can't load, it falls back to
+`onnx_cpu` automatically. See [docs/04-audio.md](docs/04-audio.md#whisper-backends)
+for device benchmarks and the full fallback chain.
 
 ## Quick Start
 

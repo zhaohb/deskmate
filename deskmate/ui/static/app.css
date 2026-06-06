@@ -2299,3 +2299,22 @@ a:hover {
   font-weight: 600;
   color: var(--muted);
 }
+
+/* ─── Capture: expandable unified-timeline rows ─────────────────────────── */
+.cap-row-main { cursor: pointer; }
+.cap-row-main:hover { background: var(--surface-hover, rgba(127,127,127,0.08)); }
+.cap-expand-cell { width: 1.4rem; text-align: center; color: var(--muted); }
+.cap-caret { font-size: 0.75rem; }
+.cap-summary { max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cap-detail {
+  padding: 0.5rem 0.75rem;
+  background: var(--surface, rgba(127,127,127,0.05));
+  border-radius: 6px;
+  margin: 0.25rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.cap-d-row { display: flex; gap: 0.6rem; align-items: baseline; }
+.cap-d-k { flex: 0 0 5rem; color: var(--muted); font-size: 0.8rem; }
+.cap-d-v { flex: 1; white-space: pre-wrap; word-break: break-word; }

@@ -13,9 +13,14 @@ existing local data sources, none of which are modified:
 * **ask** — ``ask_history`` answers the user marked useful (``feedback`` >=
   threshold). The original question becomes the input and the grounded answer
   the output.
-* **timeline** — the unified ``context_events`` stream (opt-in). The observable
-  window state becomes the input and the fused human-readable summary the
-  output (kept only when the summary adds information beyond the window title).
+* **profile** — aggregated ``habit_profiles`` synthesized into high-level
+  "who is this user" identity Q&A (top apps, dominant categories, weekday vs
+  weekend rhythm). Gives the fine-tuned model a stable sense of the user
+  instead of only isolated routines. Skipped when signal is too thin.
+
+All pairs pass a quality gate (min length, an output-length cap, natural-
+language check, input≠output) and are deduplicated whitespace/case-insensitively
+with a cap on identical outputs so no handful of rows dominates the gradient.
 
 Each pair is a dict with keys ``input``, ``output``, ``source`` (provenance)
 plus light metadata. Duplicate ``(input, output)`` pairs are collapsed.
@@ -35,23 +40,10 @@ from ...logger import get
 logger = get("learning.training.data")
 
 # Valid provenance tags for ``sources=`` filtering.
-SOURCES: tuple[str, ...] = ("habits", "pipes", "timeline", "behavior", "ask")
+SOURCES: tuple[str, ...] = ("habits", "pipes", "behavior", "ask", "profile")
 
-# Only these unified-timeline kinds carry natural-language content worth
-# learning from. Low-level kinds (click coordinates, frame triggers, raw
-# window titles) are pure noise for SFT and are never mined.
-_CONTENT_KINDS: frozenset[str] = frozenset({"transcript", "clipboard", "text"})
-
-# Per-kind instruction template — keeps the (input, output) pair coherent
-# instead of the degenerate "describe X -> mouse coordinate" pairs.
-_KIND_PROMPT: dict[str, str] = {
-    "transcript": "Transcribe what was said{where}.",
-    "clipboard": "What text did I copy{where}?",
-    "text": "What did I type{where}?",
-}
-
-# Junk that must never become a training target even within a content kind:
-# mouse-click coordinates, capture triggers, and accessibility boilerplate.
+# Junk that must never become a training target: mouse-click coordinates,
+# capture triggers, and accessibility boilerplate.
 _NOISE_RE = re.compile(
     r"^(left|right|middle)\s*@\(\d|"                      # click coordinates
     r"^(scroll_stop|frame|manual|periodic|idle|timer)\b|"  # capture triggers
@@ -61,10 +53,40 @@ _NOISE_RE = re.compile(
 
 
 def _looks_like_language(text: str) -> bool:
-    """True if *text* reads like natural language (>= 2 words, has letters)."""
+    """True if *text* reads like natural language.
+
+    Accepts CJK text (where ``split()`` yields one token but the script is
+    clearly language) as well as space-delimited scripts with >= 2 words.
+    """
+    if _has_cjk(text):
+        return True
     if not any(ch.isalpha() for ch in text):
         return False
     return len(text.split()) >= 2
+
+
+def _has_cjk(text: str) -> bool:
+    """True if the text contains any CJK ideograph."""
+    return any("一" <= ch <= "鿿" for ch in text)
+
+
+# Outputs longer than this are truncated targets for a small SFT model: a 4000-
+# char pipe report teaches length, not preference, and blows up sequence cost.
+# We drop pairs whose output exceeds this rather than silently truncating them.
+_MAX_OUTPUT_CHARS = 1500
+
+# Cap repeats of an identical output so a handful of rows can't dominate.
+_MAX_DUP_OUTPUT = 3
+
+# Whitespace/case-insensitive key used to drop near-duplicate examples that
+# would otherwise let a handful of repeated rows dominate the gradient.
+def _dedup_key(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _normalize_ws(text: str) -> str:
+    """Collapse runs of whitespace; keep single newlines as spaces."""
+    return " ".join((text or "").split())
 
 
 def _dict_factory(cursor: sqlite3.Cursor, row: tuple) -> dict[str, Any]:
@@ -120,8 +142,8 @@ class DeskMateTrainingDataMiner:
         Parameters
         ----------
         sources:
-            Subset of ``{"habits", "pipes", "timeline"}``. Unknown names are
-            ignored.
+            Subset of :data:`SOURCES` (``habits``, ``pipes``, ``behavior``,
+            ``ask``, ``profile``). Unknown names are ignored.
         limit_per_source:
             Max rows scanned per source (most recent first).
         max_pairs:
@@ -134,21 +156,28 @@ class DeskMateTrainingDataMiner:
             pairs.extend(self._from_habit_suggestions(limit_per_source))
         if "pipes" in wanted:
             pairs.extend(self._from_pipe_executions(limit_per_source))
-        if "timeline" in wanted:
-            pairs.extend(self._from_context_events(limit_per_source))
         if "behavior" in wanted:
             pairs.extend(self._from_habit_profiles(limit_per_source))
         if "ask" in wanted:
             pairs.extend(self._from_ask_history(limit_per_source))
+        if "profile" in wanted:
+            pairs.extend(self._from_user_profile())
 
-        # Collapse duplicates, keep first occurrence.
+        # Collapse duplicates (whitespace/case-insensitive), keep first. Also cap
+        # how many times the SAME output may appear: a few identical pipe reports
+        # or routine answers would otherwise dominate the gradient.
         seen: set[tuple[str, str]] = set()
+        output_counts: dict[str, int] = {}
         deduped: list[dict[str, Any]] = []
         for p in pairs:
-            key = (p["input"], p["output"])
+            in_key, out_key = _dedup_key(p["input"]), _dedup_key(p["output"])
+            key = (in_key, out_key)
             if key in seen:
                 continue
+            if output_counts.get(out_key, 0) >= _MAX_DUP_OUTPUT:
+                continue
             seen.add(key)
+            output_counts[out_key] = output_counts.get(out_key, 0) + 1
             deduped.append(p)
             if len(deduped) >= max_pairs:
                 break
@@ -157,6 +186,30 @@ class DeskMateTrainingDataMiner:
             "mined %d SFT pair(s) from %s", len(deduped), wanted or "[]"
         )
         return deduped
+
+    def export_jsonl(
+        self,
+        out_path: Path | str,
+        *,
+        sources: list[str] | tuple[str, ...] = SOURCES,
+        limit_per_source: int = 2000,
+        max_pairs: int = 5000,
+    ) -> int:
+        """Mine pairs and write them as JSONL to *out_path* for inspection.
+
+        One JSON object per line with ``input``/``output``/``source`` etc. —
+        lets the user eyeball the exact dataset before committing to a training
+        run. Returns the number of pairs written."""
+        pairs = self.extract_sft_pairs(
+            sources=sources, limit_per_source=limit_per_source, max_pairs=max_pairs,
+        )
+        out = Path(out_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("w", encoding="utf-8") as fh:
+            for p in pairs:
+                fh.write(json.dumps(p, ensure_ascii=False) + "\n")
+        logger.info("exported %d SFT pair(s) to %s", len(pairs), out)
+        return len(pairs)
 
     def source_breakdown(
         self,
@@ -170,12 +223,12 @@ class DeskMateTrainingDataMiner:
             counts["habits"] = len(self._from_habit_suggestions(limit_per_source))
         if "pipes" in sources:
             counts["pipes"] = len(self._from_pipe_executions(limit_per_source))
-        if "timeline" in sources:
-            counts["timeline"] = len(self._from_context_events(limit_per_source))
         if "behavior" in sources:
             counts["behavior"] = len(self._from_habit_profiles(limit_per_source))
         if "ask" in sources:
             counts["ask"] = len(self._from_ask_history(limit_per_source))
+        if "profile" in sources:
+            counts["profile"] = len(self._from_user_profile())
         return counts
 
     def close(self) -> None:
@@ -187,7 +240,21 @@ class DeskMateTrainingDataMiner:
     # -- per-source extractors --------------------------------------------------
 
     def _keep(self, text_in: str, text_out: str) -> bool:
-        return len(text_in) >= self._min_chars and len(text_out) >= self._min_chars
+        """Quality gate for one (input, output) pair.
+
+        Beyond the min-length floor we reject: outputs longer than
+        :data:`_MAX_OUTPUT_CHARS` (length-teaching, not preference), pairs whose
+        output isn't natural language, and pairs where input == output (the
+        model would learn to echo)."""
+        if len(text_in) < self._min_chars or len(text_out) < self._min_chars:
+            return False
+        if len(text_out) > _MAX_OUTPUT_CHARS:
+            return False
+        if not _looks_like_language(text_out):
+            return False
+        if _dedup_key(text_in) == _dedup_key(text_out):
+            return False
+        return True
 
     def _from_habit_suggestions(self, limit: int) -> list[dict[str, Any]]:
         """User-approved coaching nudges → (trigger context, message) pairs."""
@@ -260,59 +327,6 @@ class DeskMateTrainingDataMiner:
                     "source": "pipe_execution",
                     "pipe": pipe,
                     "ts": r.get("started_at"),
-                }
-            )
-        return pairs
-
-    def _from_context_events(self, limit: int) -> list[dict[str, Any]]:
-        """Unified timeline → (recall instruction, content) pairs.
-
-        Only content-bearing kinds (transcripts, clipboard, typed text) are
-        mined. Low-level signals (click coordinates, capture triggers, raw
-        window titles) and accessibility boilerplate are rejected as noise, so
-        the resulting pairs are coherent natural-language examples rather than
-        degenerate "describe X -> mouse coordinate" pairs.
-        """
-        placeholders = ",".join("?" for _ in _CONTENT_KINDS)
-        try:
-            rows = self._conn.execute(
-                f"""SELECT source, kind, app_name, window_title, summary, ts
-                       FROM context_events
-                      WHERE summary IS NOT NULL AND TRIM(summary) <> ''
-                        AND kind IN ({placeholders})
-                   ORDER BY ts DESC
-                      LIMIT ?""",
-                (*sorted(_CONTENT_KINDS), int(limit)),
-            ).fetchall()
-        except sqlite3.Error as exc:
-            logger.debug("context_events unavailable: %s", exc)
-            return []
-
-        pairs: list[dict[str, Any]] = []
-        for r in rows:
-            summary = (r.get("summary") or "").strip()
-            kind = (r.get("kind") or "").strip()
-            app = (r.get("app_name") or "").strip()
-            title = (r.get("window_title") or "").strip()
-            if not summary or kind not in _CONTENT_KINDS:
-                continue
-            # Reject coordinate / trigger / accessibility noise and non-language.
-            if _NOISE_RE.search(summary) or not _looks_like_language(summary):
-                continue
-            # Skip when the content just restates the window title.
-            if title and summary.lower() == title.lower():
-                continue
-            where = f" in {app}" if app else ""
-            prompt = _KIND_PROMPT.get(kind, "Describe what happened{where}.").format(where=where)
-            if not self._keep(prompt, summary):
-                continue
-            pairs.append(
-                {
-                    "input": prompt,
-                    "output": summary,
-                    "source": f"timeline:{r.get('source')}",
-                    "kind": kind,
-                    "ts": r.get("ts"),
                 }
             )
         return pairs
@@ -409,6 +423,85 @@ class DeskMateTrainingDataMiner:
                     "kind": "qa",
                     "ts": r.get("created_at"),
                 }
+            )
+        return pairs
+
+    def _from_user_profile(self) -> list[dict[str, Any]]:
+        """Aggregate habit_profiles into high-level 'who is this user' Q&A pairs.
+
+        Where the ``behavior`` source emits one pair per time-slot routine, this
+        source synthesizes a handful of *identity* pairs — the user's go-to
+        apps, dominant work categories, and weekday/weekend rhythm — so the
+        fine-tuned model gains a stable sense of who it is serving rather than
+        just memorizing isolated slots. Built only from rows with real
+        confidence (multiple sample days), and skipped entirely when there isn't
+        enough signal (avoids inventing a persona from one day of data)."""
+        try:
+            rows = self._conn.execute(
+                """SELECT day_type, category, top_app, avg_minutes,
+                          frequency, sample_days
+                       FROM habit_profiles
+                      WHERE sample_days >= 3 AND frequency >= 0.4""",
+            ).fetchall()
+        except sqlite3.Error as exc:
+            logger.debug("habit_profiles unavailable for profile: %s", exc)
+            return []
+
+        if len(rows) < 3:
+            # Too little signal to characterize the user honestly.
+            return []
+
+        app_minutes: dict[str, float] = {}
+        cat_minutes: dict[str, float] = {}
+        weekday_cats: dict[str, float] = {}
+        weekend_cats: dict[str, float] = {}
+        for r in rows:
+            mins = float(r.get("avg_minutes") or 0) * float(r.get("frequency") or 0)
+            app = (r.get("top_app") or "").strip()
+            cat = (r.get("category") or "").strip()
+            if app:
+                app_minutes[app] = app_minutes.get(app, 0.0) + mins
+            if cat:
+                cat_minutes[cat] = cat_minutes.get(cat, 0.0) + mins
+                bucket = weekday_cats if r.get("day_type") == "weekday" else weekend_cats
+                bucket[cat] = bucket.get(cat, 0.0) + mins
+
+        def _top(d: dict[str, float], n: int) -> list[str]:
+            return [k for k, _ in sorted(d.items(), key=lambda kv: kv[1], reverse=True)[:n]]
+
+        pairs: list[dict[str, Any]] = []
+
+        def _add(prompt: str, answer: str) -> None:
+            if self._keep(prompt, answer):
+                pairs.append({
+                    "input": prompt, "output": answer,
+                    "source": "profile", "kind": "identity", "ts": None,
+                })
+
+        top_apps = _top(app_minutes, 3)
+        if top_apps:
+            _add(
+                "What apps do I rely on most?",
+                "You spend most of your time in " + ", ".join(top_apps)
+                + ". These are your primary working tools.",
+            )
+        top_cats = _top(cat_minutes, 3)
+        if top_cats:
+            _add(
+                "What do I mainly work on?",
+                "Your activity is dominated by " + ", ".join(top_cats)
+                + ". That's where most of your time goes.",
+            )
+        wd, we = _top(weekday_cats, 2), _top(weekend_cats, 2)
+        if wd:
+            _add(
+                "What are my weekdays usually like?",
+                "On weekdays you mostly focus on " + ", ".join(wd) + ".",
+            )
+        if we:
+            _add(
+                "What do I tend to do on weekends?",
+                "On weekends your activity shifts toward " + ", ".join(we) + ".",
             )
         return pairs
 

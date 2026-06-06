@@ -6,6 +6,7 @@ import json
 import threading
 import time
 import webbrowser
+from pathlib import Path
 
 import httpx
 import typer
@@ -158,6 +159,7 @@ def train_lora(
     epochs: int | None = None,
     max_pairs: int | None = None,
     dry_run: bool = False,
+    export: str | None = None,
 ) -> None:
     """Fine-tune a local model with LoRA on DeskMate-derived SFT pairs.
 
@@ -192,6 +194,15 @@ def train_lora(
         miner.close()
 
     echo(f"mined {len(pairs)} SFT pair(s) from {src} (per-source: {breakdown})")
+
+    if export:
+        out = Path(export)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("w", encoding="utf-8") as fh:
+            for p in pairs:
+                fh.write(json.dumps(p, ensure_ascii=False) + "\n")
+        echo(f"exported {len(pairs)} pair(s) to {out}")
+        return
 
     if dry_run:
         echo(json.dumps(pairs[:5], ensure_ascii=False, indent=2))
