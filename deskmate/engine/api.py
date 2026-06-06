@@ -17,11 +17,12 @@ import subprocess
 import sys
 import time
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
@@ -34,6 +35,10 @@ from ..connections.gmail import GmailConnection, GmailError
 from ..connections.outlook import OutlookConnection, OutlookError
 from ..config import Config, load as load_config
 from ..db import DatabaseManager
+from ..habits import HabitMiner, HabitStore
+from ..habits import rules as habit_rules
+from ..fusion import CaptureControl, ContextStore
+from ..fusion.control import TOGGLEABLE
 from ..logger import get
 from ..pipes import PipeRuntime, load_pipes
 from ..screen.capture import list_monitors
@@ -324,7 +329,6 @@ def create_app(
     app.state.db = db
     app.state.daemon = daemon
     app.mount("/ui/assets", StaticFiles(directory=static_dir()), name="ui-assets")
-
     started_at = time.time()
 
     # ─── health ───────────────────────────────────────────────────────────
@@ -838,16 +842,23 @@ def create_app(
 
     @app.get("/events/stream")
     async def stream_events(request: Request):  # noqa: ANN201
+        def _next_or_none(stream: Any) -> Any:
+            """Blocking queue wait; returns ``None`` on timeout (no event)."""
+            try:
+                return next(stream)
+            except StopIteration:
+                return None
+
         async def _gen() -> AsyncIterator[str]:
             stream = bus.stream(timeout=0.5)
             try:
                 while True:
                     if await request.is_disconnected():
                         break
-                    try:
-                        evt = next(stream)
-                    except StopIteration:
-                        await asyncio.sleep(0.1)
+                    # Run the blocking Queue.get off the event loop so the
+                    # SSE wait never stalls other HTTP requests / the UI.
+                    evt = await asyncio.to_thread(_next_or_none, stream)
+                    if evt is None:
                         continue
                     yield "data: " + json.dumps({
                         "type": evt.type.value,
@@ -1330,6 +1341,17 @@ def create_app(
 
         api_base = f"http://{cfg.server.host}:{cfg.server.port}"
         result = await asyncio.to_thread(run_ask, question, api_base=api_base)
+        # Additive: log answered queries as future LoRA training pairs.
+        try:
+            answer = (result or {}).get("answer") or ""
+            if answer and not (result or {}).get("error"):
+                _ask_store().record(
+                    question=question,
+                    answer=answer,
+                    tool_count=len((result or {}).get("tool_calls") or []),
+                )
+        except Exception:  # noqa: BLE001
+            logger.debug("ask_history logging skipped", exc_info=True)
         return result
 
     @app.get("/apps")
@@ -1480,6 +1502,263 @@ def create_app(
     @app.get("/ui")
     def ui_index():  # noqa: ANN201
         return FileResponse(index_file(), media_type="text/html")
+
+    # ─── habits (additive: routines, suggestions, proactive nudges) ───────
+    def _habit_store() -> HabitStore:
+        store = getattr(app.state, "habit_store", None)
+        if store is None:
+            store = HabitStore()
+            try:
+                store.ensure_rules(habit_rules.DEFAULT_RULES)
+            except Exception:  # noqa: BLE001
+                pass
+            app.state.habit_store = store
+        return store
+
+    @app.get("/habits/profile")
+    def habits_profile() -> dict[str, Any]:
+        """Learned routines as a (day_type, slot) grid for the UI heatmap."""
+        rows = _habit_store().all_profiles()
+        grid: dict[str, dict[int, dict[str, Any]]] = {"weekday": {}, "weekend": {}}
+        for r in rows:
+            dtype = r.get("day_type") or "weekday"
+            slot = int(r.get("slot") or 0)
+            cell = grid.setdefault(dtype, {}).get(slot)
+            # Keep the strongest (highest-frequency) category per slot for the grid.
+            if cell is None or float(r.get("frequency") or 0) > float(cell.get("frequency") or 0):
+                grid.setdefault(dtype, {})[slot] = {
+                    "category": r.get("category"),
+                    "top_app": r.get("top_app"),
+                    "avg_minutes": r.get("avg_minutes"),
+                    "frequency": r.get("frequency"),
+                    "sample_days": r.get("sample_days"),
+                }
+        return {
+            "slots_per_day": 48,
+            "grid": {k: {str(s): v for s, v in slots.items()} for k, slots in grid.items()},
+            "rows": rows,
+            "total": len(rows),
+        }
+
+    @app.post("/habits/mine")
+    def habits_mine() -> dict[str, Any]:
+        """Manually trigger a re-mine of habit profiles from frames."""
+        hcfg = cfg.habits
+        miner = HabitMiner(
+            _habit_store(),
+            lookback_days=hcfg.mine_lookback_days,
+            min_frequency=hcfg.min_frequency,
+            min_sample_days=hcfg.min_sample_days,
+        )
+        return miner.mine()
+
+    @app.get("/habits/suggestions")
+    def habits_suggestions(status: str | None = None, limit: int = 50) -> dict[str, Any]:
+        rows = _habit_store().list_suggestions(status=status, limit=limit)
+        return {"data": rows, "total": len(rows)}
+
+    @app.post("/habits/suggestions/{suggestion_id}/feedback")
+    async def habits_suggestion_feedback(suggestion_id: int, request: Request) -> dict[str, Any]:
+        body = await request.json()
+        try:
+            score = int(body.get("feedback"))
+        except (TypeError, ValueError, AttributeError):
+            raise HTTPException(status_code=400, detail="feedback must be 1 or -1")
+        if score not in (1, -1):
+            raise HTTPException(status_code=400, detail="feedback must be 1 or -1")
+        ok = _habit_store().set_suggestion_feedback(suggestion_id, score)
+        if not ok:
+            raise HTTPException(status_code=404, detail="suggestion not found")
+        return {"ok": True}
+
+    @app.post("/habits/suggestions/{suggestion_id}/dismiss")
+    def habits_suggestion_dismiss(suggestion_id: int) -> dict[str, Any]:
+        ok = _habit_store().set_suggestion_status(suggestion_id, "dismissed")
+        if not ok:
+            raise HTTPException(status_code=404, detail="suggestion not found")
+        return {"ok": True}
+
+    @app.get("/habits/ui")
+    def habits_ui():  # noqa: ANN201
+        return FileResponse(static_dir() / "habits.html", media_type="text/html")
+
+    # ─── capture control + unified timeline (additive) ───────────────────────
+    async def _safe_json(request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+            return body if isinstance(body, dict) else {}
+        except Exception:  # noqa: BLE001
+            return {}
+
+    def _capture_control() -> CaptureControl:
+        ctrl = getattr(app.state, "capture_control", None)
+        if ctrl is None:
+            ctrl = CaptureControl()
+            app.state.capture_control = ctrl
+        return ctrl
+
+    def _context_store() -> ContextStore:
+        store = getattr(app.state, "context_store", None)
+        if store is None:
+            store = ContextStore()
+            app.state.context_store = store
+        return store
+
+    def _ask_store():  # noqa: ANN202
+        store = getattr(app.state, "ask_store", None)
+        if store is None:
+            from ..learning.ask_store import AskHistoryStore  # noqa: PLC0415
+
+            store = AskHistoryStore()
+            app.state.ask_store = store
+        return store
+
+    @app.get("/capture/control")
+    def capture_control_state() -> dict[str, Any]:
+        return {"control": _capture_control().state(), "sources": list(TOGGLEABLE)}
+
+    @app.post("/capture/pause")
+    async def capture_pause(request: Request) -> dict[str, Any]:
+        body = await _safe_json(request)
+        minutes = body.get("minutes")
+        try:
+            minutes = int(minutes) if minutes is not None else None
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="minutes must be an integer")
+        return {"control": _capture_control().set_paused(True, minutes=minutes)}
+
+    @app.post("/capture/resume")
+    def capture_resume() -> dict[str, Any]:
+        return {"control": _capture_control().resume()}
+
+    @app.post("/capture/source")
+    async def capture_source(request: Request) -> dict[str, Any]:
+        body = await _safe_json(request)
+        source = str(body.get("source") or "")
+        if source not in TOGGLEABLE:
+            raise HTTPException(status_code=400, detail=f"source must be one of {list(TOGGLEABLE)}")
+        if "enabled" not in body:
+            raise HTTPException(status_code=400, detail="enabled (bool) is required")
+        enabled = bool(body.get("enabled"))
+        return {"control": _capture_control().set_source(source, enabled)}
+
+    @app.post("/capture/forget")
+    async def capture_forget(request: Request) -> dict[str, Any]:
+        body = await _safe_json(request)
+        try:
+            minutes = int(body.get("minutes"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="minutes (int) is required")
+        if minutes <= 0:
+            raise HTTPException(status_code=400, detail="minutes must be > 0")
+        cutoff = (datetime.now().astimezone() - timedelta(minutes=minutes)).replace(microsecond=0).isoformat()
+        removed = db.forget_since(iso_cutoff=cutoff)
+        removed["context_events"] = _context_store().forget_since(cutoff)
+        return {"ok": True, "cutoff": cutoff, "removed": removed}
+
+    @app.get("/timeline/unified")
+    def timeline_unified(
+        since: str | None = None,
+        until: str | None = None,
+        sources: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        source_list = [s.strip() for s in sources.split(",") if s.strip()] if sources else None
+        rows = _context_store().list_events(
+            since=since, until=until, sources=source_list, limit=max(1, min(limit, 1000)),
+        )
+        return {"data": rows, "total": len(rows)}
+
+    @app.get("/timeline/unified/breakdown")
+    def timeline_breakdown(since: str | None = None) -> dict[str, Any]:
+        return {"data": _context_store().source_breakdown(since=since)}
+
+    @app.get("/capture/ui")
+    def capture_ui():  # noqa: ANN201
+        return FileResponse(static_dir() / "capture.html", media_type="text/html")
+
+    # ─── LoRA training (additive, opt-in) ────────────────────────────────────
+    def _training_sources(raw: str | None) -> list[str]:
+        from ..learning.training.data import SOURCES  # noqa: PLC0415
+
+        if not raw:
+            return list(cfg.training.sources)
+        return [s.strip() for s in raw.split(",") if s.strip() in SOURCES]
+
+    @app.get("/training/data")
+    def training_data(sources: str | None = None, sample: int = 5) -> dict[str, Any]:
+        from ..learning.training import DeskMateTrainingDataMiner  # noqa: PLC0415
+
+        src = _training_sources(sources)
+        tc = cfg.training
+        miner = DeskMateTrainingDataMiner(min_feedback=tc.min_feedback, min_chars=tc.min_chars)
+        try:
+            breakdown = miner.source_breakdown(sources=src, limit_per_source=tc.limit_per_source)
+            pairs = miner.extract_sft_pairs(
+                sources=src, limit_per_source=tc.limit_per_source, max_pairs=tc.max_pairs,
+            )
+        finally:
+            miner.close()
+        return {
+            "sources": src,
+            "breakdown": breakdown,
+            "total": len(pairs),
+            "sample": pairs[: max(0, min(sample, 50))],
+        }
+
+    @app.post("/training/lora")
+    async def training_lora(request: Request) -> dict[str, Any]:
+        from ..learning.training import (  # noqa: PLC0415
+            HAS_TORCH,
+            DeskMateTrainingDataMiner,
+            LoRATrainer,
+            LoRATrainingConfig,
+        )
+
+        body = await _safe_json(request)
+        tc = cfg.training
+        src = _training_sources(body.get("sources"))
+
+        miner = DeskMateTrainingDataMiner(min_feedback=tc.min_feedback, min_chars=tc.min_chars)
+        try:
+            pairs = miner.extract_sft_pairs(
+                sources=src,
+                limit_per_source=tc.limit_per_source,
+                max_pairs=int(body.get("max_pairs") or tc.max_pairs),
+            )
+        finally:
+            miner.close()
+
+        if not pairs:
+            return {"status": "skipped", "reason": "no training data", "sources": src}
+        if not HAS_TORCH:
+            raise HTTPException(
+                status_code=503,
+                detail="torch not installed — run: pip install 'deskmate[training]'",
+            )
+
+        from .. import paths as _paths  # noqa: PLC0415
+
+        out_dir = str(
+            body.get("output_dir") or tc.output_dir or (_paths.root() / "checkpoints" / "lora")
+        )
+
+        lcfg = LoRATrainingConfig(
+            lora_rank=tc.lora_rank,
+            lora_alpha=tc.lora_alpha,
+            lora_dropout=tc.lora_dropout,
+            target_modules=list(tc.target_modules),
+            num_epochs=int(body.get("epochs") or tc.num_epochs),
+            batch_size=tc.batch_size,
+            learning_rate=tc.learning_rate,
+            max_seq_length=tc.max_seq_length,
+            use_4bit=tc.use_4bit,
+            output_dir=out_dir,
+        )
+        trainer = LoRATrainer(lcfg, model_name=str(body.get("model") or tc.model_name))
+        summary = await run_in_threadpool(trainer.train, pairs)
+        summary["sources"] = src
+        return summary
 
     @app.exception_handler(Exception)
     async def _eh(_request, exc):  # noqa: ANN001

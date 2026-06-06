@@ -7,7 +7,7 @@ historical migration. `_pca_migrations` stores the active schema version.
 from __future__ import annotations
 
 # Bumped whenever the consolidated schema changes.
-SCHEMA_VERSION = "20260901120000"
+SCHEMA_VERSION = "20260906180000"
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -328,4 +328,103 @@ CREATE INDEX IF NOT EXISTS idx_content_emb_type_ts
     ON content_embeddings(content_type, timestamp);
 CREATE INDEX IF NOT EXISTS idx_content_emb_model
     ON content_embeddings(model);
+
+-- ─── habits: learned routines (data → patterns) ────────────────────────────
+-- One row per (day_type, half-hour slot, category). Aggregated from frames by
+-- the habits miner. ``frequency`` (0..1) is the share of observed days the
+-- behavior occurred and is the core "habit strength" signal.
+CREATE TABLE IF NOT EXISTS habit_profiles (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    day_type     TEXT    NOT NULL,             -- 'weekday' | 'weekend'
+    slot         INTEGER NOT NULL,             -- 0..47 (hour*2 + (minute>=30))
+    category     TEXT    NOT NULL,             -- coding|browsing|email|meeting|writing|communication|other
+    top_app      TEXT    NOT NULL DEFAULT '',  -- highest-frequency app in this slot
+    avg_minutes  REAL    NOT NULL DEFAULT 0,   -- mean minutes spent (per active day)
+    frequency    REAL    NOT NULL DEFAULT 0,   -- 0..1, share of days this behavior occurs
+    sample_days  INTEGER NOT NULL DEFAULT 0,   -- distinct days backing this row (confidence)
+    updated_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(day_type, slot, category)
+);
+CREATE INDEX IF NOT EXISTS idx_habit_slot ON habit_profiles(day_type, slot);
+
+-- ─── habits: trigger rules (pattern + present → timing) ────────────────────
+CREATE TABLE IF NOT EXISTS habit_rules (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    UNIQUE NOT NULL,        -- 'distraction_peak' | 'overwork' | ...
+    rule_type     TEXT    NOT NULL,               -- deviation|routine_missing|threshold|streak
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    params_json   TEXT    NOT NULL DEFAULT '{}',  -- thresholds / category / window
+    cooldown_min  INTEGER NOT NULL DEFAULT 120,   -- min minutes between firings (anti-nag)
+    quiet_hours   TEXT    NOT NULL DEFAULT '22-8', -- "start-end" local hours of silence
+    priority      TEXT    NOT NULL DEFAULT 'M',   -- H|M|L
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ─── habits: suggestion history (suggestion → user) ────────────────────────
+CREATE TABLE IF NOT EXISTS habit_suggestions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_name     TEXT    NOT NULL,
+    message       TEXT    NOT NULL,
+    context_json  TEXT    NOT NULL DEFAULT '{}',  -- evidence at trigger time
+    channel       TEXT    NOT NULL DEFAULT 'toast',-- toast|ui|telegram
+    status        TEXT    NOT NULL DEFAULT 'sent', -- sent|suppressed|clicked|dismissed
+    feedback      INTEGER,                          -- 1=useful -1=not useful NULL=none
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_suggestion_rule ON habit_suggestions(rule_name, created_at);
+CREATE INDEX IF NOT EXISTS idx_suggestion_status ON habit_suggestions(status, created_at);
+
+-- ─── fusion: unified multi-source context timeline ─────────────────────────
+-- One normalized row per signal from any source (screen / audio / input /
+-- clipboard / window). This is an additive, read-mostly "context bus" sink:
+-- the fusion bus subscribes to the existing in-process event bus and projects
+-- every event here, so downstream consumers (timeline, habits, recap) get a
+-- single chronological stream with provenance + confidence. Producers are
+-- never modified.
+CREATE TABLE IF NOT EXISTS context_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT    NOT NULL,              -- local ISO-with-tz of the signal
+    source       TEXT    NOT NULL,              -- screen|audio|input|clipboard|window
+    kind         TEXT    NOT NULL,              -- frame|transcript|click|text|clipboard|focus|title|value
+    app_name     TEXT    NOT NULL DEFAULT '',
+    window_title TEXT    NOT NULL DEFAULT '',
+    summary      TEXT    NOT NULL DEFAULT '',   -- short human-readable text
+    payload_json TEXT    NOT NULL DEFAULT '{}', -- source-specific detail
+    confidence   REAL    NOT NULL DEFAULT 1.0,  -- 0..1 (e.g. ASR < 1, UIA = 1)
+    frame_id     INTEGER,                       -- link to frames when applicable
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_context_events_ts     ON context_events(ts);
+CREATE INDEX IF NOT EXISTS idx_context_events_source ON context_events(source, ts);
+
+-- ─── capture control: runtime pause / forget / per-source switches ─────────
+-- Single-row control surface (id is pinned to 1). The daemon's capture
+-- chokepoints read this (cached, fail-open) to honor pause + per-source
+-- toggles; the API writes it. DB-mediated so it works whether the API and
+-- daemon share a process or not, mirroring the habits module's pattern.
+CREATE TABLE IF NOT EXISTS capture_control (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    paused      INTEGER NOT NULL DEFAULT 0,
+    pause_until TEXT,                            -- auto-resume time (NULL = until manually resumed)
+    screen      INTEGER NOT NULL DEFAULT 1,
+    audio       INTEGER NOT NULL DEFAULT 1,
+    input       INTEGER NOT NULL DEFAULT 1,
+    clipboard   INTEGER NOT NULL DEFAULT 1,
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO capture_control(id) VALUES (1);
+
+-- ─── ask history: (question → grounded answer) pairs ───────────────────────
+-- Every answered Ask query is logged here. Additive and write-only from the
+-- API; powers the optional LoRA training miner (the user's own questions and
+-- the assistant's evidence-based answers are high-quality SFT pairs). Empty /
+-- error answers are not persisted.
+CREATE TABLE IF NOT EXISTS ask_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    question    TEXT    NOT NULL,
+    answer      TEXT    NOT NULL,
+    tool_count  INTEGER NOT NULL DEFAULT 0,     -- number of tool calls used
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ask_history_created ON ask_history(created_at);
 """

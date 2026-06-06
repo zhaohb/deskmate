@@ -233,6 +233,33 @@ def _safe_control_type(elem: Any) -> str | None:
         return None
 
 
+def _safe_class_name(elem: Any) -> str:
+    """Read the focused element's ``ClassName`` defensively.
+
+    The ClassName disambiguates chat input boxes that share a generic
+    ``EditControl`` role — e.g. Cursor's ``aislash-editor-input`` vs VS Code's
+    ``native-edit-context`` Monaco editor. Returns ``""`` on any COM failure.
+    """
+    try:
+        return (getattr(elem, "ClassName", "") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _safe_name(elem: Any) -> str:
+    """Read the focused element's accessibility ``Name`` defensively.
+
+    The Name disambiguates chat inputs that share both a generic ``EditControl``
+    role and a shared ClassName — e.g. VS Code Copilot's chat composer (Name
+    starts with ``"Chat Input"``) vs an ordinary Monaco editor, both of which
+    use ClassName ``native-edit-context``. Returns ``""`` on any COM failure.
+    """
+    try:
+        return (getattr(elem, "Name", "") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _build_cache_request(auto_mod: Any) -> Any | None:
     """Build a UIAutomation CacheRequest that prefetches every property we
     read in `_walk`. Returns the cache request or `None` if the package
@@ -291,43 +318,52 @@ def walk_focused_window(
         )
 
 
-def read_focused_value(hwnd: int = 0, *, max_len: int = 4000) -> tuple[str, str]:
-    """Read only the focused control's ``(role, value)`` — fast, no tree walk.
+def read_focused_value(
+    hwnd: int = 0, *, max_len: int = 4000,
+) -> tuple[str, str, str, str]:
+    """Read the focused control's ``(role, value, class_name, name)`` — fast, no walk.
 
     Used for on-demand prompt capture (e.g. when the user pauses typing or
     sends a message) so a chat input box's *full* text — including pasted and
     IME-composed content the low-level keystroke buffer may miss — is recorded.
-    Returns ``("", "")`` off-Windows, when UIA is unavailable, for password
+    ``class_name`` disambiguates chat inputs that share a generic role (e.g.
+    Cursor's ``aislash-editor-input`` vs an ordinary editor); ``name``
+    disambiguates those that share both role *and* class (e.g. VS Code
+    Copilot's chat composer, whose Name starts with ``"Chat Input"``, vs an
+    ordinary Monaco editor — both ``native-edit-context``). Returns
+    ``("", "", "", "")`` off-Windows, when UIA is unavailable, for password
     fields, or on any failure. ``hwnd`` is currently advisory; the system-wide
     focused control is always the one the user is typing into.
     """
     if os.name != "nt":
-        return ("", "")
+        return ("", "", "", "")
     try:
         import uiautomation as auto  # noqa: PLC0415
     except ImportError:
-        return ("", "")
+        return ("", "", "", "")
 
-    def _do() -> tuple[str, str]:
+    def _do() -> tuple[str, str, str, str]:
         try:
             f = auto.GetFocusedControl()
         except Exception:  # noqa: BLE001
-            return ("", "")
+            return ("", "", "", "")
         if f is None:
-            return ("", "")
+            return ("", "", "", "")
         role = _safe_control_type(f) or ""
+        cls = _safe_class_name(f)
+        name = _safe_name(f)
         if _safe_is_password(f):
-            return (role, "")
+            return (role, "", cls, name)
         value = _read_value(f) or ""
         if max_len and len(value) > max_len:
             value = value[:max_len]
-        return (role, value)
+        return (role, value, cls, name)
 
     try:
         with uia_com_session():
             return _do()
     except Exception:  # noqa: BLE001
-        return ("", "")
+        return ("", "", "", "")
 
 
 def _walk_focused_window_impl(

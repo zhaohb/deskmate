@@ -169,6 +169,85 @@ class RetentionConfig(BaseModel):
     db_max_mb: int = 4000
 
 
+class HabitsConfig(BaseModel):
+    """Settings for the additive habits module (mining + proactive suggestions)."""
+
+    enabled: bool = True
+    # How often the watcher evaluates "current activity vs. learned routine".
+    tick_interval_min: int = 5
+    # How often habit_profiles are re-mined from frames.
+    mine_interval_hours: int = 24
+    # Look-back window for mining routines.
+    mine_lookback_days: int = 30
+    # A (slot, category) must occur on at least this share of days to count as a habit.
+    min_frequency: float = 0.5
+    # Minimum distinct days backing a habit before it is trusted.
+    min_sample_days: int = 3
+    # Local "start-end" hours during which no notification is sent.
+    quiet_hours: str = "22-8"
+    # Hard cap on proactive notifications per day.
+    daily_quota: int = 5
+    # Whether to attempt a native Windows toast (falls back to UI inbox).
+    toast_enabled: bool = True
+
+
+class FusionConfig(BaseModel):
+    """Additive context-fusion + capture-control module.
+
+    The fusion bus subscribes to the in-process event bus and projects every
+    signal into the unified ``context_events`` timeline. Per-source recording
+    and global pause are controlled at runtime via the ``capture_control``
+    table (see the capture-control API), not here; this config only governs
+    whether the subsystem runs at all and which low-sensitivity window/focus
+    events are worth persisting.
+    """
+
+    enabled: bool = True
+    # Project window focus / title / value-change events into the timeline too.
+    record_window_events: bool = True
+    # Max characters of any text payload kept in the unified timeline.
+    summary_max_chars: int = 200
+
+
+class TrainingConfig(BaseModel):
+    """Opt-in LoRA fine-tuning module (additive).
+
+    Mines supervised (input, output) pairs from existing local data
+    (``habit_suggestions`` the user marked useful, successful
+    ``pipe_executions`` and the unified ``context_events`` timeline) and
+    fine-tunes a small local causal LM with LoRA/QLoRA adapters. Heavy ML deps
+    (torch/transformers/peft) live in the optional ``[training]`` extra; nothing
+    here runs unless explicitly invoked via the CLI (``deskmate train-lora``)
+    or the ``/training/lora`` API.
+    """
+
+    enabled: bool = True
+    # Base model to adapt (HuggingFace id or local path).
+    model_name: str = "Qwen/Qwen3-0.6B"
+    # Adapter output directory. Empty => ~/.deskmate/checkpoints/lora.
+    output_dir: str = ""
+
+    # Data mining
+    sources: list[str] = Field(
+        default_factory=lambda: ["habits", "pipes", "timeline", "behavior", "ask"]
+    )
+    min_feedback: int = 1
+    min_chars: int = 8
+    limit_per_source: int = 2000
+    max_pairs: int = 5000
+
+    # LoRA / training hyperparameters
+    lora_rank: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.05
+    target_modules: list[str] = Field(default_factory=lambda: ["q_proj", "v_proj"])
+    num_epochs: int = 3
+    batch_size: int = 4
+    learning_rate: float = 2e-5
+    max_seq_length: int = 2048
+    use_4bit: bool = False
+
+
 class Config(BaseSettings):
     """Top-level config object."""
 
@@ -186,7 +265,9 @@ class Config(BaseSettings):
     outlook: OutlookConfig = Field(default_factory=OutlookConfig)
     gmail: GmailConfig = Field(default_factory=GmailConfig)
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
-
+    habits: HabitsConfig = Field(default_factory=HabitsConfig)
+    fusion: FusionConfig = Field(default_factory=FusionConfig)
+    training: TrainingConfig = Field(default_factory=TrainingConfig)
 
 def _read_toml(path: Path) -> dict:
     if not path.exists():

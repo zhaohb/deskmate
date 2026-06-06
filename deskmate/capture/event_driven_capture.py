@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from ..a11y.activity_feed import default as activity_default
 from ..a11y.ui_event_types import CaptureTrigger, CaptureTriggerMsg
 from ..capture.frame_linker import DropReason, FrameCaptured, LinkerMessage
+from ..fusion import capture_allowed
 from ..logger import get
 
 if TYPE_CHECKING:
@@ -83,7 +84,7 @@ def run_event_driven_capture_loop(
     poll_interval_s = 0.25
 
     # Startup capture seeds the timeline immediately.
-    if state.can_capture():
+    if state.can_capture() and capture_allowed("screen"):
         try:
             frame_ids = paired.capture_once(trigger=CaptureTrigger.MANUAL.value)
         except Exception as exc:  # noqa: BLE001
@@ -120,6 +121,14 @@ def run_event_driven_capture_loop(
             corr_ids = []
 
         if trigger is None:
+            continue
+        # Additive capture control: honor global pause + the "screen" switch.
+        # Fail-open: when control is unavailable, capture proceeds as before.
+        if not capture_allowed("screen"):
+            if corr_ids:
+                linker.try_send(
+                    LinkerMessage(trigger_dropped=(corr_ids, DropReason.OTHER)),
+                )
             continue
         if not state.can_capture():
             if corr_ids:

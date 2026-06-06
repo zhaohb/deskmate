@@ -176,3 +176,82 @@ def test_build_range_display_includes_multi_day_report(app: ModuleType) -> None:
     assert "2026-05-31" in display and "2026-06-02" in display
     assert "older prompt" in display and "newer prompt" in display
     assert "AI Prompts — 2026-05-31 … 2026-06-02" in display
+
+
+# ── agent.py: Claude Code (terminal CLI) detection ───────────────────────────
+
+
+def _load_agent_module() -> ModuleType:
+    """Load apps/agent.py as an importable module for pure-helper tests."""
+    if "agent" in sys.modules:
+        return sys.modules["agent"]
+    if str(_APPS_DIR) not in sys.path:
+        sys.path.insert(0, str(_APPS_DIR))
+    spec = importlib.util.spec_from_file_location("agent", _APPS_DIR / "agent.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["agent"] = module  # required: dataclasses resolves via sys.modules
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def agent() -> ModuleType:
+    return _load_agent_module()
+
+
+def _claude_screen(prompt_lines: list[str]) -> str:
+    """Build a realistic Claude Code TUI screen with the given composer lines."""
+    box = ["\u256d" + "\u2500" * 40 + "\u256e"]
+    for i, ln in enumerate(prompt_lines):
+        marker = "> " if i == 0 else "  "
+        body = (marker + ln).ljust(40)
+        box.append("\u2502 " + body + "\u2502")
+    box.append("\u2570" + "\u2500" * 40 + "\u256f")
+    return (
+        "\u273b Welcome to Claude Code\n"
+        "\n"
+        "  /help for help, /status for your current setup\n"
+        "\n"
+        "> Previous answer text from Claude here...\n"
+        "\n"
+        + "\n".join(box)
+        + "\n  ? for shortcuts\n"
+    )
+
+
+def test_claude_code_signals_detected(agent: ModuleType) -> None:
+    screen = _claude_screen(["refactor agent.py to use dataclasses"])
+    assert agent._has_claude_code_signals(screen) is True
+    assert agent._has_claude_code_signals("just an ordinary powershell prompt") is False
+
+
+def test_claude_code_extract_single_line(agent: ModuleType) -> None:
+    screen = _claude_screen(["refactor agent.py to use dataclasses"])
+    assert (
+        agent._extract_claude_code_prompt(screen)
+        == "refactor agent.py to use dataclasses"
+    )
+
+
+def test_claude_code_extract_multiline(agent: ModuleType) -> None:
+    screen = _claude_screen(["add a feature flag", "then write tests for it"])
+    assert (
+        agent._extract_claude_code_prompt(screen)
+        == "add a feature flag then write tests for it"
+    )
+
+
+def test_claude_code_extract_empty_composer_returns_blank(agent: ModuleType) -> None:
+    screen = _claude_screen([""])
+    assert agent._extract_claude_code_prompt(screen) == ""
+
+
+def test_claude_code_extract_placeholder_hint_returns_blank(agent: ModuleType) -> None:
+    screen = _claude_screen(['Try "edit the readme"'])
+    assert agent._extract_claude_code_prompt(screen) == ""
+
+
+def test_claude_code_label_is_registered(agent: ModuleType) -> None:
+    assert "Claude Code" in agent.AI_PROMPT_JOURNAL_TARGETS
+

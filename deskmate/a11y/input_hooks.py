@@ -15,6 +15,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import os
+import queue
 import threading
 import time
 from collections.abc import Callable
@@ -37,7 +38,14 @@ WM_RBUTTONDOWN = 0x0204
 WM_MBUTTONDOWN = 0x0207
 WM_XBUTTONDOWN = 0x020B
 WM_MOUSEWHEEL = 0x020A
+WM_MOUSEMOVE = 0x0200
+WM_QUIT = 0x0012
 HC_ACTION = 0
+
+# Run the hook message pump slightly above normal so the OS schedules it
+# promptly even when busy worker/HTTP threads are runnable — native input
+# handlers (e.g. screenpipe's dedicated input thread) do the same.
+THREAD_PRIORITY_ABOVE_NORMAL = 1
 
 _MOVE_THROTTLE_S = 0.25
 
@@ -130,6 +138,19 @@ class InputHooks:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._last_move_emit = 0.0
+        # Cached CallNextHookEx (pinned in _run) so the hot hook path avoids a
+        # ``ctypes.windll.user32`` attribute lookup on every single message.
+        self._call_next: Any = None
+        # Heavy work (foreground/app lookups, bus.send, on_event) is handed to a
+        # worker thread so the low-level hook callbacks stay near-instant. A LL
+        # hook callback that blocks — including just waiting on the GIL while
+        # other threads run — stalls ALL system input, so the callbacks must do
+        # the bare minimum and return immediately.
+        self._work_q: queue.Queue[tuple[Any, ...] | None] = queue.Queue(maxsize=4096)
+        self._worker: threading.Thread | None = None
+        # Win32 thread id of the message-pump thread, captured in _run so stop()
+        # can wake the blocking GetMessage pump via PostThreadMessage(WM_QUIT).
+        self._tid: int = 0
         # Serializes the off-thread UIA focused-value reads triggered on Enter so
         # rapid sends don't pile up overlapping reads. Set while a read is queued.
         self._send_busy = threading.Event()
@@ -142,14 +163,29 @@ class InputHooks:
         if not self.available or self._thread:
             return
         self._stop.clear()
+        self._worker = threading.Thread(target=self._worker_loop, name="InputHooks-worker", daemon=True)
+        self._worker.start()
         self._thread = threading.Thread(target=self._run, name="InputHooks", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        # Wake the blocking GetMessage pump so the thread can exit promptly.
+        if self._tid and os.name == "nt":
+            try:
+                ctypes.windll.user32.PostThreadMessageW(self._tid, WM_QUIT, 0, 0)  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
         if self._thread:
             self._thread.join(timeout=2.0)
             self._thread = None
+        if self._worker:
+            try:
+                self._work_q.put_nowait(None)  # wake the worker so it can exit
+            except queue.Full:
+                pass
+            self._worker.join(timeout=2.0)
+            self._worker = None
 
     # ─── pump ──────────────────────────────────────────────────────────────
     def _run(self) -> None:
@@ -174,6 +210,9 @@ class InputHooks:
         # overflows with "argument 4: OverflowError: int too long to convert".
         user32.CallNextHookEx.restype = wt.LPARAM
         user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wt.WPARAM, wt.LPARAM]
+        # Cache the bound function so the per-message hot path skips attribute
+        # lookups. Set before any hook is installed (callbacks can't fire yet).
+        self._call_next = user32.CallNextHookEx
 
         mod = kernel32.GetModuleHandleW(None)
         kproc = HOOKPROC(self._kb_callback) if self.capture_keystrokes else None
@@ -196,14 +235,29 @@ class InputHooks:
         if khook or mhook:
             logger.info("InputHooks installed (keyboard=%s mouse=%s)", bool(khook), bool(mhook))
 
+        # Capture our thread id so stop() can post WM_QUIT to unblock the pump.
+        self._tid = int(kernel32.GetCurrentThreadId())
+        # Raise pump priority so low-level hook dispatch isn't starved by busy
+        # worker / HTTP threads (a key cause of perceptible input lag).
+        try:
+            kernel32.SetThreadPriority(kernel32.GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Blocking GetMessage pump. Unlike PeekMessage + sleep(), this parks the
+        # thread with 0% CPU yet wakes the INSTANT a low-level hook message
+        # arrives, so hook callbacks dispatch with no added latency (the old
+        # 20ms idle sleep delayed every dispatch by up to a frame — "slow by a
+        # beat"). GetMessageW returns 0 on WM_QUIT and -1 on error.
         msg = wt.MSG()
+        user32.GetMessageW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint]
+        user32.GetMessageW.restype = ctypes.c_int
         while not self._stop.is_set():
-            r = user32.PeekMessageW(ctypes.byref(msg), 0, 0, 0, 0x0001)
-            if r:
-                user32.TranslateMessage(ctypes.byref(msg))
-                user32.DispatchMessageW(ctypes.byref(msg))
-            else:
-                self._stop.wait(0.02)
+            r = user32.GetMessageW(ctypes.byref(msg), 0, 0, 0)
+            if r == 0 or r == -1:  # WM_QUIT or error
+                break
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
 
         if khook:
             user32.UnhookWindowsHookEx(khook)
@@ -216,19 +270,13 @@ class InputHooks:
                 activity_default().record(ActivityKind.KEY_PRESS)
                 kbd = ctypes.cast(lparam, ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
                 vk = int(kbd.vkCode)
-                hwnd, pid, title = _foreground_hwnd_pid()
-                app = foreground_app_name(pid)
+                # CRITICAL: global low-level keyboard hook on every keypress.
+                # Hand the heavy foreground/app lookup to the worker thread so
+                # typing never stalls system-wide.
                 if vk in _NAV_KEYS and self._on_event:
-                    self._on_event({
-                        "event_type": "key",
-                        "key_code": vk,
-                        "app_name": app,
-                        "window_title": title,
-                        "hwnd": hwnd,
-                        "pid": pid,
-                    })
+                    self._enqueue(("key_nav", vk))
                 if vk in _MODIFIERS:
-                    return ctypes.windll.user32.CallNextHookEx(0, ncode, wparam, lparam)  # type: ignore[attr-defined]
+                    return self._call_next(0, ncode, wparam, lparam)
 
                 # We do not record individual characters. Only a "send" Enter
                 # (Enter / Ctrl+Enter, but not Shift+Enter) triggers a one-shot
@@ -242,65 +290,96 @@ class InputHooks:
                         self._schedule_send_capture(reason=reason)
         except Exception as exc:  # noqa: BLE001
             logger.debug("kb cb err: %s", exc)
-        return ctypes.windll.user32.CallNextHookEx(0, ncode, wparam, lparam)  # type: ignore[attr-defined]
+        return self._call_next(0, ncode, wparam, lparam)
 
     def _mouse_callback(self, ncode: int, wparam: int, lparam: int) -> int:
         try:
             if ncode == HC_ACTION:
-                ms = ctypes.cast(lparam, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
+                wp = wparam
+                # FAST PATH: plain mouse-move is the overwhelming majority of
+                # messages (hundreds/sec). This runs inside a global LL hook
+                # holding the GIL, so we must hold it for the minimum time and
+                # return ASAP. Bail BEFORE any struct cast / coordinate read.
+                # Idle is tracked OS-side via GetLastInputInfo, so a discarded
+                # move costs essentially nothing.
+                if wp == WM_MOUSEMOVE:
+                    if self.capture_mouse_move:
+                        now = time.time()
+                        if now - self._last_move_emit >= _MOVE_THROTTLE_S:
+                            self._last_move_emit = now
+                            ms = ctypes.cast(lparam, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
+                            self._enqueue(("move", int(ms.pt.x), int(ms.pt.y)))
+                    return self._call_next(0, ncode, wparam, lparam)
+
+                # Rare events only (click / wheel) — parse the struct here.
+                button = self._wparam_to_button(wp)
+                if button:
+                    ms = ctypes.cast(lparam, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
+                    self._enqueue(("click", button, int(ms.pt.x), int(ms.pt.y)))
+                elif wp == WM_MOUSEWHEEL:
+                    ms = ctypes.cast(lparam, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
+                    delta = ctypes.c_int16(ms.mouseData >> 16).value
+                    self._enqueue(("scroll", int(ms.pt.x), int(ms.pt.y), int(delta)))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("mouse cb err: %s", exc)
+        return self._call_next(0, ncode, wparam, lparam)
+
+    def _enqueue(self, item: tuple[Any, ...]) -> None:
+        """Best-effort hand-off to the worker; drop on backpressure (never block
+        the hook thread)."""
+        try:
+            self._work_q.put_nowait(item)
+        except queue.Full:
+            pass
+
+    def _worker_loop(self) -> None:
+        """Drains queued raw input and performs the heavy work off the hook
+        thread: foreground/app lookups, ``bus.send``, and ``on_event``."""
+        while True:
+            item = self._work_q.get()
+            if item is None:
+                break
+            try:
+                kind = item[0]
                 hwnd, pid, title = _foreground_hwnd_pid()
                 app = foreground_app_name(pid)
-                button = self._wparam_to_button(int(wparam))
-                if button:
-                    activity_default().record(ActivityKind.MOUSE_CLICK)
+                if kind == "click":
+                    _, button, x, y = item
                     payload = {
-                        "button": button,
-                        "x": int(ms.pt.x),
-                        "y": int(ms.pt.y),
-                        "app_name": app,
-                        "window_title": title,
-                        "hwnd": hwnd,
-                        "pid": pid,
+                        "button": button, "x": x, "y": y,
+                        "app_name": app, "window_title": title,
+                        "hwnd": hwnd, "pid": pid,
                     }
                     bus.send(bus.EventType.CLICK, **payload)
                     if self._on_event:
                         self._on_event({"event_type": "click", **payload})
-                elif int(wparam) == WM_MOUSEWHEEL:
-                    activity_default().record(ActivityKind.SCROLL)
-                    delta = ctypes.c_int16(ms.mouseData >> 16).value
-                    payload = {
-                        "event_type": "scroll",
-                        "x": int(ms.pt.x),
-                        "y": int(ms.pt.y),
-                        "delta_x": 0,
-                        "delta_y": int(delta),
-                        "app_name": app,
-                        "window_title": title,
-                        "hwnd": hwnd,
-                        "pid": pid,
-                    }
+                elif kind == "scroll":
+                    _, x, y, delta = item
                     if self._on_event:
-                        self._on_event(payload)
-                elif self.capture_mouse_move:
-                    now = time.time()
-                    if now - self._last_move_emit >= _MOVE_THROTTLE_S:
-                        self._last_move_emit = now
-                        activity_default().record(ActivityKind.MOUSE_MOVE)
-                        if self._on_event:
-                            self._on_event({
-                                "event_type": "move",
-                                "x": int(ms.pt.x),
-                                "y": int(ms.pt.y),
-                                "app_name": app,
-                                "window_title": title,
-                                "hwnd": hwnd,
-                                "pid": pid,
-                            })
-                else:
-                    activity_default().record(ActivityKind.MOUSE_MOVE)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("mouse cb err: %s", exc)
-        return ctypes.windll.user32.CallNextHookEx(0, ncode, wparam, lparam)  # type: ignore[attr-defined]
+                        self._on_event({
+                            "event_type": "scroll", "x": x, "y": y,
+                            "delta_x": 0, "delta_y": delta,
+                            "app_name": app, "window_title": title,
+                            "hwnd": hwnd, "pid": pid,
+                        })
+                elif kind == "move":
+                    _, x, y = item
+                    if self._on_event:
+                        self._on_event({
+                            "event_type": "move", "x": x, "y": y,
+                            "app_name": app, "window_title": title,
+                            "hwnd": hwnd, "pid": pid,
+                        })
+                elif kind == "key_nav":
+                    _, vk = item
+                    if self._on_event:
+                        self._on_event({
+                            "event_type": "key", "key_code": vk,
+                            "app_name": app, "window_title": title,
+                            "hwnd": hwnd, "pid": pid,
+                        })
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("input worker err: %s", exc)
 
     @staticmethod
     def _wparam_to_button(wparam: int) -> str:
@@ -323,32 +402,32 @@ class InputHooks:
         if not self._on_event or self._send_busy.is_set():
             return
         self._send_busy.set()
-        hwnd, pid, title = _foreground_hwnd_pid()
-        app = foreground_app_name(pid)
+        # Read foreground + UIA value on the worker thread, never on the hook
+        # callback (both can block / contend for the GIL).
         threading.Thread(
             target=self._emit_focused_value,
-            kwargs={"app": app, "title": title, "hwnd": hwnd, "pid": pid, "reason": reason},
+            kwargs={"reason": reason},
             name="InputHooks-send",
             daemon=True,
         ).start()
 
-    def _emit_focused_value(
-        self, *, app: str, title: str, hwnd: int, pid: int, reason: str
-    ) -> None:
+    def _emit_focused_value(self, *, reason: str) -> None:
         """Read the full text of the focused input box via UIA and emit it as a
         single ``text`` event with ``source="send"``. Runs on a short-lived
-        worker thread — never the low-level hook callback — because UIA calls can
-        block. Captures the complete, already-composed prompt (IME, pasted, or
-        voice input) at the moment the user pressed Enter, and trips a one-shot
-        screenshot capture via the SEND trigger.
+        worker thread — never the low-level hook callback — because foreground
+        and UIA calls can block. Captures the complete, already-composed prompt
+        (IME, pasted, or voice input) at the moment the user pressed Enter, and
+        trips a one-shot screenshot capture via the SEND trigger.
         """
         try:
             if not self._on_event:
                 return
+            hwnd, pid, title = _foreground_hwnd_pid()
+            app = foreground_app_name(pid)
             try:
                 from .uia_tree import read_focused_value  # noqa: PLC0415
 
-                role, value = read_focused_value()
+                role, value, class_name, focused_name = read_focused_value()
             except Exception as exc:  # noqa: BLE001
                 logger.debug("focused-value read failed: %s", exc)
                 return
@@ -368,6 +447,8 @@ class InputHooks:
                 "event_type": "text",
                 "source": "send",
                 "focused_role": role,
+                "focused_class": class_name,
+                "focused_name": focused_name,
                 **payload,
             })
         finally:

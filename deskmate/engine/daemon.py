@@ -16,6 +16,8 @@ from ..capture.frame_linker import FrameLinkerActor
 from ..capture.ui_event_pipeline import UiEventPipeline
 from ..config import Config, load as load_config
 from ..db import DatabaseManager
+from ..habits import HabitWatcher
+from ..fusion import ContextFusionBus, capture_allowed, shutdown_gate
 from ..logger import get
 from ..meeting import MeetingDetector
 from ..pipes import PipeRuntime, PipeScheduler, load_pipes
@@ -71,6 +73,23 @@ class Daemon:
         self.pipe_scheduler = PipeScheduler(self.db, self.pipes, runtime=self.pipe_runtime) if self.pipes else None
         self.app_scheduler = AppScheduler()
 
+        # Additive: learn routines + proactive suggestions. Owns its own thread
+        # and DB connection; only constructed when explicitly enabled.
+        self.habit_watcher = (
+            HabitWatcher(self.cfg)
+            if getattr(self.cfg, "habits", None) and self.cfg.habits.enabled
+            else None
+        )
+
+        # Additive: fuse all sources into the unified context timeline. Owns its
+        # own thread + DB connection and subscribes to the in-process event bus,
+        # so no producer is modified.
+        self.fusion_bus = (
+            ContextFusionBus(self.cfg)
+            if getattr(self.cfg, "fusion", None) and self.cfg.fusion.enabled
+            else None
+        )
+
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
 
@@ -95,6 +114,12 @@ class Daemon:
         if self.pipe_scheduler:
             self.pipe_scheduler.start()
         self.app_scheduler.start()
+
+        if self.habit_watcher:
+            self.habit_watcher.start()
+
+        if self.fusion_bus:
+            self.fusion_bus.start()
 
         self._threads = [
             threading.Thread(target=self._audio_loop, name="daemon-audio", daemon=True),
@@ -141,6 +166,11 @@ class Daemon:
         if self.pipe_scheduler:
             self.pipe_scheduler.stop()
         self.app_scheduler.stop()
+        if self.habit_watcher:
+            self.habit_watcher.stop()
+        if self.fusion_bus:
+            self.fusion_bus.stop()
+        shutdown_gate()
         for t in self._threads:
             t.join(timeout=3.0)
         self.db.close()
@@ -211,6 +241,10 @@ class Daemon:
         while not self._stop.is_set():
             chunk = self.audio.take_next_chunk(timeout=1.0)
             if chunk is None:
+                continue
+            # Additive capture control: skip transcription while audio capture is
+            # paused or its source switch is off (fail-open if control unavailable).
+            if not capture_allowed("audio"):
                 continue
             label, path, duration_ms = chunk
             try:

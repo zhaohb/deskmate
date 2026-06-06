@@ -1043,6 +1043,61 @@ class DatabaseManager:
             self._conn.execute("DELETE FROM audio_transcriptions_fts  WHERE timestamp < ?", (audio_iso_cutoff,))
         return {"frames": int(n1 or 0), "transcripts": int(n2 or 0)}
 
+    def forget_since(self, *, iso_cutoff: str) -> dict[str, int]:
+        """Delete all captured data at/after ``iso_cutoff`` ("forget last N min").
+
+        Additive privacy control: removes frames (+ their OCR / accessibility /
+        elements / FTS rows and snapshot files on disk), UI events, and audio
+        (chunks + transcripts + their files) whose timestamp is >= the cutoff.
+        Best-effort file unlinking never aborts the DB deletion. Returns a count
+        summary. This does not alter any existing retention behavior.
+        """
+        import os  # noqa: PLC0415
+
+        removed = {"frames": 0, "ui_events": 0, "audio_chunks": 0, "transcripts": 0, "files": 0}
+        with self._lock:
+            frame_rows = self._conn.execute(
+                "SELECT id, snapshot_path FROM frames WHERE timestamp >= ?", (iso_cutoff,),
+            ).fetchall()
+            frame_ids = [int(r["id"]) for r in frame_rows]
+            snapshot_paths = [r["snapshot_path"] for r in frame_rows if r["snapshot_path"]]
+
+            for fid in frame_ids:
+                self._conn.execute("DELETE FROM ocr_text            WHERE frame_id = ?", (fid,))
+                self._conn.execute("DELETE FROM frame_accessibility WHERE frame_id = ?", (fid,))
+                self._conn.execute("DELETE FROM elements            WHERE frame_id = ?", (fid,))
+                self._conn.execute("DELETE FROM elements_fts        WHERE frame_id = ?", (fid,))
+                self._conn.execute("DELETE FROM frames_full_text    WHERE frame_id = ?", (fid,))
+            removed["frames"] = self._conn.execute(
+                "DELETE FROM frames WHERE timestamp >= ?", (iso_cutoff,),
+            ).rowcount or 0
+
+            removed["ui_events"] = self._conn.execute(
+                "DELETE FROM ui_events WHERE timestamp >= ?", (iso_cutoff,),
+            ).rowcount or 0
+
+            removed["transcripts"] = self._conn.execute(
+                "DELETE FROM audio_transcriptions WHERE timestamp >= ?", (iso_cutoff,),
+            ).rowcount or 0
+            self._conn.execute("DELETE FROM audio_transcriptions_fts WHERE timestamp >= ?", (iso_cutoff,))
+
+            audio_rows = self._conn.execute(
+                "SELECT file_path FROM audio_chunks WHERE timestamp >= ?", (iso_cutoff,),
+            ).fetchall()
+            audio_files = [r["file_path"] for r in audio_rows if r["file_path"]]
+            removed["audio_chunks"] = self._conn.execute(
+                "DELETE FROM audio_chunks WHERE timestamp >= ?", (iso_cutoff,),
+            ).rowcount or 0
+
+        for path in [*snapshot_paths, *audio_files]:
+            try:
+                if path and os.path.exists(path):
+                    os.remove(path)
+                    removed["files"] += 1
+            except OSError:
+                pass
+        return {k: int(v) for k, v in removed.items()}
+
     def close(self) -> None:
         with self._lock:
             try:

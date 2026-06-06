@@ -263,6 +263,33 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "timeline",
+            "description": (
+                "Unified, time-ordered stream FUSING all capture sources into one feed: "
+                "screen frames, audio transcripts, input (clicks / typed text), clipboard "
+                "and window focus/title changes. Each row carries source, kind, app, a short "
+                "summary and a confidence score. Use for strongly time-ordered, cross-source "
+                "questions ('what happened step by step', 'what did I copy', 'what did I type "
+                "during the meeting'). Prefer 'search' for keywords, 'activity_summary' for stats."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_time": {"type": "string", "description": "ISO 8601 start (optional)"},
+                    "end_time": {"type": "string", "description": "ISO 8601 end (optional)"},
+                    "sources": {
+                        "type": "string",
+                        "description": "Comma-separated subset: screen,audio,input,clipboard,window. Omit for all.",
+                    },
+                    "limit": {"type": "integer", "description": "Max events, newest first (default 100, max 1000)."},
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -469,6 +496,28 @@ def execute_tool(
             text = json.dumps(result, ensure_ascii=False)
         elif name == "frames_export":
             result = _http_post(f"{API_BASE}/frames/export", args)
+            text = json.dumps(result, ensure_ascii=False)
+        elif name == "timeline":
+            valid_sources = {"screen", "audio", "input", "clipboard", "window"}
+            try:
+                limit = int(args.get("limit") or 100)
+            except (TypeError, ValueError):
+                limit = 100
+            limit = max(1, min(limit, 1000))
+            raw_sources = str(args.get("sources") or "").strip()
+            sources = [
+                s.strip().lower()
+                for s in raw_sources.split(",")
+                if s.strip().lower() in valid_sources
+            ]
+            params = [f"limit={limit}"]
+            if args.get("start_time"):
+                params.append(f"since={quote(str(args['start_time']))}")
+            if args.get("end_time"):
+                params.append(f"until={quote(str(args['end_time']))}")
+            if sources:
+                params.append(f"sources={quote(','.join(sources))}")
+            result = _http_get(f"{API_BASE}/timeline/unified?{'&'.join(params)}")
             text = json.dumps(result, ensure_ascii=False)
         else:
             text = json.dumps({"error": f"unknown tool: {name}"}, ensure_ascii=False)
@@ -2168,6 +2217,11 @@ AI_PROMPT_JOURNAL_TARGETS: dict[str, dict[str, list[str]]] = {
     "You.com": {"url_like": ["%you.com/search%", "%you.com/chat%"], "title_like": ["%you.com%"], "app_in": []},
     "Pi": {"url_like": ["%pi.ai%"], "title_like": [], "app_in": []},
     "Cursor": {"url_like": [], "title_like": ["%cursor%"], "app_in": ["cursor.exe"]},
+    # Claude Code is a terminal CLI — it has no GUI window/title/URL to match,
+    # so it is recognised by structural markers in the captured terminal screen
+    # (see ``_has_claude_code_signals``). This empty entry only registers the
+    # label so it is a known tool downstream; it contributes no match clauses.
+    "Claude Code": {"url_like": [], "title_like": [], "app_in": []},
     "LMStudio": {"url_like": [], "title_like": ["%lm studio%"], "app_in": ["lmstudio.exe"]},
     "Ollama": {"url_like": [], "title_like": ["%ollama%"], "app_in": ["ollama.exe"]},
     "Jan": {"url_like": [], "title_like": [], "app_in": ["jan.exe"]},
@@ -2206,9 +2260,12 @@ def _sql_quote(s: str) -> str:
 # happens to expose an ``EditControl`` role.
 _PROMPT_NOISE_SUBSTRINGS = (
     "toggle screen reader accessibility mode",
+    "toggle screen reader access",
     "alt+f1 for terminal accessibility help",
+    "terminal accessibility help",
     "for an optimized screen reader experience",
     "screen reader optimized",
+    "run the command:",
     "press tab to focus",
     "working on it",
     "type a message",
@@ -2248,10 +2305,109 @@ def _is_prompt_noise(text: str) -> bool:
     for needle in _PROMPT_NOISE_SUBSTRINGS:
         if needle in low:
             return True
-    # Pure URL / VS Code internal resource paths — not a prompt.
-    if low.startswith(("http://", "https://", "vscode-file://", "file://")) and " " not in low.strip():
+    # Pure URL / editor-internal resource paths — not a prompt. Includes the
+    # VS Code webview/userdata schemes and devtools, which surface as focused
+    # DocumentControl values when a preview/webview panel has focus.
+    if low.startswith((
+        "http://", "https://", "vscode-file://", "file://",
+        "vscode-webview://", "vscode-userdata://", "devtools://",
+    )) and " " not in low.strip():
+        return True
+    # Tiny ASCII fragments (e.g. "ma'na") are stray editor keystrokes, not a
+    # prompt. CJK scripts have no word spaces, so gate those on the SQL-enforced
+    # character length instead of word count.
+    has_cjk = any(
+        "\u3000" <= ch <= "\u9fff" or "\uac00" <= ch <= "\ud7af" or "\u3040" <= ch <= "\u30ff"
+        for ch in low
+    )
+    if not has_cjk and len(low.split()) < 2:
         return True
     return False
+
+
+# ── Claude Code (terminal CLI) detection ─────────────────────────────────────
+# Claude Code runs as a TUI inside a terminal, so its prompt cannot be matched
+# by app/title/URL like a GUI client. We recognise it by structural markers in
+# the captured terminal screen text. These box-drawing / footer strings are
+# part of Claude Code's interface and do not occur in ordinary prose, keeping
+# false positives near zero.
+_CLAUDE_CODE_SCREEN_SIGNALS = (
+    "welcome to claude code",
+    "? for shortcuts",
+    "esc to interrupt",
+    "/help for help",
+    "accept edits",
+    "bypassing permissions",
+)
+
+# Standalone terminal host processes. Their focused-control text is the live
+# terminal screen, so a Claude Code session inside them is capturable on Enter.
+# (The VS Code / Cursor integrated terminal is already pulled via ``code.exe`` /
+# ``cursor.exe``; Claude Code there is still recognised by screen markers.)
+_TERMINAL_APPS = frozenset({
+    "windowsterminal.exe", "wt.exe", "openconsole.exe", "conhost.exe",
+    "powershell.exe", "pwsh.exe", "cmd.exe",
+})
+
+_CLAUDE_BOX_TOP = "\u256d"     # ╭
+_CLAUDE_BOX_BOTTOM = "\u2570"  # ╰
+_CLAUDE_BOX_SIDE = "\u2502"    # │
+
+
+def _has_claude_code_signals(screen_text: str) -> bool:
+    """Whether captured terminal text is a Claude Code TUI screen."""
+    low = (screen_text or "").lower()
+    return any(sig in low for sig in _CLAUDE_CODE_SCREEN_SIGNALS)
+
+
+def _extract_claude_code_prompt(screen_text: str) -> str:
+    """Pull the user-typed prompt out of a Claude Code terminal screen.
+
+    Claude Code renders the composer as a rounded box::
+
+        ╭──────────────────────────────╮
+        │ > the prompt the user typed   │
+        ╰──────────────────────────────╯
+
+    The first content line carries the ``> `` marker; further lines inside the
+    box are continuation lines. Returns the joined prompt, or ``""`` when the
+    composer is empty or shows only a placeholder hint.
+    """
+    lines = (screen_text or "").splitlines()
+
+    def _inner(ln: str) -> str:
+        s = ln.strip()
+        if s.startswith(_CLAUDE_BOX_SIDE):
+            s = s[1:]
+        if s.endswith(_CLAUDE_BOX_SIDE):
+            s = s[:-1]
+        return s.strip()
+
+    # The composer is the bottom-most box; its first line starts with "> ".
+    start = -1
+    for i, ln in enumerate(lines):
+        if _CLAUDE_BOX_SIDE in ln and _inner(ln).startswith(">"):
+            start = i
+    if start == -1:
+        return ""
+
+    first = _inner(lines[start])
+    first = first[1:].strip() if first.startswith(">") else first
+    parts: list[str] = [first] if first else []
+    for ln in lines[start + 1:]:
+        if _CLAUDE_BOX_BOTTOM in ln or _CLAUDE_BOX_SIDE not in ln:
+            break
+        inner = _inner(ln)
+        if inner:
+            parts.append(inner)
+
+    prompt = " ".join(parts).strip()
+    if not prompt:
+        return ""
+    low = prompt.lower()
+    if low.startswith(('try "', "try '")):  # empty-composer placeholder hint
+        return ""
+    return prompt
 
 
 def _ai_match_sql(*, app_col: str, title_col: str, url_col: str) -> str:
@@ -2270,8 +2426,28 @@ def _ai_match_sql(*, app_col: str, title_col: str, url_col: str) -> str:
     return "(" + " OR ".join(clauses) + ")"
 
 
-def _classify_tool(app_name: str, window_title: str, browser_url: str) -> str:
-    """Return the AI tool label for a row, or '' if unrecognized."""
+def _classify_tool(
+    app_name: str, window_title: str, browser_url: str, focused_class: str = "",
+    focused_name: str = "",
+) -> str:
+    """Return the AI tool label for a row, or '' if unrecognized.
+
+    ``focused_class`` is the UIA ClassName of the focused control (when the row
+    came from a send-snapshot). It takes priority because a chat composer's
+    class (e.g. Cursor's ``aislash-editor-input``) uniquely identifies the tool
+    even when the app/title is a general-purpose editor. ``focused_name`` is the
+    accessibility Name of the focused control, used for chat composers that
+    share a generic class with the ordinary editor (e.g. VS Code Copilot's
+    ``"Chat Input"`` on Monaco's ``native-edit-context``).
+    """
+    cls = (focused_class or "").lower()
+    for cls_pat, label in _CHAT_INPUT_CLASSES.items():
+        if cls_pat in cls:
+            return label
+    nm = (focused_name or "").lower()
+    for nm_pat, label in _CHAT_INPUT_NAME_SIGNALS.items():
+        if nm_pat in nm:
+            return label
     a = (app_name or "").lower()
     w = (window_title or "").lower()
     u = (browser_url or "").lower()
@@ -2288,6 +2464,70 @@ def _classify_tool(app_name: str, window_title: str, browser_url: str) -> str:
             if core and core in w:
                 return label
     return ""
+
+
+# Tools whose ``app_in`` match is a general-purpose desktop editor rather than a
+# dedicated AI client. For these, an app/title match alone is NOT enough — most
+# focused text is ordinary code/markdown editing, terminals, or webview chrome,
+# not a Copilot Chat prompt. We only accept rows that also carry a positive
+# chat-context signal (precision over recall — 宁缺毋滥).
+_AMBIGUOUS_APP_TOOLS = frozenset({"VS Code Copilot", "Cursor"})
+
+# Focused-control ClassName substrings that uniquely identify an AI chat
+# composer sharing a generic ``EditControl`` role. This is the highest-precision
+# signal — the class is specific to the tool's chat input, so a match both
+# classifies the tool and proves we are in a chat-composition context.
+#   • ``aislash-editor-input``  — Cursor's AI chat / Cmd-K composer (verified).
+# VS Code's GitHub Copilot Chat uses Monaco's ``native-edit-context`` class,
+# which is identical to the ordinary code editor, so it is intentionally absent
+# here and handled via the accessibility-name path instead.
+_CHAT_INPUT_CLASSES: dict[str, str] = {
+    "aislash-editor-input": "Cursor",
+}
+
+# Focused-control accessibility-Name substrings that uniquely identify an AI
+# chat composer that shares its ClassName with the ordinary code editor. This
+# only surfaces when VS Code's screen-reader / accessibility mode is enabled
+# (``"editor.accessibilitySupport": "on"``); otherwise the Monaco editor refuses
+# to expose its value via UIA and the Name is unavailable.
+#   • ``chat input``  — VS Code GitHub Copilot Chat composer (verified: Name
+#     begins ``"Chat Input (Agent), …"``).
+_CHAT_INPUT_NAME_SIGNALS: dict[str, str] = {
+    "chat input": "VS Code Copilot",
+}
+
+# Substrings (case-insensitive, in window title or browser_url) that indicate
+# the focused context is actually the AI chat panel of an ambiguous editor.
+_CHAT_CONTEXT_SIGNALS = (
+    "copilot chat", "github copilot", "copilot:", "chat - ", "- chat",
+    "chat (", "ask copilot", "cursor chat", "chat panel",
+)
+
+
+def _is_ai_chat_context(
+    tool: str, window_title: str, browser_url: str, focused_class: str = "",
+    focused_name: str = "",
+) -> bool:
+    """Whether a matched row is plausibly an AI chat composition context.
+
+    Dedicated AI clients and web chats always qualify. General-purpose editors
+    (VS Code, Cursor) only qualify when a positive chat signal is present:
+      1. the focused control's ClassName is a known chat-composer class, or
+      2. the focused control's accessibility Name names a chat composer, or
+      3. the window title / URL clearly names the chat panel.
+    Otherwise the focused text is ordinary editing and must be dropped to avoid
+    false-positive "prompts".
+    """
+    if tool not in _AMBIGUOUS_APP_TOOLS:
+        return True
+    cls = (focused_class or "").lower()
+    if any(cls_pat in cls for cls_pat in _CHAT_INPUT_CLASSES):
+        return True
+    nm = (focused_name or "").lower()
+    if any(nm_pat in nm for nm_pat in _CHAT_INPUT_NAME_SIGNALS):
+        return True
+    hay = f"{(window_title or '').lower()} {(browser_url or '').lower()}"
+    return any(sig in hay for sig in _CHAT_CONTEXT_SIGNALS)
 
 
 def _heuristic_category(text: str) -> str:
@@ -2505,6 +2745,14 @@ def _do_prompt_journal_prefetch(
     match_sql = _ai_match_sql(
         app_col="app_name", title_col="window_title", url_col="browser_url",
     )
+    # Also pull standalone-terminal sends so a Claude Code TUI session can be
+    # recognised by its screen markers below (non-Claude terminal text is
+    # dropped in the loop since ``_classify_tool`` won't label it).
+    _term_clause = " OR ".join(
+        f"lower(COALESCE(app_name,'')) = {_sql_quote(n)}"
+        for n in sorted(_TERMINAL_APPS)
+    )
+    match_sql_a = f"({match_sql} OR {_term_clause})"
     ts_start = _sql_quote(start)
     ts_end = _sql_quote(end)
     from deskmate.a11y.ui_event_types import ui_event_text_sql  # noqa: PLC0415
@@ -2513,12 +2761,14 @@ def _do_prompt_journal_prefetch(
     sql_keystrokes = (
         "SELECT timestamp, COALESCE(app_name,'') AS app, "
         "COALESCE(window_title,'') AS win, COALESCE(browser_url,'') AS url, "
+        "COALESCE(json_extract(data_json,'$.focused_class'),'') AS cls, "
+        "COALESCE(json_extract(data_json,'$.focused_name'),'') AS nm, "
         f"{text_expr} AS text "
         "FROM ui_events "
         "WHERE event_type='text' "
         f"AND timestamp >= {ts_start} AND timestamp <= {ts_end} "
         f"AND length({text_expr}) >= 5 "
-        f"AND {match_sql} "
+        f"AND {match_sql_a} "
         "ORDER BY timestamp ASC "
         f"LIMIT {int(limit)}"
     )
@@ -2530,20 +2780,37 @@ def _do_prompt_journal_prefetch(
             iso_ts = str(row.get("timestamp", ""))
             ts = format_ts_local(iso_ts)
             text = normalize_capture_text(row.get("text") or "")
-            if not text or _is_prompt_noise(text):
+            if not text:
                 continue
-            tool = _classify_tool(
-                str(row.get("app", "")), str(row.get("win", "")), str(row.get("url", "")),
-            )
-            if not tool:
-                continue
+            cls = str(row.get("cls", ""))
+            nm = str(row.get("nm", ""))
+            app = str(row.get("app", ""))
+            win = str(row.get("win", ""))
+            url = str(row.get("url", ""))
+            # Claude Code (terminal CLI): recognised by TUI screen markers, not
+            # app/title/URL. Check before the generic noise gate, which is tuned
+            # for short chat-box values and would drop a full terminal screen.
+            if _has_claude_code_signals(text):
+                extracted = _extract_claude_code_prompt(text)
+                if not extracted or _is_prompt_noise(extracted):
+                    continue
+                tool = "Claude Code"
+                text = extracted
+            else:
+                if _is_prompt_noise(text):
+                    continue
+                tool = _classify_tool(app, win, url, cls, nm)
+                if not tool:
+                    continue
+                if not _is_ai_chat_context(tool, win, url, cls, nm):
+                    continue
             verified_set.add(tool)
             preview = text.replace("\n", " ")
             if len(preview) > 600:
                 preview = preview[:600] + "...(truncated for agent context)"
             keystroke_lines.append(
-                f"- [{ts}] tool={tool} app={row.get('app','')} "
-                f"win={row.get('win','')[:60]} url={(row.get('url','') or '')[:80]}\n"
+                f"- [{ts}] tool={tool} app={app} "
+                f"win={win[:60]} url={(url or '')[:80]}\n"
                 f"  sent> {preview}"
             )
             _upsert_prompt_journal_entry(
@@ -2601,6 +2868,8 @@ def _do_prompt_journal_prefetch(
                 str(row.get("app", "")), str(row.get("win", "")), str(row.get("url", "")),
             )
             if not tool:
+                continue
+            if not _is_ai_chat_context(tool, str(row.get("win", "")), str(row.get("url", ""))):
                 continue
             verified_set.add(tool)
             preview = val.replace("\n", " ")
@@ -2660,6 +2929,8 @@ def _do_prompt_journal_prefetch(
                 str(row.get("app", "")), str(row.get("win", "")), str(row.get("url", "")),
             )
             if not tool:
+                continue
+            if not _is_ai_chat_context(tool, str(row.get("win", "")), str(row.get("url", ""))):
                 continue
             verified_set.add(tool)
             preview = val.replace("\n", " ")

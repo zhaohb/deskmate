@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DeskMate · 习惯画像</title>
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #181b22; --border: #262b35; --text: #e6e9ef;
+      --muted: #8b93a3; --accent: #5b8cff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: -apple-system, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
+      font-size: 14px; line-height: 1.5;
+    }
+    header {
+      padding: 18px 24px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    }
+    h1 { font-size: 18px; margin: 0; }
+    .muted { color: var(--muted); }
+    main { padding: 24px; max-width: 1100px; margin: 0 auto; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; padding: 18px; margin-bottom: 24px;
+    }
+    .card h2 { font-size: 15px; margin: 0 0 14px; }
+    button {
+      background: var(--accent); color: #fff; border: none; border-radius: 6px;
+      padding: 7px 14px; cursor: pointer; font-size: 13px;
+    }
+    button.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    button:disabled { opacity: .5; cursor: default; }
+    table { border-collapse: collapse; width: 100%; }
+    .heat td, .heat th {
+      width: 26px; height: 20px; text-align: center; font-size: 10px;
+      border: 1px solid var(--bg);
+    }
+    .heat th.row-label { width: 64px; text-align: right; padding-right: 8px; color: var(--muted); }
+    .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 12px; font-size: 12px; }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+    .sug { border-left: 3px solid var(--accent); padding: 10px 14px; margin-bottom: 10px; background: #1c2029; border-radius: 0 8px 8px 0; }
+    .sug .meta { font-size: 12px; color: var(--muted); margin-top: 4px; display: flex; gap: 12px; }
+    .sug .acts { margin-top: 8px; display: flex; gap: 8px; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+    .tabs button.active { background: var(--accent); }
+    .empty { color: var(--muted); padding: 24px; text-align: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🧭 习惯画像</h1>
+    <span class="muted">DeskMate 从你的活动里学到的作息规律（纯本地，仅展示）</span>
+    <span style="flex:1"></span>
+    <button id="remine" class="ghost">重新分析</button>
+  </header>
+  <main>
+    <div class="card">
+      <h2>一周作息热力图（半小时粒度）</h2>
+      <div class="tabs">
+        <button data-day="weekday" class="active">工作日</button>
+        <button data-day="weekend">周末</button>
+      </div>
+      <div id="heat"></div>
+      <div class="legend" id="legend"></div>
+      <p class="muted" id="profileNote" style="margin-top:14px"></p>
+    </div>
+
+    <div class="card">
+      <h2>主动建议</h2>
+      <div id="suggestions"><p class="empty">暂无建议</p></div>
+    </div>
+  </main>
+
+  <script>
+    const CATEGORY_COLORS = {
+      coding: "#5b8cff", browsing: "#e0a458", email: "#5fb878",
+      meeting: "#c678dd", writing: "#56b6c2", communication: "#e06c75",
+      other: "#5c6370"
+    };
+    const CATEGORY_LABEL = {
+      coding: "编码", browsing: "浏览", email: "邮件", meeting: "会议",
+      writing: "写作", communication: "沟通", other: "其他"
+    };
+    let currentDay = "weekday";
+    let gridData = { weekday: {}, weekend: {} };
+
+    function slotLabel(slot) {
+      const h = Math.floor(slot / 2);
+      const m = slot % 2 === 0 ? "00" : "30";
+      return `${String(h).padStart(2, "0")}:${m}`;
+    }
+
+    function renderHeat() {
+      const slots = gridData[currentDay] || {};
+      // Rows = hours 0..23, columns = :00 / :30
+      let html = '<table class="heat"><tr><th class="row-label"></th><th>:00</th><th>:30</th></tr>';
+      for (let h = 0; h < 24; h++) {
+        html += `<tr><th class="row-label">${String(h).padStart(2, "0")}:00</th>`;
+        for (const half of [0, 1]) {
+          const slot = h * 2 + half;
+          const cell = slots[String(slot)];
+          if (cell) {
+            const color = CATEGORY_COLORS[cell.category] || CATEGORY_COLORS.other;
+            const alpha = Math.max(0.2, Math.min(1, cell.frequency || 0));
+            const title = `${slotLabel(slot)} · ${CATEGORY_LABEL[cell.category] || cell.category}`
+              + ` · ${Math.round((cell.frequency || 0) * 100)}% 天数`
+              + ` · ${cell.top_app || ""} · 约 ${cell.avg_minutes || 0} 分钟`;
+            html += `<td title="${title}" style="background:${hexA(color, alpha)}"></td>`;
+          } else {
+            html += `<td title="${slotLabel(slot)} · 无规律"></td>`;
+          }
+        }
+        html += "</tr>";
+      }
+      html += "</table>";
+      document.getElementById("heat").innerHTML = html;
+      renderLegend();
+    }
+
+    function hexA(hex, a) {
+      const n = parseInt(hex.slice(1), 16);
+      const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+      return `rgba(${r},${g},${b},${a.toFixed(2)})`;
+    }
+
+    function renderLegend() {
+      const used = new Set();
+      Object.values(gridData[currentDay] || {}).forEach(c => used.add(c.category));
+      const items = [...used].map(cat =>
+        `<span><i class="swatch" style="background:${CATEGORY_COLORS[cat] || CATEGORY_COLORS.other}"></i>${CATEGORY_LABEL[cat] || cat}</span>`
+      ).join("");
+      document.getElementById("legend").innerHTML = items || '<span class="muted">该时段暂无规律</span>';
+    }
+
+    async function loadProfile() {
+      const r = await fetch("/habits/profile");
+      const j = await r.json();
+      gridData = j.grid || { weekday: {}, weekend: {} };
+      const note = j.total
+        ? `已学到 ${j.total} 条规律。颜色越深 = 越规律。鼠标悬停查看详情。`
+        : "数据还不够，继续使用一段时间后这里会出现你的作息规律。";
+      document.getElementById("profileNote").textContent = note;
+      renderHeat();
+    }
+
+    async function loadSuggestions() {
+      const r = await fetch("/habits/suggestions?limit=30");
+      const j = await r.json();
+      const box = document.getElementById("suggestions");
+      const rows = (j.data || []).filter(s => s.status === "sent");
+      if (!rows.length) { box.innerHTML = '<p class="empty">暂无建议</p>'; return; }
+      box.innerHTML = rows.map(s => `
+        <div class="sug" data-id="${s.id}">
+          <div>${escapeHtml(s.message)}</div>
+          <div class="meta"><span>${s.rule_name}</span><span>${s.created_at}</span><span>${s.channel}</span></div>
+          <div class="acts">
+            <button class="ghost" onclick="feedback(${s.id}, 1)">👍 有用</button>
+            <button class="ghost" onclick="feedback(${s.id}, -1)">👎 没用</button>
+            <button class="ghost" onclick="dismiss(${s.id})">忽略</button>
+          </div>
+        </div>`).join("");
+    }
+
+    function escapeHtml(s) {
+      return (s || "").replace(/[&<>"']/g, c =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    async function feedback(id, score) {
+      await fetch(`/habits/suggestions/${id}/feedback`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feedback: score })
+      });
+      loadSuggestions();
+    }
+    async function dismiss(id) {
+      await fetch(`/habits/suggestions/${id}/dismiss`, { method: "POST" });
+      loadSuggestions();
+    }
+
+    document.querySelectorAll(".tabs button").forEach(btn => {
+      btn.onclick = () => {
+        document.querySelectorAll(".tabs button").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        currentDay = btn.dataset.day;
+        renderHeat();
+      };
+    });
+
+    document.getElementById("remine").onclick = async (e) => {
+      e.target.disabled = true; e.target.textContent = "分析中…";
+      try { await fetch("/habits/mine", { method: "POST" }); await loadProfile(); }
+      finally { e.target.disabled = false; e.target.textContent = "重新分析"; }
+    };
+
+    loadProfile();
+    loadSuggestions();
+    setInterval(loadSuggestions, 30000);
+  </script>
+</body>
+</html>

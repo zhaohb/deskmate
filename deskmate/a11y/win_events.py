@@ -57,14 +57,28 @@ def _foreground_hwnd_pid() -> tuple[int, int, str]:
     return int(hwnd), int(pid.value), buf.value or ""
 
 
+# Resolving a PID to a process name via psutil opens the process and reads its
+# module — comparatively expensive to do on every input event. Foreground PIDs
+# repeat heavily (you stay in one window), so memoize the last lookups.
+_APP_NAME_CACHE: dict[int, str] = {}
+_APP_NAME_CACHE_MAX = 128
+
+
 def foreground_app_name(pid: int) -> str:
     if os.name != "nt" or not pid:
         return ""
+    cached = _APP_NAME_CACHE.get(pid)
+    if cached is not None:
+        return cached
     try:
         import psutil  # noqa: PLC0415
-        return psutil.Process(pid).name() or ""
+        name = psutil.Process(pid).name() or ""
     except Exception:  # noqa: BLE001
-        return ""
+        name = ""
+    if len(_APP_NAME_CACHE) >= _APP_NAME_CACHE_MAX:
+        _APP_NAME_CACHE.clear()
+    _APP_NAME_CACHE[pid] = name
+    return name
 
 
 class WinEventWatcher:

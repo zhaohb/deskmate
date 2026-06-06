@@ -4,8 +4,135 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260604-a11y-ocr-fold" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260606-rem2" />
+    <style>
+      /* Scoped styles for the Capture & Unified Timeline view */
+      #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
+      #view-capture .cap-card h3 { font-size: 14px; margin: 0 0 14px; color: var(--text); }
+      #view-capture .cap-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      #view-capture .cap-pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; font-weight: 600; font-size: 13px; }
+      #view-capture .cap-pill.live { background: rgba(34,197,94,.15); color: var(--online); }
+      #view-capture .cap-pill.paused { background: rgba(224,108,117,.18); color: #e06c75; }
+      #view-capture .cap-sources { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+      #view-capture .cap-src { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; user-select: none; min-width: 130px; }
+      #view-capture .cap-src .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+      #view-capture .cap-src.on .dot { background: var(--online); }
+      #view-capture .cap-src.off { opacity: .55; }
+      #view-capture .cap-danger { background: rgba(224,108,117,.18); border-color: rgba(224,108,117,.4); color: #e06c75; }
+      #view-capture table { border-collapse: collapse; width: 100%; }
+      #view-capture th, #view-capture td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: top; }
+      #view-capture th { color: var(--muted); font-weight: 600; }
+      #view-capture .cap-badge { display: inline-block; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; font-weight: 600; }
+      #view-capture .cap-b-screen { background: rgba(91,140,255,.18); color: #5b8cff; }
+      #view-capture .cap-b-audio { background: rgba(198,120,221,.18); color: #c678dd; }
+      #view-capture .cap-b-input { background: rgba(224,108,117,.18); color: #e06c75; }
+      #view-capture .cap-b-clipboard { background: rgba(224,164,88,.18); color: #e0a458; }
+      #view-capture .cap-b-window { background: rgba(34,197,94,.18); color: #22c55e; }
+      #view-capture .cap-empty { color: var(--muted); padding: 24px; text-align: center; }
+      #view-capture .cap-summary { max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #view-capture .cap-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+      #view-capture .cap-conf { color: var(--muted); font-variant-numeric: tabular-nums; }
+      #view-capture .cap-scroll { max-height: 460px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+      #view-capture .cap-scroll table { width: 100%; }
+      #view-capture .cap-scroll thead th { position: sticky; top: 0; z-index: 1; background: var(--surface-2); }
+      #view-capture .cap-scroll td, #view-capture .cap-scroll th { border-bottom: 1px solid var(--line); }
+      #view-capture .cap-scroll tbody tr:last-child td { border-bottom: none; }
+
+      /* Scoped styles for the LoRA Training view (reuses cap-* visual language) */
+      #view-training .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
+      #view-training .cap-card h3 { font-size: 14px; margin: 0 0 14px; color: var(--text); }
+      #view-training .cap-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      #view-training .trn-stats { display: flex; gap: 18px; flex-wrap: wrap; margin: 4px 0 14px; }
+      #view-training .trn-stat { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 16px; min-width: 92px; }
+      #view-training .trn-stat .n { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+      #view-training .trn-stat .l { font-size: 12px; color: var(--muted); }
+      #view-training .trn-src { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; user-select: none; }
+      #view-training .trn-src .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+      #view-training .trn-src.on .dot { background: var(--online); }
+      #view-training .trn-src.off { opacity: .55; }
+      #view-training table { border-collapse: collapse; width: 100%; }
+      #view-training th, #view-training td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: top; }
+      #view-training th { color: var(--muted); font-weight: 600; }
+      #view-training .trn-cell { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #view-training .trn-badge { display: inline-block; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; font-weight: 600; background: var(--surface-3); color: var(--muted); }
+      #view-training .trn-field { display: flex; flex-direction: column; gap: 4px; min-width: 150px; }
+      #view-training .trn-field label { font-size: 12px; color: var(--muted); }
+      #view-training .trn-field input { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); padding: 7px 9px; font-size: 13px; }
+      #view-training .trn-grid { display: flex; gap: 14px; flex-wrap: wrap; }
+      #view-training .trn-hyper { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 12px; }
+      #view-training .trn-hyper b { color: var(--text); font-weight: 600; }
+      #view-training .trn-empty { color: var(--muted); padding: 24px; text-align: center; }
+      #view-training .trn-warn { background: rgba(224,164,88,.12); border: 1px solid rgba(224,164,88,.35); color: #e0a458; border-radius: var(--radius); padding: 10px 14px; font-size: 13px; margin-bottom: 14px; }
+      #view-training .trn-status { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; color: var(--muted); margin-top: 12px; }
+      #view-training .trn-status.ok { color: var(--online); }
+      #view-training .trn-status.err { color: #e06c75; }
+      /* friendlier training source chips + sample cards */
+      #view-training .trn-src { flex-direction: column; align-items: flex-start; min-width: 168px; gap: 4px; }
+      #view-training .trn-src .trn-src-head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+      #view-training .trn-src .trn-src-desc { font-size: 11px; color: var(--muted); line-height: 1.35; }
+      #view-training .trn-src .trn-src-count { margin-left: auto; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+      #view-training .trn-samples { display: flex; flex-direction: column; gap: 10px; max-height: 460px; overflow-y: auto; }
+      #view-training .trn-pair { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; background: var(--surface-2); }
+      #view-training .trn-pair .trn-io { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 6px; }
+      #view-training .trn-pair .trn-io:last-child { margin-bottom: 0; }
+      #view-training .trn-pair .trn-tag { flex: 0 0 64px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding-top: 1px; }
+      #view-training .trn-pair .trn-tag.in { color: #5b8cff; }
+      #view-training .trn-pair .trn-tag.out { color: var(--online); }
+      #view-training .trn-pair .trn-txt { flex: 1; font-size: 13px; line-height: 1.5; word-break: break-word; }
+      #view-training .trn-pair .trn-foot { margin-top: 8px; }
+      /* Reminders view */
+      #view-reminders .rem-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
+      #view-reminders .rem-card h3 { font-size: 15px; margin: 0 0 6px; color: var(--text); display: flex; align-items: center; gap: 8px; }
+      #view-reminders .rem-card h3 .rem-count { font-size: 12px; font-weight: 600; color: var(--accent, #5b8cff); background: color-mix(in srgb, var(--accent, #5b8cff) 14%, transparent); padding: 1px 9px; border-radius: 999px; }
+      #view-reminders .rem-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      /* notification-style suggestion cards */
+      #view-reminders .rem-sug { display: flex; gap: 12px; padding: 14px; margin-bottom: 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); transition: border-color .15s; }
+      #view-reminders .rem-sug:hover { border-color: color-mix(in srgb, var(--accent, #5b8cff) 45%, var(--line)); }
+      #view-reminders .rem-sug .rem-ic { flex: 0 0 36px; width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; background: color-mix(in srgb, var(--accent, #5b8cff) 16%, transparent); }
+      #view-reminders .rem-sug .rem-body { flex: 1 1 auto; min-width: 0; }
+      #view-reminders .rem-sug .rem-msg { font-size: 14px; line-height: 1.55; color: var(--text); }
+      #view-reminders .rem-sug .rem-meta { font-size: 12px; color: var(--muted); margin-top: 7px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      #view-reminders .rem-sug .rem-acts { margin-top: 11px; display: flex; gap: 8px; flex-wrap: wrap; }
+      #view-reminders .rem-sug .rem-acts button { font-size: 12px; padding: 5px 12px; border-radius: 8px; }
+      #view-reminders .rem-sug .rem-acts button.is-on { background: color-mix(in srgb, var(--accent, #5b8cff) 18%, transparent); border-color: var(--accent, #5b8cff); color: var(--text); }
+      #view-reminders .rem-sug.done { opacity: .5; }
+      #view-reminders .rem-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--surface-3); color: var(--muted); }
+      #view-reminders .rem-fb-yes { color: var(--online, #5fb878); font-weight: 600; }
+      #view-reminders .rem-fb-no { color: #e06c75; font-weight: 600; }
+      /* rich empty / onboarding state */
+      #view-reminders .rem-empty { padding: 28px 24px; text-align: center; color: var(--muted); }
+      #view-reminders .rem-empty .rem-empty-ic { font-size: 34px; }
+      #view-reminders .rem-empty .rem-empty-title { font-size: 15px; color: var(--text); font-weight: 600; margin: 10px 0 6px; }
+      #view-reminders .rem-empty p { margin: 0 auto 6px; max-width: 460px; line-height: 1.6; }
+      #view-reminders .rem-example { margin: 16px auto 4px; max-width: 460px; text-align: left; background: var(--surface-2); border: 1px dashed var(--line); border-radius: var(--radius); padding: 12px 14px; display: flex; gap: 10px; align-items: flex-start; }
+      #view-reminders .rem-example .rem-ic { flex: 0 0 32px; width: 32px; height: 32px; border-radius: 9px; display: flex; align-items: center; justify-content: center; font-size: 16px; background: color-mix(in srgb, var(--accent, #5b8cff) 16%, transparent); }
+      #view-reminders .rem-example .ex-cap { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+      #view-reminders .rem-example .ex-msg { font-size: 13px; color: var(--text); line-height: 1.5; }
+      /* plain-language routine summary */
+      #view-reminders .rem-routines { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+      #view-reminders .rem-routine { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); font-size: 13px; }
+      #view-reminders .rem-routine .rt-dot { flex: 0 0 10px; width: 10px; height: 10px; border-radius: 3px; }
+      #view-reminders .rem-routine .rt-time { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); flex: 0 0 52px; }
+      #view-reminders .rem-routine .rt-text { color: var(--text); flex: 1 1 auto; }
+      #view-reminders .rem-routine .rt-freq { color: var(--muted); font-size: 12px; }
+      /* heatmap (secondary, collapsible) */
+      #view-reminders .heat { border-collapse: separate; border-spacing: 2px; }
+      #view-reminders .heat td, #view-reminders .heat th { width: 30px; height: 22px; text-align: center; font-size: 10px; }
+      #view-reminders .heat td { border-radius: 5px; background: var(--surface-3); }
+      #view-reminders .heat th { color: var(--muted); font-weight: 500; }
+      #view-reminders .heat th.row-label { width: 52px; text-align: right; padding-right: 8px; }
+      #view-reminders .rem-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+      #view-reminders .rem-tabs button.active { background: var(--accent, #5b8cff); color: #fff; }
+      #view-reminders details.rem-heatwrap > summary { cursor: pointer; font-size: 13px; color: var(--muted); list-style: none; padding: 4px 0; user-select: none; }
+      #view-reminders details.rem-heatwrap > summary::-webkit-details-marker { display: none; }
+      #view-reminders details.rem-heatwrap > summary::before { content: "▸ "; }
+      #view-reminders details.rem-heatwrap[open] > summary::before { content: "▾ "; }
+      #view-reminders .rem-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 12px; font-size: 12px; color: var(--muted); }
+      #view-reminders .rem-legend span { display: inline-flex; align-items: center; gap: 6px; }
+      #view-reminders .rem-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+    </style>
   </head>
+
   <body>
     <div class="app-shell">
       <aside class="sidebar">
@@ -37,6 +164,9 @@
           <button class="nav-item" data-view="meetings" type="button"><span>Meetings</span></button>
           <button class="nav-item" data-view="transcripts" type="button"><span>Transcripts</span></button>
           <button class="nav-item" data-view="events" type="button"><span>Events</span></button>
+          <button class="nav-item" data-view="capture" type="button"><span>Capture</span></button>
+          <button class="nav-item" data-view="training" type="button"><span>Training</span></button>
+          <button class="nav-item" data-view="reminders" type="button"><span>Reminders</span></button>
           <button class="nav-item" data-view="settings" type="button"><span>Settings</span></button>
         </nav>
 
@@ -381,6 +511,151 @@
             </section>
           </div>
         </section>
+
+        <section id="view-capture" class="view">
+          <div class="cap-card">
+            <h3>Capture status</h3>
+            <div class="cap-row">
+              <span id="capStatusPill" class="cap-pill live">● Recording</span>
+              <span id="capPauseUntil" class="muted"></span>
+              <span style="flex:1"></span>
+              <select id="capPauseMinutes">
+                <option value="">Pause (resume manually)</option>
+                <option value="15">Pause 15 min</option>
+                <option value="30">Pause 30 min</option>
+                <option value="60">Pause 1 hour</option>
+              </select>
+              <button id="capPauseBtn" type="button">Pause capture</button>
+              <button id="capResumeBtn" type="button">Resume capture</button>
+            </div>
+            <div class="cap-sources" id="capSources"></div>
+          </div>
+
+          <div class="cap-card">
+            <h3>Forget recent data</h3>
+            <p class="muted" style="margin-top:0">Permanently delete all data captured in a recent window (frames / OCR / input / clipboard / audio / unified timeline). This cannot be undone.</p>
+            <div class="cap-row">
+              <label>Forget the last
+                <select id="capForgetMinutes">
+                  <option value="5">5 min</option>
+                  <option value="15">15 min</option>
+                  <option value="30">30 min</option>
+                  <option value="60">60 min</option>
+                </select>
+              </label>
+              <button id="capForgetBtn" class="cap-danger" type="button">Forget</button>
+              <span id="capForgetResult" class="muted"></span>
+            </div>
+          </div>
+
+          <div class="cap-card">
+            <h3>Unified timeline</h3>
+            <div class="cap-toolbar">
+              <label>Source
+                <select id="capFilterSource">
+                  <option value="">All</option>
+                  <option value="screen">Screen</option>
+                  <option value="audio">Audio</option>
+                  <option value="input">Input</option>
+                  <option value="clipboard">Clipboard</option>
+                  <option value="window">Window</option>
+                </select>
+              </label>
+              <label>Rows
+                <select id="capFilterLimit">
+                  <option value="100">100</option>
+                  <option value="200" selected>200</option>
+                  <option value="500">500</option>
+                </select>
+              </label>
+              <button id="capRefreshBtn" type="button">Refresh</button>
+              <span style="flex:1"></span>
+              <span id="capBreakdown" class="muted"></span>
+            </div>
+            <div id="capTimeline"><p class="cap-empty">No data</p></div>
+          </div>
+        </section>
+
+        <section id="view-training" class="view">
+          <div class="cap-card">
+            <h3>可训练数据</h3>
+            <p class="muted" style="margin-top:0">从你的本地活动中挖掘出的指令微调 (SFT) 样本，全部在本机生成、不联网。点选下方来源查看每类样本，预览会即时更新。</p>
+            <div class="cap-row" id="trnSources" style="margin-bottom:6px"></div>
+            <div class="trn-stats" id="trnStats"></div>
+            <div class="cap-row">
+              <button id="trnRefreshBtn" type="button">刷新预览</button>
+              <span id="trnPreviewMeta" class="muted"></span>
+            </div>
+            <div id="trnSample" style="margin-top:14px"></div>
+          </div>
+
+          <div class="cap-card">
+            <h3>训练参数</h3>
+            <div class="trn-grid">
+              <div class="trn-field" style="min-width:240px">
+                <label for="trnModel">基座模型</label>
+                <input id="trnModel" type="text" placeholder="Qwen/Qwen3-0.6B" />
+              </div>
+              <div class="trn-field">
+                <label for="trnEpochs">训练轮数 (epochs)</label>
+                <input id="trnEpochs" type="number" min="1" step="1" />
+              </div>
+              <div class="trn-field">
+                <label for="trnMaxPairs">最大样本数 (max pairs)</label>
+                <input id="trnMaxPairs" type="number" min="1" step="1" />
+              </div>
+              <div class="trn-field" style="min-width:280px; flex:1">
+                <label for="trnOutputDir">输出目录 (留空用默认 checkpoints/lora)</label>
+                <input id="trnOutputDir" type="text" placeholder="~/.deskmate/checkpoints/lora" />
+              </div>
+            </div>
+            <div class="trn-hyper" id="trnHyper"></div>
+          </div>
+
+          <div class="cap-card">
+            <h3>启动训练</h3>
+            <div id="trnTorchWarn" class="trn-warn" style="display:none">
+              未检测到 PyTorch — 启动训练前请先安装：<code>pip install 'deskmate[training]'</code>
+            </div>
+            <p class="muted" style="margin-top:0">训练在本地后台线程运行，期间可能占用较多 CPU/内存。完成后适配器 (LoRA adapter) 会保存到输出目录。</p>
+            <div class="cap-row">
+              <button id="trnStartBtn" type="button">开始训练</button>
+              <span id="trnRunMeta" class="muted"></span>
+            </div>
+            <div id="trnStatus" class="trn-status"></div>
+          </div>
+        </section>
+
+        <section id="view-reminders" class="view">
+          <div class="rem-card">
+            <h3>主动提醒 / 推送 <span id="remCount" class="rem-count" hidden></span></h3>
+            <p class="muted" style="margin-top:0">DeskMate 根据你的活动规律主动推送的提醒。给出反馈（有用 / 没用）会让推送越来越贴合你，也会成为可训练数据。</p>
+            <div class="rem-row" style="margin-bottom:12px">
+              <button id="remRefreshBtn" type="button">刷新</button>
+              <button id="remMineBtn" type="button" class="ghost">重新分析作息</button>
+              <span id="remMeta" class="muted"></span>
+            </div>
+            <div id="remSuggestions"></div>
+          </div>
+
+          <div class="rem-card">
+            <h3>我的作息规律</h3>
+            <p class="muted" style="margin-top:0">从你的活动里学到的一周作息（纯本地，仅展示）。提醒就是基于这些规律生成的。</p>
+            <div class="rem-tabs">
+              <button data-day="weekday" class="active" type="button">工作日</button>
+              <button data-day="weekend" type="button">周末</button>
+            </div>
+            <div id="remRoutines" class="rem-routines"></div>
+            <details class="rem-heatwrap">
+              <summary>查看完整热力图（半小时粒度）</summary>
+              <div style="margin-top:12px">
+                <div id="remHeat"></div>
+                <div class="rem-legend" id="remLegend"></div>
+              </div>
+            </details>
+            <p class="muted" id="remProfileNote" style="margin-top:14px"></p>
+          </div>
+        </section>
       </main>
     </div>
 
@@ -518,6 +793,6 @@
       </article>
     </template>
 
-    <script src="/ui/assets/app.js?v=20260604-a11y-ocr-fold" defer></script>
+    <script src="/ui/assets/app.js?v=20260606-rem2" defer></script>
   </body>
 </html>

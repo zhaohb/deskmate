@@ -17,7 +17,7 @@ Covers `deskmate/a11y/`.
 | File | Role |
 |------|------|
 | `win_events.py` | `WinEventWatcher` — owns a Win32 message pump + `SetWinEventHook` for focus/foreground/name-change events |
-| `input_hooks.py` | Low-level `WH_KEYBOARD_LL` / `WH_MOUSE_LL` hooks; on Enter/Ctrl+Enter takes a UIA snapshot of the focused input box (no per-character logging) |
+| `input_hooks.py` | Low-level `WH_KEYBOARD_LL` / `WH_MOUSE_LL` hooks; on Enter/Ctrl+Enter takes a UIA snapshot of the focused input box (no per-character logging), recording its `role` / `value` / `ClassName` / `Name` |
 | `clipboard.py` | `ClipboardWatcher` polling `GetClipboardSequenceNumber` to detect copy events |
 | `uia_thread.py` | Dedicated COM/STA thread (`UIAutomationInitializerInThread`) for all UIA calls |
 | `uia_tree.py` | UIA tree walker with `CacheRequest` batching → structured text + tree JSON |
@@ -56,7 +56,13 @@ flowchart LR
   Shift+Enter which is a newline) the hook schedules an off-thread UIA read of
   the focused input box and emits one `text` event with `source="send"`. The
   UIA read runs on a short-lived worker thread, never the hook callback, because
-  UIA calls can block.
+  UIA calls can block. `read_focused_value()` returns a
+  `(role, value, class_name, name)` tuple; the latter two are stored on the
+  event (`focused_class`, `focused_name`) so downstream consumers can tell
+  apart chat inputs that share a generic `EditControl` role — e.g. Cursor's
+  `aislash-editor-input` class, or VS Code Copilot's `"Chat Input"` Name on the
+  shared Monaco `native-edit-context` editor (see
+  [13 — Apps](13-apps.md#ai-prompt-journal-prompt-acquisition)).
 - **UIA thread** initializes COM in single-threaded apartment (STA) mode and is the
   *only* thread allowed to touch UIA objects, avoiding cross-apartment marshalling
   errors.

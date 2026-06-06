@@ -45,6 +45,11 @@ flowchart TB
         MCP["mcp/ — MCP server"]
     end
 
+    subgraph Additive["Additive subsystems"]
+        FUSE["fusion/ — unified timeline<br/>+ capture control"]
+        LEARN["learning/ — LoRA training"]
+    end
+
     A11Y --> CAP
     SCREEN --> CAP
     CAP --> CORE --> DB
@@ -64,6 +69,10 @@ flowchart TB
     CONN --> API
     MCP --> API
     UI["ui/ static"] --> API
+    DB --> FUSE
+    FUSE --> ASK
+    FUSE --> APPS
+    DB --> LEARN
 ```
 
 The arrows show the dominant data flow: **capture → privacy filtering → storage →
@@ -89,6 +98,8 @@ and the web `ui` all talk to.
 | 12 | [MCP server](12-mcp.md) | `mcp/` — Model Context Protocol stdio server |
 | 13 | [Apps](13-apps.md) | `apps/` — LLM mini-apps, `agent.py`, `common.py`, `pipe.md`, SKILL |
 | 14 | [Web UI](14-ui.md) | `ui/` — static front-end served at `/ui` |
+| 15 | [Fusion & timeline](15-fusion-timeline.md) | `fusion/` — unified `context_events` timeline + capture control (pause/forget/per-source) |
+| 16 | [Learning & LoRA](16-learning-training.md) | `learning/` — opt-in LoRA training from local data |
 
 ## Conventions used in these docs
 

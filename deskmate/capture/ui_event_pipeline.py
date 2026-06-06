@@ -18,6 +18,7 @@ from ..a11y.ui_event_types import (
     raw_dict_to_insert,
 )
 from ..capture.frame_linker import EventPersisted, FrameLinkerActor, LinkerMessage
+from ..fusion import capture_allowed
 from ..logger import get
 
 if TYPE_CHECKING:
@@ -27,6 +28,19 @@ if TYPE_CHECKING:
 logger = get("capture.ui_event_pipeline")
 
 _next_correlation_id = itertools.count(1)
+
+# Map a UI event type to the capture-control switch that governs it. Window /
+# app-switch context is governed by global pause only (value "window").
+_CONTROL_SOURCE = {
+    "click": "input",
+    "move": "input",
+    "scroll": "input",
+    "key": "input",
+    "text": "input",
+    "clipboard": "clipboard",
+    "app_switch": "window",
+    "window_focus": "window",
+}
 
 
 class UiEventPipeline:
@@ -77,6 +91,13 @@ class UiEventPipeline:
             hwnd=int(ev.get("hwnd") or 0),
         )
         insert = raw_dict_to_insert(ev, browser_url=browser_url)
+
+        # Additive capture control: drop input/clipboard events (and their
+        # capture triggers) when paused or the source switch is off. Fail-open
+        # via capture_allowed, so default behavior is unchanged.
+        control_source = _CONTROL_SOURCE.get(insert.event_type.value, "window")
+        if not capture_allowed(control_source):
+            return
 
         if self._on_meeting_observe:
             self._on_meeting_observe(insert)

@@ -40,6 +40,7 @@ redact-onnx-dml = ["onnxruntime-directml>=1.17; platform_system=='Windows'", "to
 mcp = ["mcp>=1.0"]
 pipes = ["PyYAML>=6.0"]
 semantic = ["fastembed>=0.3", "numpy>=1.26"]
+training = ["torch>=2.0", "transformers>=4.40", "peft>=0.10", "accelerate>=0.27"]
 dev = ["pytest>=8.0", "ruff>=0.4"]
 full = [
     "pytesseract>=0.3.10",

@@ -5,7 +5,9 @@ recommended capture interval and frame-skip threshold.
 
 from __future__ import annotations
 
+import ctypes
 import enum
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -13,6 +15,36 @@ from dataclasses import dataclass
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+if os.name == "nt":
+
+    class _LASTINPUTINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+
+def _system_idle_ms() -> int | None:
+    """Milliseconds since the last *system-wide* input (mouse OR keyboard) via
+    ``GetLastInputInfo``.
+
+    This is the OS's own idle clock: it's hook-free, costs a single cheap Win32
+    call, and naturally covers high-frequency mouse movement without us having
+    to process every ``WM_MOUSEMOVE`` on a low-level hook. Returns ``None`` off
+    Windows or on failure so callers can fall back to recorded activity.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        lii = _LASTINPUTINFO()
+        lii.cbSize = ctypes.sizeof(_LASTINPUTINFO)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):  # type: ignore[attr-defined]
+            return None
+        tick = ctypes.windll.kernel32.GetTickCount()  # type: ignore[attr-defined]
+        # Both values are unsigned 32-bit; mask the delta to handle GetTickCount
+        # wraparound (~49.7 days) correctly.
+        return int((int(tick) - int(lii.dwTime)) & 0xFFFFFFFF)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 class ActivityKind(str, enum.Enum):
@@ -59,6 +91,11 @@ class ActivityFeed:
                 self._keyboard_count += 1
 
     def idle_ms(self) -> int:
+        # Prefer the OS idle clock (covers mouse + keyboard with no per-move
+        # hook work). Fall back to recorded activity off Windows.
+        sys_idle = _system_idle_ms()
+        if sys_idle is not None:
+            return sys_idle
         with self._lock:
             return max(0, _now_ms() - self._last_activity_ms)
 

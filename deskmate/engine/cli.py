@@ -11,6 +11,7 @@ import httpx
 import typer
 import uvicorn
 
+from .. import paths
 from ..config import load as load_config
 from ..console import echo
 from ..db import DatabaseManager
@@ -147,6 +148,78 @@ def mcp() -> None:
     from ..mcp.server import run_stdio  # noqa: PLC0415
 
     run_stdio()
+
+
+@app.command("train-lora")
+def train_lora(
+    model: str | None = None,
+    output_dir: str | None = None,
+    sources: str | None = None,
+    epochs: int | None = None,
+    max_pairs: int | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Fine-tune a local model with LoRA on DeskMate-derived SFT pairs.
+
+    Mines (input, output) pairs from useful habit suggestions, successful pipe
+    runs and the unified timeline, then trains LoRA adapters. Use ``--dry-run``
+    to preview the mined data without training. Requires `pip install
+    'deskmate[training]'` to actually train.
+    """
+    from ..learning.training import (  # noqa: PLC0415
+        HAS_TORCH,
+        DeskMateTrainingDataMiner,
+        LoRATrainer,
+        LoRATrainingConfig,
+    )
+
+    cfg = load_config().training
+    src = (
+        [s.strip() for s in sources.split(",") if s.strip()]
+        if sources
+        else list(cfg.sources)
+    )
+
+    miner = DeskMateTrainingDataMiner(min_feedback=cfg.min_feedback, min_chars=cfg.min_chars)
+    try:
+        breakdown = miner.source_breakdown(sources=src, limit_per_source=cfg.limit_per_source)
+        pairs = miner.extract_sft_pairs(
+            sources=src,
+            limit_per_source=cfg.limit_per_source,
+            max_pairs=max_pairs or cfg.max_pairs,
+        )
+    finally:
+        miner.close()
+
+    echo(f"mined {len(pairs)} SFT pair(s) from {src} (per-source: {breakdown})")
+
+    if dry_run:
+        echo(json.dumps(pairs[:5], ensure_ascii=False, indent=2))
+        return
+    if not pairs:
+        echo("no training data — nothing to do")
+        return
+    if not HAS_TORCH:
+        echo("torch not installed — run: pip install 'deskmate[training]'", err=True)
+        raise typer.Exit(code=1)
+
+    out_dir = output_dir or cfg.output_dir or str(paths.root() / "checkpoints" / "lora")
+    lcfg = LoRATrainingConfig(
+        lora_rank=cfg.lora_rank,
+        lora_alpha=cfg.lora_alpha,
+        lora_dropout=cfg.lora_dropout,
+        target_modules=list(cfg.target_modules),
+        num_epochs=epochs or cfg.num_epochs,
+        batch_size=cfg.batch_size,
+        learning_rate=cfg.learning_rate,
+        max_seq_length=cfg.max_seq_length,
+        use_4bit=cfg.use_4bit,
+        output_dir=out_dir,
+    )
+    trainer = LoRATrainer(lcfg, model_name=model or cfg.model_name)
+    echo(f"training {cfg.model_name} → {out_dir} …")
+    summary = trainer.train(pairs)
+    echo(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

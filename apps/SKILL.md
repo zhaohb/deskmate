@@ -68,6 +68,33 @@ Each ContentItem has `type` ("OCR" | "Audio" | "UI") and `content` with:
 - Audio: transcription, device, timestamp, speaker_id, language
 - UI: event_type, app_name, window_title, timestamp, data
 
+### timeline (unified cross-source feed)
+
+One time-ordered stream **fusing all capture sources** — screen frames, audio
+transcripts, input (clicks / typed text), clipboard, and window focus/title
+changes — each row tagged with its `source`, `kind`, app, a short `summary`, and
+a `confidence` score (audio < 1.0, UIA/window = 1.0). Use this for strongly
+time-ordered, cross-source questions ("what did I do step by step", "what did I
+copy/paste", "what did I type during the meeting"). Prefer `/search` for keyword
+lookups and `/activity-summary` for aggregate stats.
+
+```
+GET /timeline/unified?since=<ISO8601>&until=<ISO8601>&sources=screen,audio&limit=100
+GET /timeline/unified/breakdown?since=<ISO8601>     # per-source event counts
+```
+
+Query parameters:
+- since / until: ISO 8601 time range (both optional)
+- sources: comma-separated subset of `screen,audio,input,clipboard,window` (omit for all)
+- limit: max events, newest first (default 200, max 1000)
+
+Response shape: `{ "data": [Event, ...], "total": N }`. Each Event has
+`ts`, `source`, `kind`, `app_name`, `window_title`, `summary`, `confidence`,
+`payload` (source-specific detail), and `frame_id` (when applicable).
+
+Note: the unified timeline only contains events captured while the fusion
+subsystem is enabled and the relevant source is not paused/disabled by the user.
+
 ### frames_export
 
 Export recent screenshots as a video clip.
@@ -99,6 +126,7 @@ Each transcript segment has `text`, `speaker_name`, `start_time`, `end_time`.
 
 - Prefer /activity-summary for broad context (day recap, habits analysis).
 - Use /search only when you need specific keyword matches or targeted queries.
+- Use /timeline/unified for strongly time-ordered, cross-source "what happened step by step" questions.
 - Always provide start_time — without it, queries scan the entire history.
 - Start with limit=5 for search, increase only if needed.
 - app_name is the process name (e.g. "chrome.exe", "Cursor.exe", "explorer.exe").

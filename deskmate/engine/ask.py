@@ -133,6 +133,37 @@ ASK_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "timeline",
+            "description": (
+                "Unified, time-ordered stream FUSING all capture sources into one feed: "
+                "screen frames, audio transcripts, input (clicks / typed text), clipboard, "
+                "and window focus/title changes — each row carries source, kind, app, a short "
+                "summary and a confidence score. Use this for STRONGLY time-ordered, "
+                "cross-source questions like 'what did I do step by step between X and Y', "
+                "'what did I copy / paste just now', or 'what did I type during the meeting'. "
+                "Prefer 'search' for keyword lookups and 'activity_summary' for aggregate stats."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_time": {"type": "string", "description": "ISO 8601 start (optional)"},
+                    "end_time": {"type": "string", "description": "ISO 8601 end (optional)"},
+                    "sources": {
+                        "type": "string",
+                        "description": (
+                            "Comma-separated subset of sources to include: "
+                            "screen,audio,input,clipboard,window. Omit for all sources."
+                        ),
+                    },
+                    "limit": {"type": "integer", "description": "Max events, newest first (default 100, max 1000)."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "email_search",
             "description": (
                 "Search the user's CONNECTED mailbox (Gmail / Outlook) over OAuth and "
@@ -783,6 +814,60 @@ def _execute_email_read(arguments: dict[str, Any], api_base: str) -> str:
     return _json_for_llm({"provider": provider, "account": instance, "message": msg})
 
 
+def _execute_timeline(arguments: dict[str, Any], api_base: str) -> str:
+    """Read the unified, time-ordered cross-source context feed."""
+    arguments = _lower_keys(arguments)
+    start = arguments.get("start_time")
+    end = arguments.get("end_time")
+    if start:
+        start = _normalize_iso(str(start))
+    if end:
+        end = _normalize_iso(str(end))
+    try:
+        limit = int(arguments.get("limit") or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 1000))
+
+    valid_sources = {"screen", "audio", "input", "clipboard", "window"}
+    raw_sources = str(arguments.get("sources") or "").strip()
+    sources = [s.strip().lower() for s in raw_sources.split(",") if s.strip().lower() in valid_sources]
+
+    params = [f"limit={limit}"]
+    if start:
+        params.append(f"since={quote(start)}")
+    if end:
+        params.append(f"until={quote(end)}")
+    if sources:
+        params.append(f"sources={quote(','.join(sources))}")
+
+    try:
+        result = _http_get(f"{api_base}/timeline/unified?{'&'.join(params)}")
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+    rows = (result.get("data") if isinstance(result, dict) else None) or []
+    events = [
+        {
+            "ts": r.get("ts"),
+            "source": r.get("source"),
+            "kind": r.get("kind"),
+            "app": r.get("app_name"),
+            "window": r.get("window_title"),
+            "summary": r.get("summary"),
+            "confidence": r.get("confidence"),
+        }
+        for r in rows
+        if isinstance(r, dict)
+    ]
+    return _json_for_llm({
+        "range": {"start_time": start, "end_time": end},
+        "sources": sources or "all",
+        "event_count": len(events),
+        "events": events,
+    }, max_chars=24000)
+
+
 def _execute_tool(name: str, arguments: dict[str, Any], api_base: str) -> str:
     """Execute a tool call against the local DeskMate API."""
     try:
@@ -794,6 +879,8 @@ def _execute_tool(name: str, arguments: dict[str, Any], api_base: str) -> str:
             return _execute_list_meetings(arguments, api_base)
         if name == "meeting_transcript":
             return _execute_meeting_transcript(arguments, api_base)
+        if name == "timeline":
+            return _execute_timeline(arguments, api_base)
         if name == "activity_summary":
             args = dict(arguments)
             if args.get("start_time"):

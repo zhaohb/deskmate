@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DeskMate · 采集控制 & 统一时间线</title>
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #181b22; --border: #262b35; --text: #e6e9ef;
+      --muted: #8b93a3; --accent: #5b8cff; --danger: #e06c75; --ok: #5fb878;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: -apple-system, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
+      font-size: 14px; line-height: 1.5;
+    }
+    header {
+      padding: 18px 24px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    }
+    h1 { font-size: 18px; margin: 0; }
+    .muted { color: var(--muted); }
+    main { padding: 24px; max-width: 1100px; margin: 0 auto; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; padding: 18px; margin-bottom: 24px;
+    }
+    .card h2 { font-size: 15px; margin: 0 0 14px; }
+    button {
+      background: var(--accent); color: #fff; border: none; border-radius: 6px;
+      padding: 7px 14px; cursor: pointer; font-size: 13px;
+    }
+    button.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    button.danger { background: var(--danger); }
+    button:disabled { opacity: .5; cursor: default; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .status-pill {
+      display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px;
+      border-radius: 999px; font-weight: 600; font-size: 13px;
+    }
+    .status-pill.live { background: rgba(95,184,120,.15); color: var(--ok); }
+    .status-pill.paused { background: rgba(224,108,117,.15); color: var(--danger); }
+    .sources { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+    .src-toggle {
+      display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+      border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+      user-select: none; min-width: 130px;
+    }
+    .src-toggle .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+    .src-toggle.on .dot { background: var(--ok); }
+    .src-toggle.off { opacity: .55; }
+    select, input[type=number] {
+      background: #0f1115; color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 8px; font-size: 13px;
+    }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+    .b-screen { background: rgba(91,140,255,.18); color: #5b8cff; }
+    .b-audio { background: rgba(198,120,221,.18); color: #c678dd; }
+    .b-input { background: rgba(224,108,117,.18); color: #e06c75; }
+    .b-clipboard { background: rgba(224,164,88,.18); color: #e0a458; }
+    .b-window { background: rgba(95,184,120,.18); color: #5fb878; }
+    .empty { color: var(--muted); padding: 24px; text-align: center; }
+    .summary { max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+    .conf { color: var(--muted); font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🎛️ 采集控制 &amp; 统一时间线</h1>
+    <span class="muted">暂停 / 遗忘 / 分源开关 + 多源融合视图（纯本地）</span>
+  </header>
+  <main>
+    <div class="card">
+      <h2>采集状态</h2>
+      <div class="row">
+        <span id="statusPill" class="status-pill live">● 录制中</span>
+        <span id="pauseUntil" class="muted"></span>
+        <span style="flex:1"></span>
+        <select id="pauseMinutes">
+          <option value="">暂停（手动恢复）</option>
+          <option value="15">暂停 15 分钟</option>
+          <option value="30">暂停 30 分钟</option>
+          <option value="60">暂停 1 小时</option>
+        </select>
+        <button id="pauseBtn">暂停采集</button>
+        <button id="resumeBtn" class="ghost">恢复采集</button>
+      </div>
+      <div class="sources" id="sources"></div>
+    </div>
+
+    <div class="card">
+      <h2>遗忘最近数据</h2>
+      <p class="muted" style="margin-top:0">删除最近一段时间内采集的全部数据（截图 / OCR / 输入 / 剪贴板 / 音频 / 统一时间线），不可恢复。</p>
+      <div class="row">
+        <label>遗忘最近
+          <select id="forgetMinutes">
+            <option value="5">5 分钟</option>
+            <option value="15">15 分钟</option>
+            <option value="30">30 分钟</option>
+            <option value="60">60 分钟</option>
+          </select>
+        </label>
+        <button id="forgetBtn" class="danger">遗忘</button>
+        <span id="forgetResult" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>统一时间线</h2>
+      <div class="toolbar">
+        <label>来源
+          <select id="filterSource">
+            <option value="">全部</option>
+            <option value="screen">屏幕</option>
+            <option value="audio">音频</option>
+            <option value="input">输入</option>
+            <option value="clipboard">剪贴板</option>
+            <option value="window">窗口</option>
+          </select>
+        </label>
+        <label>条数
+          <select id="filterLimit">
+            <option value="100">100</option>
+            <option value="200" selected>200</option>
+            <option value="500">500</option>
+          </select>
+        </label>
+        <button id="refreshBtn" class="ghost">刷新</button>
+        <span style="flex:1"></span>
+        <span id="breakdown" class="muted"></span>
+      </div>
+      <div id="timeline"><p class="empty">暂无数据</p></div>
+    </div>
+  </main>
+
+  <script>
+    const SRC_LABEL = { screen: "屏幕", audio: "音频", input: "输入", clipboard: "剪贴板", window: "窗口" };
+    const KIND_LABEL = {
+      frame: "截图", transcript: "语音", click: "点击", text: "输入文本",
+      clipboard: "剪贴板", focus: "聚焦", title: "标题", value: "值变化"
+    };
+
+    function fmtTime(ts) {
+      try { return new Date(ts).toLocaleTimeString("zh-CN", { hour12: false }); }
+      catch { return ts; }
+    }
+    function escapeHtml(s) {
+      return (s || "").replace(/[&<>"']/g, c =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    async function loadControl() {
+      const r = await fetch("/capture/control");
+      const j = await r.json();
+      const c = j.control;
+      const pill = document.getElementById("statusPill");
+      if (c.paused) {
+        pill.className = "status-pill paused"; pill.textContent = "● 已暂停";
+      } else {
+        pill.className = "status-pill live"; pill.textContent = "● 录制中";
+      }
+      document.getElementById("pauseUntil").textContent =
+        c.paused && c.pause_until ? `自动恢复：${fmtTime(c.pause_until)}` : "";
+
+      const box = document.getElementById("sources");
+      box.innerHTML = (j.sources || []).map(src => {
+        const on = !!c[src];
+        return `<div class="src-toggle ${on ? "on" : "off"}" data-src="${src}">
+          <span class="dot"></span><span>${SRC_LABEL[src] || src}</span>
+          <span class="muted" style="margin-left:auto">${on ? "开" : "关"}</span>
+        </div>`;
+      }).join("");
+      box.querySelectorAll(".src-toggle").forEach(el => {
+        el.onclick = () => toggleSource(el.dataset.src, el.classList.contains("off"));
+      });
+    }
+
+    async function toggleSource(source, enabled) {
+      await fetch("/capture/source", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source, enabled })
+      });
+      loadControl();
+    }
+
+    document.getElementById("pauseBtn").onclick = async () => {
+      const m = document.getElementById("pauseMinutes").value;
+      await fetch("/capture/pause", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(m ? { minutes: Number(m) } : {})
+      });
+      loadControl();
+    };
+    document.getElementById("resumeBtn").onclick = async () => {
+      await fetch("/capture/resume", { method: "POST" });
+      loadControl();
+    };
+
+    document.getElementById("forgetBtn").onclick = async (e) => {
+      const minutes = Number(document.getElementById("forgetMinutes").value);
+      if (!confirm(`确认删除最近 ${minutes} 分钟的全部采集数据？此操作不可恢复。`)) return;
+      e.target.disabled = true;
+      try {
+        const r = await fetch("/capture/forget", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ minutes })
+        });
+        const j = await r.json();
+        const rm = j.removed || {};
+        document.getElementById("forgetResult").textContent =
+          `已删除：截图 ${rm.frames || 0}，输入 ${rm.ui_events || 0}，音频块 ${rm.audio_chunks || 0}，` +
+          `转写 ${rm.transcripts || 0}，时间线 ${rm.context_events || 0}，文件 ${rm.files || 0}`;
+        loadTimeline();
+      } finally { e.target.disabled = false; }
+    };
+
+    async function loadTimeline() {
+      const src = document.getElementById("filterSource").value;
+      const limit = document.getElementById("filterLimit").value;
+      const qs = new URLSearchParams({ limit });
+      if (src) qs.set("sources", src);
+      const r = await fetch(`/timeline/unified?${qs}`);
+      const j = await r.json();
+      const rows = j.data || [];
+      const box = document.getElementById("timeline");
+      if (!rows.length) { box.innerHTML = '<p class="empty">暂无数据</p>'; return; }
+      box.innerHTML = `<table>
+        <thead><tr><th>时间</th><th>来源</th><th>类型</th><th>应用</th><th>摘要</th><th>置信</th></tr></thead>
+        <tbody>${rows.map(ev => `
+          <tr>
+            <td>${fmtTime(ev.ts)}</td>
+            <td><span class="badge b-${ev.source}">${SRC_LABEL[ev.source] || ev.source}</span></td>
+            <td>${KIND_LABEL[ev.kind] || ev.kind}</td>
+            <td>${escapeHtml(ev.app_name || "")}</td>
+            <td class="summary" title="${escapeHtml(ev.summary)}">${escapeHtml(ev.summary)}</td>
+            <td class="conf">${(ev.confidence ?? 1).toFixed(2)}</td>
+          </tr>`).join("")}</tbody>
+      </table>`;
+    }
+
+    async function loadBreakdown() {
+      const r = await fetch("/timeline/unified/breakdown");
+      const j = await r.json();
+      const parts = (j.data || []).map(d => `${SRC_LABEL[d.source] || d.source} ${d.n}`);
+      document.getElementById("breakdown").textContent = parts.join(" · ");
+    }
+
+    document.getElementById("refreshBtn").onclick = () => { loadTimeline(); loadBreakdown(); };
+    document.getElementById("filterSource").onchange = loadTimeline;
+    document.getElementById("filterLimit").onchange = loadTimeline;
+
+    loadControl();
+    loadTimeline();
+    loadBreakdown();
+    setInterval(() => { loadControl(); loadTimeline(); loadBreakdown(); }, 15000);
+  </script>
+</body>
+</html>
