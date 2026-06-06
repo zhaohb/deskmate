@@ -71,7 +71,8 @@ rows dominates the gradient.
 #### Per-source detail
 
 1. **`habits`** — `_from_habit_suggestions`. Every reminder the coaching rules fire
-   (overwork, break, late-night, …) is logged with its trigger context. Only rows
+   (overwork, break, late-night, …; see [19 — Habits & reminders](19-habits-reminders.md)
+   for the trigger logic) is logged with its trigger context. Only rows
    the user **rated useful** become pairs:
    - input: `"My recent activity shows: <ctx>. What helpful nudge should I get?"`
      (or `"The '<rule>' pattern was detected…"` when context is empty)

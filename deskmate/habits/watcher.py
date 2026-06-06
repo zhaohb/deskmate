@@ -121,10 +121,25 @@ class HabitWatcher:
             toast_enabled=self._hcfg.toast_enabled,
         )
 
-        # Highest-priority hit wins; at most one suggestion per tick.
+        # At most one suggestion per tick. The first rule that is actually
+        # *delivered* wins — NOT merely the first rule that hits. A rule can hit
+        # on every tick (e.g. break_reminder once screen time passes its
+        # threshold) yet be in its own cooldown; that must not starve a
+        # lower-priority rule that is ready to fire. So a per-rule cooldown skip
+        # falls through to the next rule. Global gates (quiet hours / daily
+        # quota) suppress every rule alike, so we stop as soon as one hits them.
+        skipped: list[dict[str, Any]] = []
         for rule in store.enabled_rules():
             hit, message, ctx = rules_mod.evaluate_rule(rule, state, profiles, now)
-            if hit:
-                result = notifier.deliver(rule, message, ctx, now)
+            if not hit:
+                continue
+            result = notifier.deliver(rule, message, ctx, now)
+            status, reason = result.get("status"), result.get("reason")
+            if status == "sent":
                 return {"status": "evaluated", "fired": rule["name"], "result": result}
-        return {"status": "evaluated", "fired": None}
+            if status == "suppressed" and reason in ("quiet_hours", "daily_quota"):
+                return {"status": "evaluated", "fired": None, "result": result}
+            # cooldown or auto-disabled → this rule isn't deliverable now; let a
+            # ready lower-priority rule have its turn.
+            skipped.append(result)
+        return {"status": "evaluated", "fired": None, "skipped": skipped}

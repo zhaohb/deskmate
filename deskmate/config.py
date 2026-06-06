@@ -243,8 +243,13 @@ class HabitsConfig(BaseModel):
     min_sample_days: int = 3
     # Local "start-end" hours during which no notification is sent.
     quiet_hours: str = "22-8"
-    # Hard cap on proactive notifications per day.
-    daily_quota: int = 5
+    # Runaway BACKSTOP, not a daily throttle. Day-to-day pacing is owned by each
+    # rule's own cooldown_min (semantic, per-rule) — the philosophy is "if a rule
+    # is due and not in cooldown, let it fire". This shared cap exists only to
+    # contain a misbehaving rule (e.g. one that hits every single tick) from
+    # spamming the user. Set high enough that a normal day never reaches it:
+    # hourly break nudges + a handful of others stay well under 30.
+    daily_quota: int = 30
     # Whether to attempt a native Windows toast (falls back to UI inbox).
     toast_enabled: bool = True
 

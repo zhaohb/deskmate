@@ -37,6 +37,9 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         },
     },
     {
+        # Fires on CUMULATIVE work today (short breaks don't reset it), so a long
+        # day broken up by coffee breaks still counts. max_minutes is total
+        # worked time, not an unbroken run.
         "name": "overwork",
         "rule_type": "threshold",
         "enabled": True,
@@ -44,8 +47,8 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "cooldown_min": 90,
         "quiet_hours": "22-8",
         "params": {
-            "categories": ["coding", "meeting"],
-            "max_minutes": 120,
+            "categories": ["coding", "meeting", "writing"],
+            "max_minutes": 240,
         },
     },
     # ── Fixed strategies (no learned history needed; fire from day one) ────────
@@ -107,6 +110,7 @@ class CurrentState:
         window_name: str,
         continuous_minutes: float,
         app_minutes: float | None = None,
+        today_category_minutes: dict[str, float] | None = None,
     ) -> None:
         self.category = category
         self.app_name = app_name
@@ -115,6 +119,16 @@ class CurrentState:
         self.continuous_minutes = continuous_minutes
         # Continuous time in the *current* app (resets on every app switch).
         self.app_minutes = continuous_minutes if app_minutes is None else app_minutes
+        # CUMULATIVE minutes per category since local midnight today (gap-
+        # attributed; short breaks do NOT reset it). Used by overwork, whose
+        # notion of "too long" is "total time worked today", not an unbroken run.
+        self.today_category_minutes = today_category_minutes or {}
+
+    def worked_minutes_today(self, categories: list[str]) -> float:
+        """Total cumulative minutes today across the given categories (all if empty)."""
+        if not categories:
+            return sum(self.today_category_minutes.values())
+        return sum(self.today_category_minutes.get(c, 0.0) for c in categories)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -123,6 +137,9 @@ class CurrentState:
             "window_name": self.window_name,
             "continuous_minutes": round(self.continuous_minutes, 1),
             "app_minutes": round(self.app_minutes, 1),
+            "today_category_minutes": {
+                k: round(v, 1) for k, v in self.today_category_minutes.items()
+            },
         }
 
 
@@ -152,6 +169,22 @@ def _continuous_screen_minutes(
         else:
             break
     return max(0.0, (now - run_start).total_seconds() / 60.0)
+
+
+def _today_category_minutes(store: HabitStore, now: datetime) -> dict[str, float]:
+    """Cumulative minutes per category since local midnight today.
+
+    Reuses the miner's gap-attributed per-frame durations (a >5min gap to the
+    next frame is capped, so idle time is NOT counted as work), then buckets by
+    category. Unlike ``continuous_minutes`` this does NOT reset after a short
+    break — it answers "how much have I actually worked today in total".
+    """
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    minutes: dict[str, float] = {}
+    for row in store.frame_durations_since(midnight):
+        cat = classify_frame(row.get("app_name") or "", row.get("window_name") or "")
+        minutes[cat] = minutes.get(cat, 0.0) + float(row.get("dur_sec") or 0.0) / 60.0
+    return minutes
 
 
 def read_current_state(store: HabitStore, now: datetime, *, window_minutes: int = 5) -> CurrentState | None:
@@ -189,6 +222,7 @@ def read_current_state(store: HabitStore, now: datetime, *, window_minutes: int 
         window_name=window_name,
         continuous_minutes=continuous_minutes,
         app_minutes=app_minutes,
+        today_category_minutes=_today_category_minutes(store, now),
     )
 
 
@@ -234,24 +268,33 @@ def evaluate_overwork(
     rule: dict[str, Any], state: CurrentState, profiles: list[dict[str, Any]],
     now: datetime | None = None,
 ) -> tuple[bool, str, dict[str, Any]]:
+    """Overwork = too much CUMULATIVE work today, not one unbroken run.
+
+    A user who has coded 5 hours with a few coffee breaks IS overworked, even
+    though no single continuous run hit ``max_minutes``. So this fires on the
+    total time spent today in ``categories`` (short breaks don't reset it), and
+    only while the user is currently still in one of those categories — nagging
+    about overwork while they're already relaxing would be pointless.
+    """
     params = rule.get("params", {})
     cats = params.get("categories", ["coding", "meeting"])
     max_minutes = float(params.get("max_minutes", 120))
 
+    worked = state.worked_minutes_today(cats)
     cat_ok = (not cats) or (state.category in cats)
-    hit = cat_ok and state.continuous_minutes >= max_minutes
-    ctx = {"state": state.as_dict(), "max_minutes": max_minutes}
+    hit = cat_ok and worked >= max_minutes
+    ctx = {"state": state.as_dict(), "max_minutes": max_minutes, "worked_today": round(worked, 1)}
     template = params.get("message")
     if template:
         msg = template.format(
-            minutes=int(state.continuous_minutes),
+            minutes=int(worked),
             category=state.category,
             app=state.app_name,
         )
     else:
         msg = (
-            f"你已经连续 {int(state.continuous_minutes)} 分钟处于 {state.category} 状态，"
-            "起来活动一下、喝口水？"
+            f"今天你已累计工作 {int(worked)} 分钟了，"
+            "起来活动一下、喝口水、歇会儿吧。"
         )
     return hit, msg, ctx
 
