@@ -59,6 +59,26 @@ def test_cooldown_restarts_from_acknowledgement(tmp_path: Path) -> None:
     store.close()
 
 
+def test_fresh_suggestion_is_in_cooldown(tmp_path: Path) -> None:
+    """Regression: a just-sent nudge MUST read as in-cooldown.
+
+    created_at was previously written by sqlite's UTC datetime('now') while the
+    notifier compared against a local-tz `now`, so a fresh send looked hours old
+    and every 5-min tick re-fired the rule. Inserting created_at in local time
+    fixes it — no backdating here, the row is genuinely 'just now'."""
+    store = _store(tmp_path)
+    rule = {"name": "overwork", "cooldown_min": 90, "quiet_hours": "0-0"}
+    notifier = Notifier(store, daily_quota=99)
+    now = datetime.now().astimezone()
+
+    store.insert_suggestion(
+        rule_name="overwork", message="x", context={}, channel="ui", status="sent",
+    )
+    # Without backdating, this must be inside the 90-min cooldown.
+    assert notifier._in_cooldown(rule, now)
+    store.close()
+
+
 def test_continuous_time_capped_by_acknowledgement(tmp_path: Path) -> None:
     from deskmate.habits import rules as rules_mod
 

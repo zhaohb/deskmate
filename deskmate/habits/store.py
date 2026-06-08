@@ -239,12 +239,16 @@ class HabitStore:
         channel: str,
         status: str,
     ) -> int:
+        # Write created_at in LOCAL time (not sqlite's UTC datetime('now')) so it
+        # matches the local `now` the notifier compares against — otherwise the
+        # cooldown/quota math is off by the UTC offset and a 90-min cooldown is
+        # mis-read as already-expired, firing the rule every tick.
         with self._lock:
             cur = self._conn.execute(
                 """INSERT INTO habit_suggestions
-                   (rule_name, message, context_json, channel, status)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (rule_name, message, json.dumps(context), channel, status),
+                   (rule_name, message, context_json, channel, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (rule_name, message, json.dumps(context), channel, status, _local_now_iso()),
             )
             return int(cur.lastrowid)
 
