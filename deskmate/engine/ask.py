@@ -811,6 +811,115 @@ def _lower_keys(arguments: dict[str, Any]) -> dict[str, Any]:
     return {str(k).lower(): v for k, v in arguments.items()}
 
 
+# Window-title / OCR hints that a frame shows a webmail client. Used by the
+# no-OAuth fallback to keep screen evidence scoped to mail activity rather than
+# returning arbitrary screen text.
+_WEBMAIL_HINTS = (
+    "gmail", "收件箱", "inbox", "outlook", "mail.google", "outlook.live",
+    "outlook.office", "新邮件", "compose", "撰写",
+)
+
+
+def _looks_like_mail_evidence(text: str) -> bool:
+    """True when *text* looks like a webmail window/title.
+
+    Only the leading slice is inspected: a real mail view announces itself in
+    the window title (e.g. "收件箱 (383) … Gmail"), whereas an unrelated screen
+    (VS Code, a docs page) may merely contain the word "Email" somewhere deep in
+    its OCR text — e.g. DeskMate's own "Home Apps Email Timeline" nav bar — which
+    must NOT count as the user reading mail.
+    """
+    low = text[:100].lower()
+    return any(h in low for h in _WEBMAIL_HINTS)
+
+
+def _email_search_fallback(
+    api_base: str,
+    query: str | None,
+    start_time: str | None,
+    end_time: str | None,
+    *,
+    checked_providers: list[str],
+) -> str:
+    """No mailbox connected: degrade to screen evidence (OCR + UI events).
+
+    The user may have *viewed* webmail in a browser even without OAuth. We can't
+    enumerate real messages, but OCR/UI capture often holds window titles and
+    on-screen text proving which mail client / inbox was open and when. Return
+    that as ``degraded`` evidence with an explicit caveat so the model answers
+    from real records instead of refusing outright — while still nudging the
+    user to connect OAuth for complete, message-level results.
+    """
+    # The /search FTS index does NOT parse boolean "A OR B"; issue one query per
+    # term. With a user topic (e.g. "NVIDIA") query that directly; otherwise
+    # sweep the webmail clients by name. Dedupe by (source, timestamp, text).
+    queries = [query] if query else ["Gmail", "收件箱", "Inbox", "Outlook"]
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for content_type in ("ocr", "ui"):
+        for q in queries:
+            params = [f"content_type={content_type}", "limit=8", f"q={quote(q)}"]
+            if start_time:
+                params.append(f"start_time={quote(start_time)}")
+            if end_time:
+                params.append(f"end_time={quote(end_time)}")
+            try:
+                result = _http_get(f"{api_base}/search?{'&'.join(params)}")
+            except Exception:
+                continue
+            for row in (result.get("data") if isinstance(result, dict) else None) or []:
+                if not isinstance(row, dict):
+                    continue
+                content = row.get("content") or {}
+                window_title = str(content.get("window_title") or "")
+                text = str(content.get("text") or window_title)
+                # Decide on the highest-signal field per source: UI events carry a
+                # clean window_title ("收件箱 … Gmail"); OCR rows only have full text
+                # whose leading slice holds the title. A user topic query trusts the
+                # search ranking and skips the webmail-shape filter.
+                probe = window_title if content_type == "ui" else text
+                if not query and not _looks_like_mail_evidence(probe):
+                    continue
+                ts = str(content.get("timestamp") or row.get("timestamp") or "")
+                # Dedupe aggressively: a single inbox view fires many UI events with
+                # an identical title. Collapse on (source, window_title) for UI, and
+                # on the text head for OCR, keeping the first (newest) occurrence.
+                dedupe_on = window_title if content_type == "ui" else text[:80]
+                key = (content_type, dedupe_on, "")
+                if key in seen:
+                    continue
+                seen.add(key)
+                hits.append({
+                    "source": content_type,
+                    "timestamp": ts or None,
+                    "app_name": content.get("app_name"),
+                    "window_title": window_title or None,
+                    "text": _strip_truncation_marks(text)[:600],
+                })
+
+    return _json_for_llm({
+        "degraded": True,
+        # NOTE: deliberately avoid the literal "no_mailbox_connected" here — that
+        # string is an empty-evidence marker (see _EMPTY_RESULT_MARKERS) and would
+        # make the grounding guard discard this degraded result, overriding the
+        # model's screen-based answer with the generic no-data message.
+        "mailbox_status": "not_connected",
+        "note": (
+            "No Gmail/Outlook OAuth account is connected, so real messages cannot "
+            "be listed. The evidence below is from SCREEN CAPTURE (OCR) and UI "
+            "events — it may show which mail client/inbox was open and when, but "
+            "NOT a reliable list of individual messages (senders/subjects). "
+            "Answer from this screen evidence if relevant, state clearly that it "
+            "is based on screen records and may be incomplete, and suggest the "
+            "user connect Gmail/Outlook on the Email tab for full results."
+        ),
+        "range": {"start_time": start_time, "end_time": end_time},
+        "checked_providers": checked_providers,
+        "screen_evidence_count": len(hits),
+        "screen_evidence": hits[:16],
+    }, max_chars=20000)
+
+
 def _execute_email_search(arguments: dict[str, Any], api_base: str) -> str:
     arguments = _lower_keys(arguments)
     provider = str(arguments.get("provider") or "all").strip().lower()
@@ -833,14 +942,11 @@ def _execute_email_search(arguments: dict[str, Any], api_base: str) -> str:
 
     connected = {p: _connected_instances(api_base, p) for p in providers}
     if not any(connected.values()):
-        return json.dumps({
-            "error": "no_mailbox_connected",
-            "message": (
-                "No Gmail or Outlook account is connected. Open the Email tab and click "
-                "Connect before asking about mailbox content."
-            ),
-            "checked_providers": providers,
-        })
+        # Soft-degrade instead of refusing: the user may have viewed webmail in a
+        # browser without OAuth, and OCR/UI capture can still show that activity.
+        return _email_search_fallback(
+            api_base, query, start_time, end_time, checked_providers=providers,
+        )
 
     messages: list[dict[str, Any]] = []
     for p in providers:
@@ -1161,8 +1267,14 @@ def run_ask(
         "9. If there is truly no data in the range, say recording may have been paused "
         "and mention the nearest captured activity if tool results include it.\n"
         "10. ONLY report what the data shows. Never fabricate apps, files, timestamps, emails, "
-        "senders, meetings or subjects. If email_search returns no_mailbox_connected, tell the user to "
-        "connect Gmail/Outlook on the Email tab.\n"
+        "senders, meetings or subjects. If email_search returns a result with "
+        "\"degraded\": true (mailbox_status not_connected), NO OAuth mailbox is connected: "
+        "answer from its `screen_evidence` (OCR / UI capture) if relevant — e.g. which mail "
+        "client/inbox was open and when — but state explicitly that this is based on screen "
+        "records and may be incomplete (you cannot list individual senders/subjects reliably), "
+        "and suggest connecting Gmail/Outlook on the Email tab for full results. If "
+        "screen_evidence is empty too, just say no mail activity was found on screen and "
+        "suggest connecting the mailbox.\n"
         "11. When citing emails, copy the full `preview` field from email_search verbatim "
         "for 摘要/摘要内容. NEVER prefix or suffix with '...' or '…'. Never shorten with ellipsis.\n"
         "12. Answer in the user's language (Chinese or English). Be concise; use bullet points.\n"

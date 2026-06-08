@@ -85,3 +85,57 @@ def test_grounded_final_answer_passes_clean_answer() -> None:
         "你在 15:04 编辑了 Code.exe。", tool_log, api_base="http://x", question="x"
     )
     assert out == "你在 15:04 编辑了 Code.exe。"  # untouched
+
+
+# ── no-OAuth email fallback (soft-degrade to screen evidence) ────────────────
+def _fake_api(*, gmail_title: str = "收件箱 (383) - me@gmail.com - Gmail - Google Chrome"):
+    """Build a fake _http_get: no mailbox connected, but OCR/UI show webmail."""
+    def _get(url: str, *a, **k):
+        if "/instances" in url:
+            return {"data": []}  # no Gmail/Outlook OAuth account connected
+        if "/search" in url:
+            ct = "ui" if "content_type=ui" in url else "ocr"
+            return {"data": [{"content": {
+                "timestamp": "2026-06-08T11:24:00+08:00",
+                "app_name": "chrome.exe",
+                "window_title": gmail_title if ct == "ui" else "",
+                "text": gmail_title,
+            }}]}
+        return {}
+    return _get
+
+
+def test_email_search_degrades_to_screen_evidence_when_no_oauth(monkeypatch) -> None:
+    monkeypatch.setattr(ask, "_http_get", _fake_api())
+    out = ask._execute_email_search(
+        {"query": None, "start_time": "2026-06-08T00:00:00+08:00",
+         "end_time": "2026-06-08T23:59:59+08:00"},
+        api_base="http://x",
+    )
+    # Degrades instead of returning a bare error, and carries real screen rows.
+    assert '"degraded":true' in out.replace(" ", "")
+    assert "not_connected" in out
+    assert "Gmail" in out
+    # Crucially: the degraded result must NOT read as empty evidence, otherwise
+    # the grounding guard would discard the model's screen-based answer.
+    assert ask._result_has_evidence(out)
+    assert not ask._evidence_is_empty([{"result": out}])
+
+
+def test_email_search_degraded_filters_non_mail_screens(monkeypatch) -> None:
+    # OCR text that merely contains DeskMate's "Email" nav word is NOT mail.
+    def _get(url: str, *a, **k):
+        if "/instances" in url:
+            return {"data": []}
+        if "/search" in url:
+            return {"data": [{"content": {
+                "timestamp": "2026-06-08T10:00:00+08:00",
+                "app_name": "Code.exe", "window_title": "",
+                "text": "config.toml - VS Code … Home Apps Email Timeline Todo",
+            }}]}
+        return {}
+    monkeypatch.setattr(ask, "_http_get", _get)
+    out = ask._execute_email_search({"query": None}, api_base="http://x")
+    # No genuine webmail view → zero screen evidence, still a graceful degrade.
+    assert '"screen_evidence_count":0' in out.replace(" ", "")
+    assert "not_connected" in out

@@ -123,6 +123,24 @@ def resolve_ollama_settings() -> tuple[str, str, int]:
 
 _OLLAMA_BASE, _OLLAMA_MODEL, _CHAT_TIMEOUT = resolve_ollama_settings()
 
+
+def _resolve_keep_alive() -> str | int:
+    """How long Ollama keeps a model resident between calls.
+
+    Defaults to ``-1`` (never unload) so the OpenVINO backend's ~30s cold load
+    is paid once, not on every Ask round. Override via
+    ``DESKMATE_OLLAMA_KEEP_ALIVE`` — an int (seconds, ``-1`` = forever, ``0`` =
+    unload immediately) or a duration string Ollama understands (e.g. ``"10m"``).
+    """
+    raw = os.environ.get("DESKMATE_OLLAMA_KEEP_ALIVE", "-1").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return raw or -1
+
+
+_KEEP_ALIVE: str | int = _resolve_keep_alive()
+
 THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL | re.IGNORECASE)
 _FUNCTION_BLOCK_RE = re.compile(
@@ -376,8 +394,17 @@ def chat_ollama(
     num_predict: int = 4096,
     temperature: float = 0.3,
     timeout: int | None = None,
+    keep_alive: str | int | None = _KEEP_ALIVE,
 ) -> dict:
-    """Call Ollama ``/api/chat`` (non-streaming) and return the message dict."""
+    """Call Ollama ``/api/chat`` (non-streaming) and return the message dict.
+
+    ``keep_alive`` controls how long Ollama keeps the model resident after the
+    call. It matters a lot for the OpenVINO backend, whose cold load can take
+    ~30s: with the default 5-minute idle unload, a multi-round Ask reloads the
+    model on nearly every turn and can blow past the chat timeout. Pinning it
+    (``-1`` = never unload) makes every turn after the first a warm ~1s call.
+    Set ``DESKMATE_OLLAMA_KEEP_ALIVE`` to override (e.g. ``"10m"``, ``0``).
+    """
     if timeout is None:
         timeout = _CHAT_TIMEOUT
     body: dict[str, Any] = {
@@ -387,6 +414,8 @@ def chat_ollama(
         "think": False,
         "options": {"temperature": temperature, "num_predict": num_predict},
     }
+    if keep_alive is not None:
+        body["keep_alive"] = keep_alive
     if tools:
         body["tools"] = tools
     result = http_post(f"{base}/api/chat", body, timeout=timeout)
