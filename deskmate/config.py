@@ -295,7 +295,7 @@ class TrainingConfig(BaseModel):
     # intentionally excluded by default — those pairs echo raw user input and
     # make poor SFT targets. It can still be opted into explicitly.
     sources: list[str] = Field(
-        default_factory=lambda: ["habits", "pipes", "behavior", "ask", "profile"]
+        default_factory=lambda: ["habits", "apps", "pipes", "behavior", "ask", "profile"]
     )
     min_feedback: int = 1
     min_chars: int = 8
@@ -403,21 +403,24 @@ def set_audio_languages(languages: list[str]) -> None:
 
 
 def _render_toml_value(value: object) -> str:
-    """Render a Python scalar as a TOML literal (bool/str/number only)."""
+    """Render a Python scalar/list as a TOML literal (bool/str/number/list)."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
         return f'"{value}"'
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_render_toml_value(v) for v in value) + "]"
     return str(value)
 
 
-def set_audio_value(key: str, value: object) -> None:
-    """Persist a single ``[audio] <key> = <value>`` to config.toml in place.
+def set_config_value(section: str, key: str, value: object) -> None:
+    """Persist a single ``[section] <key> = <value>`` to config.toml in place.
 
-    Like :func:`set_audio_languages` but for a scalar key (bool/str/number),
-    rewriting just that line inside the ``[audio]`` table — or inserting it if
-    absent — so comments and other settings are preserved. Best-effort: a
-    missing file is created from defaults first.
+    Rewrites just that one line inside the named table — or inserts it (creating
+    the table if absent) — so every comment and unrelated setting in the file is
+    preserved. Handles bool/str/number and lists. Best-effort: a missing file is
+    created from defaults first. This is the generic writer behind the Settings
+    UI; :func:`set_audio_value` is a thin ``[audio]`` wrapper kept for callers.
     """
     import re  # noqa: PLC0415
 
@@ -427,17 +430,18 @@ def set_audio_value(key: str, value: object) -> None:
 
     new_line = f"{key} = {_render_toml_value(value)}"
     lines = cfg_path.read_text(encoding="utf-8").splitlines()
-    in_audio = False
-    audio_start = -1
+    header = f"[{section}]"
+    in_section = False
+    section_start = -1
     replaced = False
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("[") and stripped.endswith("]"):
-            in_audio = stripped == "[audio]"
-            if in_audio:
-                audio_start = i
+            in_section = stripped == header
+            if in_section:
+                section_start = i
             continue
-        if in_audio and re.match(rf"^\s*{re.escape(key)}\s*=", line):
+        if in_section and re.match(rf"^\s*{re.escape(key)}\s*=", line):
             comment = ""
             if "#" in line:
                 comment = "  " + line[line.index("#"):].rstrip()
@@ -446,13 +450,18 @@ def set_audio_value(key: str, value: object) -> None:
             break
 
     if not replaced:
-        if audio_start >= 0:
-            lines.insert(audio_start + 1, new_line)
+        if section_start >= 0:
+            lines.insert(section_start + 1, new_line)
         else:
-            lines.append("[audio]")
+            lines.append(header)
             lines.append(new_line)
 
     cfg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def set_audio_value(key: str, value: object) -> None:
+    """Persist a single ``[audio] <key> = <value>`` (see :func:`set_config_value`)."""
+    set_config_value("audio", key, value)
 
 
 def _render_default_toml() -> str:

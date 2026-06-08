@@ -50,6 +50,171 @@ from ..workflow import WorkflowClassifier
 logger = get("engine.api")
 
 
+# ── editable-settings schema ──────────────────────────────────────────────
+# Single source of truth for the user-friendly Settings UI. Each field names a
+# config (section, key), a type that drives the input widget + validation, a
+# human label/help string, and whether changing it needs a restart. Kept to the
+# high-frequency settings a normal user actually tunes — not every config key.
+#   type: "bool" | "int" | "float" | "str" | "choice" | "csv"
+#   restart: True  → takes effect only after a restart (most fields)
+#            False → hot-applied live by _hot_apply_settings
+SETTINGS_SCHEMA: list[dict[str, Any]] = [
+    {
+        "title": "录制 Recording",
+        "desc": "控制 DeskMate 是否以及如何捕获你的屏幕与输入。",
+        "fields": [
+            {"section": "capture", "key": "enabled", "type": "bool", "restart": True,
+             "label": "启用屏幕录制",
+             "help": "关闭后将完全停止截图与画面捕获。"},
+            {"section": "capture", "key": "include_screenshot", "type": "bool", "restart": True,
+             "label": "保存截图",
+             "help": "关闭则只记录文字/事件元数据，不存 JPEG 画面，省磁盘。"},
+            {"section": "capture", "key": "screenshot_max_width", "type": "int", "restart": True,
+             "label": "截图最大宽度 (px)", "min": 640, "max": 3840,
+             "help": "更小=更省空间、OCR 略糊；1920 通常足够。"},
+            {"section": "a11y", "key": "capture_keystrokes", "type": "bool", "restart": True,
+             "label": "记录键盘输入",
+             "help": "用于「你输入了什么/在做什么」。关闭更注重隐私。"},
+            {"section": "a11y", "key": "capture_clipboard", "type": "bool", "restart": True,
+             "label": "记录剪贴板",
+             "help": "捕获复制的文本片段，增强活动理解。"},
+        ],
+    },
+    {
+        "title": "文字识别 OCR",
+        "desc": "把屏幕上的文字转成可搜索内容。",
+        "fields": [
+            {"section": "ocr", "key": "engine", "type": "choice", "restart": True,
+             "choices": ["rapidocr", "winrt", "tesseract", "off"],
+             "label": "OCR 引擎",
+             "help": "rapidocr 对中文/小字最好；winrt 无需额外依赖；off 关闭。"},
+        ],
+    },
+    {
+        "title": "音频与转录 Audio",
+        "desc": "本地语音转写与实时翻译。语言可即时生效，其余需重启。",
+        "fields": [
+            {"section": "audio", "key": "enabled", "type": "bool", "restart": True,
+             "label": "启用音频转录",
+             "help": "开启后用 Whisper 把麦克风/系统声音转成文字。"},
+            {"section": "audio", "key": "languages", "type": "csv", "restart": False,
+             "label": "转录语言", "placeholder": "zh, en",
+             "help": "逗号分隔的 ISO 代码；留空=自动检测。下一段音频即生效，无需重启。"},
+            {"section": "audio", "key": "translate_enabled", "type": "bool", "restart": False,
+             "label": "实时翻译",
+             "help": "把每句转录翻译成目标语言。即时生效。注意会持续占用 Ollama。"},
+            {"section": "audio", "key": "translate_target_lang", "type": "str", "restart": False,
+             "label": "翻译目标语言", "placeholder": "zh",
+             "help": "ISO 639-1 代码，如 zh / en / ja。即时生效。"},
+        ],
+    },
+    {
+        "title": "本地大模型 Ollama",
+        "desc": "Ask 与各类 App 使用的本地 LLM。改完需重启生效。",
+        "fields": [
+            {"section": "ollama", "key": "model", "type": "str", "restart": True,
+             "label": "模型名称", "placeholder": "qwen3.5_4b_ov:v1",
+             "help": "Ollama 中已安装的模型 id。用 `ollama list` 查看可用模型。"},
+            {"section": "ollama", "key": "chat_timeout", "type": "int", "restart": True,
+             "label": "请求超时 (秒)", "min": 30, "max": 1800,
+             "help": "等待模型响应的上限。模型慢/首次加载久时可调大。"},
+        ],
+    },
+    {
+        "title": "数据保留 Retention",
+        "desc": "自动清理多久以前的数据，控制磁盘占用。",
+        "fields": [
+            {"section": "retention", "key": "frame_days", "type": "int", "restart": True,
+             "label": "画面保留天数", "min": 1, "max": 3650,
+             "help": "超过这个天数的截图/画面会被自动删除。"},
+            {"section": "retention", "key": "audio_days", "type": "int", "restart": True,
+             "label": "音频保留天数", "min": 1, "max": 3650,
+             "help": "超过这个天数的音频转录会被自动删除。"},
+            {"section": "retention", "key": "db_max_mb", "type": "int", "restart": True,
+             "label": "数据库上限 (MB)", "min": 100, "max": 100000,
+             "help": "数据库体积软上限，超出时触发更激进的清理。"},
+        ],
+    },
+]
+
+
+def _coerce_setting(field: dict[str, Any], raw: Any) -> Any:
+    """Validate + coerce one incoming setting value per its schema type."""
+    t = field["type"]
+    if t == "bool":
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+    if t == "int":
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError("must be an integer")
+        if "min" in field and v < field["min"]:
+            raise ValueError(f"must be ≥ {field['min']}")
+        if "max" in field and v > field["max"]:
+            raise ValueError(f"must be ≤ {field['max']}")
+        return v
+    if t == "float":
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError("must be a number")
+        if "min" in field and v < field["min"]:
+            raise ValueError(f"must be ≥ {field['min']}")
+        if "max" in field and v > field["max"]:
+            raise ValueError(f"must be ≤ {field['max']}")
+        return v
+    if t == "choice":
+        s = str(raw).strip()
+        if s not in field.get("choices", []):
+            raise ValueError(f"must be one of {field.get('choices')}")
+        return s
+    if t == "csv":
+        if isinstance(raw, list):
+            items = raw
+        else:
+            items = str(raw).split(",")
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in items:
+            code = str(item).strip().lower()
+            if code and code not in seen:
+                seen.add(code)
+                out.append(code)
+        return out
+    # default: trimmed string
+    return str(raw).strip()
+
+
+def _hot_apply_settings(daemon: Any, cfg: Config, saved: list[str]) -> list[str]:
+    """Apply the few settings the running daemon can adopt without a restart.
+
+    Returns the dotted keys that were hot-applied. Everything else still
+    persisted to disk and will take effect on the next start."""
+    hot: list[str] = []
+    if daemon is None:
+        return hot
+    if "audio.languages" in saved:
+        transcriber = getattr(daemon, "transcriber", None)
+        if transcriber is not None and hasattr(transcriber, "set_languages"):
+            transcriber.set_languages(cfg.audio.languages)
+            hot.append("audio.languages")
+    translate_keys = {"audio.translate_enabled", "audio.translate_target_lang"}
+    if translate_keys & set(saved) and hasattr(daemon, "set_translation"):
+        daemon.set_translation(
+            enabled=cfg.audio.translate_enabled,
+            target_lang=cfg.audio.translate_target_lang,
+        )
+        hot.extend(sorted(translate_keys & set(saved)))
+    return hot
+
+
+def _all_hot(saved: list[str], hot: list[str]) -> bool:
+    """True when every saved key was hot-applied (so no restart is needed)."""
+    return bool(saved) and set(saved) == set(hot)
+
+
 def _is_deskmate_app(app_name: str | None) -> bool:
     """Exclude DeskMate's own UI from search results."""
     if not app_name:
@@ -1215,6 +1380,107 @@ def create_app(
             "translate_latency_mode": cfg.audio.translate_latency_mode,
             "hot_applied": applied,
         }
+
+    # ─── user-friendly settings (schema-driven, UI-editable) ──────────────
+    @app.get("/config/settings")
+    def get_settings() -> dict[str, Any]:
+        """Return the editable-settings schema plus each field's current value.
+
+        The schema is the single source of truth shared with the Settings UI:
+        it groups fields, carries human labels/help/choices, and flags whether a
+        change hot-applies or needs a restart. The UI renders straight from this
+        so backend and frontend can never drift.
+        """
+        groups = []
+        for group in SETTINGS_SCHEMA:
+            fields = []
+            for f in group["fields"]:
+                section = cfg.__getattribute__(f["section"])
+                fields.append({**f, "value": getattr(section, f["key"], None)})
+            groups.append({**group, "fields": fields})
+        return {"groups": groups}
+
+    @app.post("/config/settings")
+    async def update_settings(request: Request) -> dict[str, Any]:
+        """Persist a batch of settings, hot-applying what we can.
+
+        Body: ``{"values": {"section.key": value, ...}}``. Each value is
+        validated against the schema, written to config.toml (comments
+        preserved), and applied to the live config object. We report which keys
+        took effect immediately vs. which need a restart so the UI can prompt.
+        """
+        from ..config import set_config_value  # noqa: PLC0415
+
+        body = await request.json()
+        values = body.get("values") or {}
+        if not isinstance(values, dict):
+            raise HTTPException(status_code=400, detail="values must be an object")
+
+        index = {f"{f['section']}.{f['key']}": f
+                 for g in SETTINGS_SCHEMA for f in g["fields"]}
+        saved: list[str] = []
+        needs_restart = False
+        errors: dict[str, str] = {}
+
+        for dotted, raw in values.items():
+            field = index.get(dotted)
+            if field is None:
+                errors[dotted] = "unknown setting"
+                continue
+            try:
+                coerced = _coerce_setting(field, raw)
+            except ValueError as exc:
+                errors[dotted] = str(exc)
+                continue
+            set_config_value(field["section"], field["key"], coerced)
+            setattr(getattr(cfg, field["section"]), field["key"], coerced)
+            saved.append(dotted)
+            if field.get("restart", True):
+                needs_restart = True
+
+        # Hot-apply the handful of fields the running daemon can adopt live.
+        hot = _hot_apply_settings(app.state.daemon, cfg, saved)
+        return {
+            "saved": saved,
+            "errors": errors,
+            "needs_restart": needs_restart and not _all_hot(saved, hot),
+            "hot_applied": hot,
+        }
+
+    @app.post("/restart")
+    def restart_server() -> JSONResponse:
+        """Ask the host process to restart so config changes take effect.
+
+        We can't reliably re-exec uvicorn in-process on Windows (NPU/COM state,
+        port reuse), so this signals the launcher: it writes a restart-request
+        marker and schedules a clean exit. A supervising script (or the user's
+        ``deskmate ui`` shell) is expected to relaunch. If no supervisor exists,
+        the UI tells the user to start DeskMate again manually.
+        """
+        import os  # noqa: PLC0415
+        import threading  # noqa: PLC0415
+
+        try:
+            paths.restart_marker_path().write_text(
+                datetime.now().astimezone().isoformat(), encoding="utf-8"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        def _exit() -> None:
+            time.sleep(0.6)  # let the HTTP response flush first
+            # Best-effort graceful daemon shutdown (flush DB, join threads) before
+            # the hard exit; WAL-mode SQLite also recovers if this is skipped.
+            daemon = app.state.daemon
+            if daemon is not None and hasattr(daemon, "stop"):
+                try:
+                    daemon.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            os._exit(0)
+
+        threading.Thread(target=_exit, name="restart-exit", daemon=True).start()
+        return JSONResponse({"restarting": True})
 
     # ─── tags / memories ──────────────────────────────────────────────────
     @app.post("/tags/vision/batch")

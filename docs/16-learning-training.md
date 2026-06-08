@@ -15,7 +15,7 @@ Covers `deskmate/learning/training/`, the `TrainingConfig` config block, the
 | File | Role |
 |------|------|
 | `learning/training/lora.py` | `LoRATrainer` + `LoRATrainingConfig` — LoRA/QLoRA fine-tuning over `{input, output}` pairs (guarded torch/transformers/peft imports) |
-| `learning/training/data.py` | `DeskMateTrainingDataMiner` — mines SFT pairs from five local sources via its own read-only connection |
+| `learning/training/data.py` | `DeskMateTrainingDataMiner` — mines SFT pairs from six local sources via its own read-only connection |
 | `config.py` | `TrainingConfig` — model, data-mining and LoRA hyperparameters |
 | `engine/cli.py` | `deskmate train-lora` command (with `--dry-run` preview) |
 | `engine/api.py` | `GET /training/data` (preview) + `POST /training/lora` (train) |
@@ -30,8 +30,9 @@ flowchart TB
         BH["habit_profiles (per-slot)<br/>sample_days ≥ 2, freq ≥ 0.3"]
         AK["ask_history<br/>feedback ≥ 1"]
         PR["habit_profiles (aggregated)<br/>profile / identity"]
+        AP["apps/&lt;app&gt;/output/*.md<br/>(on disk) → app_output"]
     end
-    HS & PE & BH & AK & PR --> MINER["DeskMateTrainingDataMiner<br/>extract_sft_pairs()"]
+    HS & PE & BH & AK & PR & AP --> MINER["DeskMateTrainingDataMiner<br/>extract_sft_pairs()"]
     MINER --> PAIRS["[{input, output, source, …}]<br/>(deduped)"]
     PAIRS --> TRAINER["LoRATrainer.train()"]
     TRAINER --> TOK["tokenize (chat template)"]
@@ -39,7 +40,7 @@ flowchart TB
     FIT --> ADP["adapter saved to<br/>~/.deskmate/checkpoints/lora/final"]
 ```
 
-### The five data sources
+### The six data sources
 
 DeskMate derives supervised pairs from local tables. Each source has its
 own **quality gate** so that
@@ -54,8 +55,9 @@ key maps to one extractor method on `DeskMateTrainingDataMiner`:
 | `behavior` | `behavior`         | `habit_profiles`    | `sample_days ≥ 2` & `frequency ≥ 0.3` | "What do I usually do on \<day\> around \<HH:MM\>?" → routine description |
 | `ask`      | `ask`              | `ask_history`       | `feedback ≥ min_feedback` (user clicked 👍 **有用**) | the user's own question → the grounded answer |
 | `profile`  | `profile`          | `habit_profiles` (aggregated) | `sample_days ≥ 3` & `frequency ≥ 0.4`, ≥ 3 rows | synthesized "who is this user" identity Q&A — see [17 — User profile](17-user-profile.md) |
+| `apps`     | `app_output`       | `~/.deskmate/apps/<app>/output/<run>/*.md` (on disk) | non-empty report, ≤ `_MAX_REPORT_CHARS` | a friendly per-app instruction → the report the app wrote |
 
-**Defaults**: `sources = ["habits", "pipes", "behavior", "ask", "profile"]`.
+**Defaults**: `sources = ["habits", "apps", "pipes", "behavior", "ask", "profile"]`.
 
 The earlier `timeline` source (mining `context_events`) was **removed**: it was
 mostly raw echo ("what did I type in Code.exe?" → the literal typed text), which
@@ -103,6 +105,24 @@ rows dominates the gradient.
    isolated slots. Skipped entirely when there is too little signal. Full
    write-up: [17 — User profile](17-user-profile.md).
 
+6. **`apps`** — `_from_app_outputs`. Mines the markdown the LLM **apps** wrote to
+   `~/.deskmate/apps/<app>/output/<run>/*.md` (day-recap, user-profile,
+   habit-report, standup, …) — the actual reports, **read from disk**, newest
+   runs first. Each becomes an (instruction → report) pair so the fine-tuned
+   model learns to produce these in the user's own style:
+   - input: a friendly per-app instruction (e.g. user-profile → "根据我近期的活动，
+     总结我的用户画像…"); unknown apps get a generic "运行「\<app\>」助手并输出结果。"
+   - output: the report, with any trailing `_时间窗…_` metadata footer stripped
+   - Long-form: app reports are the *target*, so they use a higher cap
+     (`_MAX_REPORT_CHARS`, 6000) than the short-nudge default (`_MAX_OUTPUT_CHARS`,
+     1500).
+
+   > `apps` vs `pipes`: they look similar but read different places. `pipes`
+   > mines the `pipe_executions` **DB table** (the older scheduled-pipe runtime);
+   > `apps` mines the on-disk markdown the My-Apps runner produces. The new
+   > synthesis apps ([13 — Apps](13-apps.md)) only write to disk, so `apps` is
+   > what captures them.
+
 #### Shared post-processing (quality gate)
 
 - `_keep` drops a pair when: either side is shorter than `min_chars`; the output
@@ -132,7 +152,7 @@ explicit hint > cuda > mps > cpu.
 deskmate train-lora --dry-run
 
 # Train (requires: pip install 'deskmate[training]')
-deskmate train-lora --epochs 3 --sources habits,pipes,behavior,ask,profile
+deskmate train-lora --epochs 3 --sources habits,apps,pipes,behavior,ask,profile
 
 # Inspect the exact dataset a run would use, as JSONL, without training
 deskmate train-lora --export ~/.deskmate/sft_preview.jsonl
@@ -160,7 +180,7 @@ Flags: `--model`, `--output-dir`, `--sources`, `--epochs`, `--max-pairs`,
 | `enabled` | `true` | Whether the subsystem is exposed |
 | `model_name` | `Qwen/Qwen3-0.6B` | Base model to adapt |
 | `output_dir` | `""` → `~/.deskmate/checkpoints/lora` | Adapter output dir |
-| `sources` | `["habits","pipes","behavior","ask","profile"]` | Which sources to mine |
+| `sources` | `["habits","apps","pipes","behavior","ask","profile"]` | Which sources to mine |
 | `min_feedback` / `min_chars` | `1` / `8` | Quality thresholds (gates `habits` & `ask`) |
 | `limit_per_source` / `max_pairs` | `2000` / `5000` | Mining caps |
 | `lora_rank` / `lora_alpha` / `lora_dropout` | `16` / `32` / `0.05` | LoRA params |

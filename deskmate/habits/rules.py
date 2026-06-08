@@ -152,7 +152,10 @@ def _continuous_screen_minutes(
     (frames + UI events) counts as a break and resets the run.
 
     Returns 0.0 when the most recent activity is already older than the idle
-    gap (i.e. the user stepped away).
+    gap (i.e. the user stepped away). Also resets at the last time the user
+    acknowledged a screen-time nudge: clicking '知道了' is a manual "I got up",
+    so the continuous run is measured from that click forward even if the user
+    sat right back down (no idle gap was recorded).
     """
     start = (now - timedelta(hours=lookback_hours)).replace(microsecond=0).isoformat()
     raw = store.activity_timestamps_since(start)
@@ -168,6 +171,14 @@ def _continuous_screen_minutes(
             run_start = stamps[i - 1]
         else:
             break
+    # A manual acknowledgement clamps the run start: never count screen time
+    # from before the user last said "I'm taking a break".
+    ack = _parse_ts(store.last_activity_ack_ts() or "")
+    if ack is not None:
+        if ack.tzinfo is None and now.tzinfo is not None:
+            ack = ack.replace(tzinfo=now.tzinfo)
+        if ack > run_start:
+            run_start = min(ack, stamps[-1])
     return max(0.0, (now - run_start).total_seconds() / 60.0)
 
 
@@ -215,6 +226,15 @@ def read_current_state(store: HabitStore, now: datetime, *, window_minutes: int 
     continuous_minutes = _continuous_screen_minutes(store, now)
     # Never report less than the per-app figure (data sparsity guard).
     continuous_minutes = max(continuous_minutes, app_minutes)
+    # A manual break acknowledgement caps BOTH figures: if the user clicked
+    # '知道了' 3 min ago, neither the cross-app run nor the per-app window may
+    # report more than 3 min, so a freshly-acked break_reminder won't refire.
+    ack_dt = _parse_ts(store.last_activity_ack_ts() or "")
+    if ack_dt is not None:
+        if ack_dt.tzinfo is None and now.tzinfo is not None:
+            ack_dt = ack_dt.replace(tzinfo=now.tzinfo)
+        since_ack = max(0.0, (now - ack_dt).total_seconds() / 60.0)
+        continuous_minutes = min(continuous_minutes, since_ack)
 
     return CurrentState(
         category=category,

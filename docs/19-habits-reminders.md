@@ -21,7 +21,11 @@ training pipeline — see [16 — Learning & training](16-learning-training.md) 
 | `deskmate/habits/rules.py` | Pure rule evaluation + `DEFAULT_RULES`; reads "current state" |
 | `deskmate/habits/notifier.py` | The single guarded exit: quiet hours, cooldown, quota, feedback decay, delivery |
 | `deskmate/habits/watcher.py` | Background daemon thread that ties the layers together |
-| `deskmate/habits/store.py` | Data access for `habit_*` tables (own SQLite handle) |
+| `deskmate/habits/store.py` | Data access for `habit_*` tables (own SQLite handle); stamps `acknowledged_at` |
+
+`habit_suggestions` carries an `acknowledged_at` column (added by schema +
+migration in `deskmate/db/manager.py`): the local-time moment the user clicked /
+dismissed / rated a nudge. It drives the acknowledgement behavior below.
 
 ## Pipeline
 
@@ -66,6 +70,39 @@ and body *did* rest, so resetting is correct).
 work category — nagging about overwork while they're already relaxing is
 pointless.
 
+## Acknowledgement: clicking a nudge acts on the timing
+
+When the user clicks **知道了 / 有用 / 没用** on a nudge, that click is recorded
+as `acknowledged_at` (via `set_suggestion_status` / `set_suggestion_feedback`)
+and feeds back into *both* time measures. This answers the natural question
+"after I click it, does it stop counting / re-nagging?":
+
+| What the user did | What an acknowledgement changes | What it does **not** change |
+|-------------------|---------------------------------|-----------------------------|
+| Clicked a nudge | Cooldown restarts **from the click**; continuous on-screen time is **clamped to the click** | The cumulative-today total (it's a fact, not a timer — only midnight resets it) |
+
+Concretely:
+
+- **Cooldown anchor = later of (last sent, last acknowledged).** `notifier._in_cooldown`
+  takes the max of the two timestamps. So if you actively dismiss an `overwork`
+  nudge, the quiet window restarts from *your click* — a manual "I dealt with
+  it, leave me alone for another `cooldown_min`" — instead of re-nagging on the
+  original send schedule.
+- **Continuous time is clamped by the ack.** `_continuous_screen_minutes` (and
+  `read_current_state`, which also caps the per-app figure) never count
+  on-screen time from *before* the user's last acknowledgement of a screen-time
+  nudge (`break_reminder` / `overwork` / `lunch_break`). Clicking **知道了** is a
+  manual "I'm taking a break", so a `break_reminder` won't immediately refire
+  even if you sat right back down and no idle gap was recorded.
+- **Cumulative-today is deliberately *not* reset.** "You worked 240 min today"
+  is a fact about the day; a click doesn't un-work those minutes. Re-nagging is
+  prevented by the cooldown restart above, not by zeroing the count.
+
+> Timezone note: `acknowledged_at` is stored in **local** wall-clock time
+> (`store._local_now_iso`), not sqlite's UTC `datetime('now')`, so it compares
+> correctly against the rules engine's local `now`. (Mixing the two would skew
+> every comparison by the UTC offset and silently defeat the feature.)
+
 ## Built-in rules (`DEFAULT_RULES`)
 
 Seeded idempotently on first run (`store.ensure_rules`); existing rows are never
@@ -88,7 +125,8 @@ applied in `notifier.deliver`:
 1. **Feedback decay** — a rule marked "not useful" `feedback_decay_strikes`
    times in a row is auto-disabled.
 2. **Quiet hours** — per-rule `quiet_hours` window (default `22-8`).
-3. **Cooldown** — per-rule `cooldown_min` since the last *delivered* nudge.
+3. **Cooldown** — per-rule `cooldown_min` since the later of the last
+   *delivered* nudge and the last *acknowledged* one (see Acknowledgement above).
 4. **Daily quota** — a shared **runaway backstop**, *not* a daily throttle
    (default 30). It exists only to contain a misbehaving rule that hits every
    tick; a normal day stays well under it. Pacing is the cooldown's job, not the
@@ -146,3 +184,7 @@ warned about overwork after 5 cumulative hours instead of 4, raise the
    laptop doesn't inflate "minutes worked".
 4. **Self-contained & additive** — only `habit_*` tables are written; disabling
    `habits.enabled` removes the daemon entirely with no effect on capture.
+5. **A click is a signal, not a reset of facts** — acknowledging a nudge
+   restarts the *timing* that governs re-nagging (cooldown, continuous run) but
+   never rewrites the cumulative-today fact. This keeps "stop bothering me" and
+   "how much did I actually work" cleanly separated.

@@ -371,7 +371,8 @@ CREATE TABLE IF NOT EXISTS habit_suggestions (
     channel       TEXT    NOT NULL DEFAULT 'toast',-- toast|ui|telegram
     status        TEXT    NOT NULL DEFAULT 'sent', -- sent|suppressed|clicked|dismissed
     feedback      INTEGER,                          -- 1=useful -1=not useful NULL=none
-    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+    acknowledged_at TEXT                            -- when the user clicked/dismissed/rated it
 );
 CREATE INDEX IF NOT EXISTS idx_suggestion_rule ON habit_suggestions(rule_name, created_at);
 CREATE INDEX IF NOT EXISTS idx_suggestion_status ON habit_suggestions(status, created_at);

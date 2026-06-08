@@ -25,6 +25,14 @@ def _dict_factory(cursor: sqlite3.Cursor, row: tuple) -> dict[str, Any]:
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
 
+def _local_now_iso() -> str:
+    """Local wall-clock time, second precision — matches the rules engine's
+    ``datetime.now().astimezone()`` so acknowledgement timestamps compare right."""
+    from datetime import datetime  # noqa: PLC0415
+
+    return datetime.now().astimezone().replace(microsecond=0).isoformat()
+
+
 class HabitStore:
     """Serialized read/write access to the ``habit_*`` tables."""
 
@@ -252,20 +260,47 @@ class HabitStore:
             return self._conn.execute(sql, params).fetchall()
 
     def set_suggestion_feedback(self, suggestion_id: int, feedback: int) -> bool:
+        # Rating a nudge is also an acknowledgement → stamp acknowledged_at so
+        # cooldown / continuous-time restart from this moment. Stored in LOCAL
+        # time (not sqlite's UTC datetime('now')) so it compares correctly with
+        # the local `now` the rules engine uses.
         with self._lock:
             cur = self._conn.execute(
-                "UPDATE habit_suggestions SET feedback = ? WHERE id = ?",
-                (feedback, suggestion_id),
+                "UPDATE habit_suggestions SET feedback = ?, acknowledged_at = ? WHERE id = ?",
+                (feedback, _local_now_iso(), suggestion_id),
             )
             return cur.rowcount > 0
 
     def set_suggestion_status(self, suggestion_id: int, status: str) -> bool:
+        # Dismissing (or otherwise acting on) a nudge counts as acknowledgement.
         with self._lock:
             cur = self._conn.execute(
-                "UPDATE habit_suggestions SET status = ? WHERE id = ?",
-                (status, suggestion_id),
+                "UPDATE habit_suggestions SET status = ?, acknowledged_at = ? WHERE id = ?",
+                (status, _local_now_iso(), suggestion_id),
             )
             return cur.rowcount > 0
+
+    def last_acknowledged_ts(self, rule_name: str) -> str | None:
+        """Most recent time the user clicked / dismissed / rated this rule's nudge."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(acknowledged_at) AS ts FROM habit_suggestions "
+                "WHERE rule_name = ? AND acknowledged_at IS NOT NULL",
+                (rule_name,),
+            ).fetchone()
+        return row["ts"] if row and row.get("ts") else None
+
+    def last_activity_ack_ts(self) -> str | None:
+        """Most recent acknowledgement of ANY screen-time nudge (break_reminder /
+        overwork / lunch_break). Used to clamp continuous-screen-time: clicking
+        '知道了' is the user saying 'I got up', so the run restarts from then."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(acknowledged_at) AS ts FROM habit_suggestions "
+                "WHERE acknowledged_at IS NOT NULL "
+                "AND rule_name IN ('break_reminder', 'overwork', 'lunch_break')",
+            ).fetchone()
+        return row["ts"] if row and row.get("ts") else None
 
     def close(self) -> None:
         with self._lock:

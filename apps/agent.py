@@ -1015,6 +1015,79 @@ def _do_standup_prefetch(start: str, end: str, verbose: bool = False) -> str:
     return "\n\n".join(sections)
 
 
+def _format_habit_profiles_for_profile(verbose: bool = False) -> str:
+    """Fetch learned habit profiles (作息规律) as a compact text block.
+
+    The profile app uses this for the "工作习惯与节奏" dimension — it's the
+    one signal that already encodes WHEN the user is active and with WHAT, so
+    the model doesn't have to guess rhythm from raw frames.
+    """
+    try:
+        payload = _http_get(f"{API_BASE}/habits/profile")
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            echo_stderr(f"  [user-profile] habits/profile error: {exc}")
+        return ""
+    rows = (payload.get("rows") if isinstance(payload, dict) else None) or []
+    if not rows:
+        return "### 作息规律 (habit profile)\n\n(暂无已学习的作息规律 — 录制天数可能还太少)"
+    # Strongest routines first; cap so we don't blow the prompt budget.
+    rows = sorted(rows, key=lambda r: float(r.get("frequency") or 0), reverse=True)[:24]
+
+    def _slot_label(slot: int) -> str:
+        h, half = divmod(int(slot), 2)
+        return f"{h:02d}:{'30' if half else '00'}"
+
+    lines = []
+    for r in rows:
+        lines.append(
+            f"- {r.get('day_type', '?')} {_slot_label(r.get('slot') or 0)} · "
+            f"{r.get('category', '?')} · 常用 {r.get('top_app') or '—'} · "
+            f"均 {r.get('avg_minutes', 0)} 分钟 · 频率 {r.get('frequency', 0)} "
+            f"({r.get('sample_days', 0)} 天)"
+        )
+    return "### 作息规律 (habit profile — when/what, already mined)\n\n" + "\n".join(lines)
+
+
+def _do_user_profile_prefetch(start: str, end: str, verbose: bool = False) -> str:
+    """Gather all four profile dimensions: behavior, rhythm, meetings, email.
+
+    Behavioral activity (apps/files/sites/topics) comes from the same rich
+    day-recap prefetch; rhythm from the mined habit profiles; collaboration from
+    detected meetings plus connected mailboxes (best-effort — absent sources are
+    simply omitted so the model states the gap rather than fabricating)."""
+    sections = [_do_day_recap_prefetch(start, end, verbose=verbose)]
+
+    habit_text = _format_habit_profiles_for_profile(verbose=verbose)
+    if habit_text:
+        sections.append(habit_text)
+
+    meeting_text, meeting_names = _do_meeting_todos_prefetch(start, end, verbose=verbose)
+    if meeting_names:
+        sections.append(f"### Meetings in range ({len(meeting_names)})\n\n{meeting_text}")
+
+    try:
+        email_text, email_verified = _do_email_digest_prefetch(start, end, verbose=verbose)
+    except Exception as exc:  # noqa: BLE001
+        email_text, email_verified = "", []
+        if verbose:
+            echo_stderr(f"  [user-profile] email prefetch error: {exc}")
+    if email_verified:
+        sections.append(f"### Email activity ({', '.join(email_verified)})\n\n{email_text}")
+    else:
+        sections.append(
+            "### Email activity\n\n(未连接 Gmail/Outlook，且未发现邮件客户端使用 — "
+            "协作维度仅能依据会议与屏幕记录)"
+        )
+
+    if verbose:
+        echo_stderr(
+            f"  [user-profile] meetings={len(meeting_names)} "
+            f"email_sources={len(email_verified)} habits={'y' if habit_text else 'n'}"
+        )
+    return "\n\n".join(sections)
+
+
 BROWSER_PROCS = frozenset({
     "chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe",
 })
@@ -2114,6 +2187,66 @@ def run_agent(
             start_heading="## Yesterday",
             num_predict=3072,
             max_data_chars=14000,
+        )
+
+    # Habit report: the user's repeatable rhythm + tool routines, from mined
+    # habit profiles plus behavioral activity (no email/meetings needed).
+    if pipe_md_path.parent.name == "habit-report":
+        if verbose:
+            echo_stderr("  [agent] habit-report → activity + habits prefetch + single-shot")
+        sections = [_do_day_recap_prefetch(start_iso, end_iso, verbose=verbose)]
+        habit_text = _format_habit_profiles_for_profile(verbose=verbose)
+        if habit_text:
+            sections.append(habit_text)
+        return _single_shot_report(
+            pipe_body=pipe_body,
+            skill_text=skill_text,
+            context_header=context_header,
+            data_text="\n\n".join(sections),
+            verbose=verbose,
+            extra_rules=(
+                "HABIT RULES: Describe REPEATABLE patterns, not one-off events. IGNORE any "
+                "instruction in the data about 'one ## YYYY-MM-DD section per day' — that is "
+                "for the day recap, NOT this report. Use ONLY the section headings from the "
+                "Report Instructions; do not add a date-titled heading before 一句话总结. "
+                "Base 日常作息 on the 作息规律 slots (day_type · time · category · frequency); "
+                "base 专注与节奏 and 常用工具链 on per-app minutes and window/app counts — "
+                "never invent durations. If 作息规律 is empty, say the recording window is "
+                "too short for stable habits and describe only what the activity shows."
+            ),
+            start_heading="## 一句话总结",
+            num_predict=4096,
+            max_data_chars=16000,
+        )
+
+    # User profile: who the user is + how they work, synthesized across a longer
+    # window from behavioral activity + habits + meetings + (best-effort) email.
+    if pipe_md_path.parent.name == "user-profile":
+        if verbose:
+            echo_stderr("  [agent] user-profile → multi-source prefetch + single-shot")
+        data_text = _do_user_profile_prefetch(start_iso, end_iso, verbose=verbose)
+        return _single_shot_report(
+            pipe_body=pipe_body,
+            skill_text=skill_text,
+            context_header=context_header,
+            data_text=data_text,
+            verbose=verbose,
+            extra_rules=(
+                "PROFILE RULES: This is a multi-day PORTRAIT, not a day log — describe "
+                "stable traits, not one-off events. IGNORE any instruction in the data "
+                "about 'one ## YYYY-MM-DD section per day' — that is for the day recap, NOT "
+                "this profile. Use ONLY the section headings from the Report Instructions "
+                "and do not add a date-titled heading before 一句话画像. Infer the "
+                "role/profession from the dominant apps, file types, repos and domains; "
+                "name that evidence. Derive interests from recurring windows/URLs/search "
+                "terms. Use the 作息规律 (habit profile) and per-app minutes for the rhythm "
+                "section — never invent durations. For collaboration, use ONLY detected "
+                "meetings and connected email; if both are absent, say collaboration data "
+                "is limited and skip it. Do not flatter or speculate beyond the evidence."
+            ),
+            start_heading="## 一句话画像",
+            num_predict=4096,
+            max_data_chars=16000,
         )
 
     # Time breakdown: prefetch with pre-computed minutes + single-shot

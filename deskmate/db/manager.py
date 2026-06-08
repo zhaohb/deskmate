@@ -60,6 +60,24 @@ class DatabaseManager:
             self._ensure_todo_columns()
             self._ensure_ask_history_columns()
             self._ensure_transcript_translation_columns()
+            self._ensure_suggestion_columns()
+
+    def _ensure_suggestion_columns(self) -> None:
+        """Add ``acknowledged_at`` to ``habit_suggestions`` on pre-existing DBs.
+
+        Records when the user clicked / dismissed / rated a nudge, so cooldown
+        and continuous-screen-time can restart from that moment (a manual ack
+        means "I dealt with it") rather than only from when it was sent."""
+        cols = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(habit_suggestions)"
+            ).fetchall()
+        }
+        if cols and "acknowledged_at" not in cols:
+            self._conn.execute(
+                "ALTER TABLE habit_suggestions ADD COLUMN acknowledged_at TEXT"
+            )
 
     def _ensure_ask_history_columns(self) -> None:
         """Add the ``feedback`` column to ``ask_history`` on pre-existing DBs."""

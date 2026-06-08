@@ -17,6 +17,10 @@ existing local data sources, none of which are modified:
   "who is this user" identity Q&A (top apps, dominant categories, weekday vs
   weekend rhythm). Gives the fine-tuned model a stable sense of the user
   instead of only isolated routines. Skipped when signal is too thin.
+* **apps** — markdown reports the local LLM apps wrote to
+  ``~/.deskmate/apps/<app>/output/<run>/*.md`` (day-recap, user-profile,
+  habit-report, standup, …). Each becomes an (instruction → report) pair so the
+  fine-tuned model learns to produce these reports in the user's own style.
 
 All pairs pass a quality gate (min length, an output-length cap, natural-
 language check, input≠output) and are deduplicated whitespace/case-insensitively
@@ -40,7 +44,7 @@ from ...logger import get
 logger = get("learning.training.data")
 
 # Valid provenance tags for ``sources=`` filtering.
-SOURCES: tuple[str, ...] = ("habits", "pipes", "behavior", "ask", "profile")
+SOURCES: tuple[str, ...] = ("habits", "pipes", "behavior", "ask", "profile", "apps")
 
 # Junk that must never become a training target: mouse-click coordinates,
 # capture triggers, and accessibility boilerplate.
@@ -74,6 +78,11 @@ def _has_cjk(text: str) -> bool:
 # char pipe report teaches length, not preference, and blows up sequence cost.
 # We drop pairs whose output exceeds this rather than silently truncating them.
 _MAX_OUTPUT_CHARS = 1500
+
+# App reports (day-recap / user-profile / habit-report …) are intentionally
+# long-form — producing the full report IS the target — so they get a higher
+# cap than short nudges/answers. Still bounded to keep sequence cost sane.
+_MAX_REPORT_CHARS = 6000
 
 # Cap repeats of an identical output so a handful of rows can't dominate.
 _MAX_DUP_OUTPUT = 3
@@ -162,6 +171,8 @@ class DeskMateTrainingDataMiner:
             pairs.extend(self._from_ask_history(limit_per_source))
         if "profile" in wanted:
             pairs.extend(self._from_user_profile())
+        if "apps" in wanted:
+            pairs.extend(self._from_app_outputs(limit_per_source))
 
         # Collapse duplicates (whitespace/case-insensitive), keep first. Also cap
         # how many times the SAME output may appear: a few identical pipe reports
@@ -229,6 +240,8 @@ class DeskMateTrainingDataMiner:
             counts["ask"] = len(self._from_ask_history(limit_per_source))
         if "profile" in sources:
             counts["profile"] = len(self._from_user_profile())
+        if "apps" in sources:
+            counts["apps"] = len(self._from_app_outputs(limit_per_source))
         return counts
 
     def close(self) -> None:
@@ -239,16 +252,17 @@ class DeskMateTrainingDataMiner:
 
     # -- per-source extractors --------------------------------------------------
 
-    def _keep(self, text_in: str, text_out: str) -> bool:
+    def _keep(self, text_in: str, text_out: str, *, max_out: int = _MAX_OUTPUT_CHARS) -> bool:
         """Quality gate for one (input, output) pair.
 
-        Beyond the min-length floor we reject: outputs longer than
-        :data:`_MAX_OUTPUT_CHARS` (length-teaching, not preference), pairs whose
-        output isn't natural language, and pairs where input == output (the
-        model would learn to echo)."""
+        Beyond the min-length floor we reject: outputs longer than *max_out*
+        (length-teaching, not preference), pairs whose output isn't natural
+        language, and pairs where input == output (the model would learn to
+        echo). *max_out* defaults to :data:`_MAX_OUTPUT_CHARS`; long-form
+        sources (e.g. app reports) may raise it via :data:`_MAX_REPORT_CHARS`."""
         if len(text_in) < self._min_chars or len(text_out) < self._min_chars:
             return False
-        if len(text_out) > _MAX_OUTPUT_CHARS:
+        if len(text_out) > max_out:
             return False
         if not _looks_like_language(text_out):
             return False
@@ -327,6 +341,73 @@ class DeskMateTrainingDataMiner:
                     "source": "pipe_execution",
                     "pipe": pipe,
                     "ts": r.get("started_at"),
+                }
+            )
+        return pairs
+
+    def _from_app_outputs(self, limit: int) -> list[dict[str, Any]]:
+        """Local LLM-app reports on disk → (instruction, report) SFT pairs.
+
+        Apps (day-recap, user-profile, habit-report, standup, …) write their
+        markdown to ``~/.deskmate/apps/<app>/output/<run>/*.md``. Each report is
+        a high-quality, user-grounded long-form target, so the fine-tuned model
+        learns to produce these in the user's own style. We read the newest runs
+        first, strip any trailing metadata footer, and keep one pair per report.
+        """
+        apps_root = paths.root() / "apps"
+        if not apps_root.is_dir():
+            return []
+
+        # Friendly instruction per known app; unknown apps get a generic one.
+        instructions = {
+            "day-recap": "总结我今天的工作进展、关键时刻和未完成的事项。",
+            "user-profile": "根据我近期的活动，总结我的用户画像（角色、兴趣、工作习惯、协作）。",
+            "habit-report": "总结我的行为习惯：作息规律、专注节奏和常用工具链。",
+            "standup-update": "用 Yesterday / Today / Blockers 的格式写一份站会更新。",
+            "time-breakdown": "分析我的时间都花在了哪些事情上。",
+            "ai-habits": "总结我使用了哪些 AI 工具以及如何使用的。",
+            "email-digest": "汇总我的邮箱概况。",
+        }
+
+        # Collect (app, run_dir, md_file) newest-first across all apps.
+        runs: list[tuple[str, Path]] = []
+        for app_dir in apps_root.iterdir():
+            out_root = app_dir / "output"
+            if not app_dir.is_dir() or not out_root.is_dir():
+                continue
+            for run_dir in out_root.iterdir():
+                if not run_dir.is_dir():
+                    continue
+                md_files = sorted(run_dir.glob("*.md"))
+                if md_files:
+                    runs.append((app_dir.name, md_files[0]))
+        # run dir names are timestamps (YYYYmmddTHHMMSS) → newest first by name.
+        runs.sort(key=lambda t: t[1].parent.name, reverse=True)
+
+        pairs: list[dict[str, Any]] = []
+        for app_name, md_path in runs[: int(limit)]:
+            try:
+                report = md_path.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
+            except OSError as exc:
+                logger.debug("app output unreadable %s: %s", md_path, exc)
+                continue
+            # Drop a trailing "---\n_…_" metadata footer some apps append
+            # (e.g. day-recap's "_时间窗：x → y_"). Tolerant of blank lines / \r.
+            report = re.split(r"\n\s*-{3,}\s*\n+\s*_", report, maxsplit=1)[0].strip()
+            if not report:
+                continue
+            prompt = instructions.get(
+                app_name, f"运行「{app_name}」助手并输出结果。"
+            )
+            if not self._keep(prompt, report, max_out=_MAX_REPORT_CHARS):
+                continue
+            pairs.append(
+                {
+                    "input": prompt,
+                    "output": report,
+                    "source": "app_output",
+                    "app": app_name,
+                    "ts": md_path.parent.name,
                 }
             )
         return pairs

@@ -55,6 +55,14 @@ def paused_flag() -> Path:
     return root() / ".paused"
 
 
+def restart_marker_path() -> Path:
+    """Marker the API writes to request a process restart (see /restart).
+
+    A supervising launcher can watch for this file to know a relaunch was asked
+    for; it is advisory and safe to ignore when running unsupervised."""
+    return root() / ".restart-requested"
+
+
 def ensure_dirs() -> None:
     for p in (root(), frames_dir(), videos_dir(), audio_dir(), logs_dir(), pipes_dir()):
         p.mkdir(parents=True, exist_ok=True)

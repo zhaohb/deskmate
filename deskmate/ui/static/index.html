@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260606-rem2" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260608-set3" />
     <style>
       /* Scoped styles for the Capture & Unified Timeline view */
       #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
@@ -71,7 +71,11 @@
       #view-training .trn-src .trn-src-head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
       #view-training .trn-src .trn-src-desc { font-size: 11px; color: var(--muted); line-height: 1.35; }
       #view-training .trn-src .trn-src-count { margin-left: auto; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-      #view-training .trn-samples { display: flex; flex-direction: column; gap: 10px; max-height: 460px; overflow-y: auto; }
+      /* Constrain the sample list to a compact, independently-scrolling panel
+         so a large dataset never pushes the params / start-training cards far
+         down the page. */
+      #view-training .trn-samples { display: flex; flex-direction: column; gap: 10px; max-height: 300px; overflow-y: auto; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); }
+      #view-training .trn-samples .trn-pair { background: var(--surface); }
       #view-training .trn-pair { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; background: var(--surface-2); }
       #view-training .trn-pair .trn-io { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 6px; }
       #view-training .trn-pair .trn-io:last-child { margin-bottom: 0; }
@@ -157,18 +161,27 @@
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 11h4v-2h-3V7h-2v6Z" fill="currentColor"/></svg>
             <span>Timeline</span>
           </button>
+          <button class="nav-item" data-view="transcripts" type="button">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3Zm-7 9h2a5 5 0 0 0 10 0h2a7 7 0 0 1-6 6.93V22h-2v-3.07A7 7 0 0 1 5 12Z" fill="currentColor"/></svg>
+            <span>Transcripts</span>
+          </button>
+          <button class="nav-item" data-view="events" type="button">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v2H4V5Zm0 6h10v2H4v-2Zm0 6h16v2H4v-2Zm12-6 5 3-5 3v-6Z" fill="currentColor"/></svg>
+            <span>Events</span>
+          </button>
         </nav>
 
         <nav class="nav nav-secondary">
           <button class="nav-item" data-view="todos" type="button"><span>Todos</span></button>
           <button class="nav-item" data-view="meetings" type="button"><span>Meetings</span></button>
-          <button class="nav-item" data-view="transcripts" type="button"><span>Transcripts</span></button>
           <button class="nav-item" data-view="translate" type="button"><span>Translate</span></button>
-          <button class="nav-item" data-view="events" type="button"><span>Events</span></button>
           <button class="nav-item" data-view="capture" type="button"><span>Capture</span></button>
           <button class="nav-item" data-view="training" type="button"><span>Training</span></button>
           <button class="nav-item" data-view="reminders" type="button"><span>Reminders</span></button>
-          <button class="nav-item" data-view="settings" type="button"><span>Settings</span></button>
+          <button class="nav-item nav-item--settings" data-view="settings" type="button">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9 4a7 7 0 0 0-.1-1.1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.9-1.1L16.3 2h-4.6l-.4 2.7a7 7 0 0 0-1.9 1.1l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 3 12a7 7 0 0 0 .1 1.1l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.9 1.1l.4 2.8h4.6l.4-2.7a7 7 0 0 0 1.9-1.1l2.4 1 2-3.4-2-1.6c.06-.36.1-.73.1-1.1Z" fill="currentColor"/></svg>
+            <span>Settings</span>
+          </button>
         </nav>
 
         <section class="status-panel">
@@ -544,28 +557,46 @@
         </section>
 
         <section id="view-settings" class="view">
-          <section class="panel">
-            <div class="panel-title">Transcription languages</div>
-            <p class="muted-copy">
-              Comma-separated ISO codes (e.g. <code>zh, en</code>). Empty = auto-detect.
-              Applies to the next audio clip — no model reload.
-            </p>
-            <div class="lang-row">
-              <input id="langInput" type="text" placeholder="zh, en" autocomplete="off" />
-              <button id="langSaveBtn" type="button">Save</button>
-              <span id="langStatus" class="muted-copy"></span>
-            </div>
-          </section>
-          <div class="grid two">
-            <section class="panel">
-              <div class="panel-title">Configuration</div>
-              <pre id="configDump">{}</pre>
-            </section>
-            <section class="panel">
-              <div class="panel-title">Monitors</div>
-              <div id="monitorList" class="list empty">No data</div>
-            </section>
+          <div class="set-intro">
+            调整 DeskMate 的常用设置。改动后点「保存设置」生效；多数设置即时生效，标有
+            <span class="set-flag">需重启</span>
+            的项目保存后会提示你重启。
           </div>
+
+          <!-- Sticky action bar: appears with a summary once you change anything -->
+          <div id="setActionBar" class="set-actionbar" hidden>
+            <span id="setActionMsg" class="set-action-msg"></span>
+            <span style="flex:1"></span>
+            <button id="setResetBtn" type="button" class="set-btn-ghost">放弃更改</button>
+            <button id="setSaveBtn" type="button" class="set-btn-primary">保存设置</button>
+          </div>
+
+          <!-- Post-save restart prompt -->
+          <div id="setRestartBar" class="set-restartbar" hidden>
+            <span id="setRestartMsg">设置已保存。部分更改需要重启 DeskMate 才能生效。</span>
+            <span style="flex:1"></span>
+            <button id="setRestartBtn" type="button" class="set-btn-primary">重启生效</button>
+            <button id="setRestartLater" type="button" class="set-btn-ghost">稍后手动重启</button>
+          </div>
+
+          <div id="setGroups" class="set-groups"></div>
+
+          <details class="set-advanced">
+            <summary>高级 · 完整配置与显示器信息</summary>
+            <div class="grid two" style="margin-top:14px">
+              <section class="panel">
+                <div class="panel-title">完整配置 (只读)</div>
+                <pre id="configDump">{}</pre>
+              </section>
+              <section class="panel">
+                <div class="panel-title">显示器 Monitors</div>
+                <div id="monitorList" class="list empty">No data</div>
+              </section>
+            </div>
+            <p class="muted-copy" style="margin-top:10px">
+              需要更底层的设置？直接编辑 <code id="cfgPathHint">~/.deskmate/config.toml</code> 后重启。
+            </p>
+          </details>
         </section>
 
         <section id="view-capture" class="view">
@@ -688,7 +719,6 @@
             <p class="muted" style="margin-top:0">DeskMate 根据你的活动规律主动推送的提醒。给出反馈（有用 / 没用）会让推送越来越贴合你，也会成为可训练数据。</p>
             <div class="rem-row" style="margin-bottom:12px">
               <button id="remRefreshBtn" type="button">刷新</button>
-              <button id="remMineBtn" type="button" class="ghost">重新分析作息</button>
               <span id="remMeta" class="muted"></span>
             </div>
             <div id="remSuggestions"></div>
@@ -849,6 +879,6 @@
       </article>
     </template>
 
-    <script src="/ui/assets/app.js?v=20260606-rem2" defer></script>
+    <script src="/ui/assets/app.js?v=20260608-set3" defer></script>
   </body>
 </html>

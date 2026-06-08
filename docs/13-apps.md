@@ -22,9 +22,15 @@ apps/
     pipe.md         # YAML frontmatter + markdown prompt (tools + report format)
 ```
 
-The ten apps: `video-export`, `day-recap`, `ai-habits`, `meeting-summary`,
+The apps: `video-export`, `day-recap`, `ai-habits`, `meeting-summary`,
 `standup-update`, `time-breakdown`, `ai-prompt-journal`, `todo-list`,
-`email-compose`, `email-digest`.
+`email-compose`, `email-digest`, and the two multi-day synthesis apps
+`user-profile` and `habit-report` (see below).
+
+Apps are **auto-discovered**: dropping an `apps/<name>/` folder with a `pipe.md`
+(and `app.py`) makes it appear in the "My Apps" UI with a built-in run button
+and output viewer — no API or frontend change needed (`_scan_apps` in
+`engine/api.py` reads each `pipe.md` frontmatter).
 
 ## How an app runs
 
@@ -146,6 +152,40 @@ flowchart TB
 New web / desktop tools are added by appending one entry to
 `AI_PROMPT_JOURNAL_TARGETS`. Editor-embedded and CLI tools are *not* generic —
 each needs a hand-tuned `ClassName` / `Name` / screen-marker fingerprint.
+
+## user-profile & habit-report: multi-day synthesis
+
+Most apps describe a *day* (recap, standup, time-breakdown). These two describe
+the *person* — stable traits synthesized across a longer window — so they differ
+from the others in three ways:
+
+| | day-recap & friends | `user-profile` / `habit-report` |
+|--|--------------------|----------------------------------|
+| Default window | last ~16 h | **last 7 days** (`DEFAULT_HOURS = 24*7` in `app.py`) |
+| Question | "what happened today" | "who is this user / how do they work" |
+| Prefetch | activity for the window | activity **+** mined habit profiles **+** (profile only) meetings & best-effort email |
+
+- **`user-profile`** — a four-part portrait: 角色与职业 / 兴趣与主题 / 工作习惯与节奏 /
+  沟通与协作. Prefetch (`_do_user_profile_prefetch` in `agent.py`) combines the
+  rich day-recap context, the mined `habit_profiles` (the rhythm signal), detected
+  meetings, and — if a mailbox is connected — email activity. Absent sources are
+  omitted so the model states the gap (e.g. "未连接邮箱，协作维度仅基于会议与屏幕记录")
+  rather than fabricating.
+- **`habit-report`** — repeatable rhythm + tool routines: 日常作息 / 专注与节奏 /
+  常用工具链 / 值得注意的习惯. Prefetch is the day-recap context plus the
+  `habit_profiles` block (`_format_habit_profiles_for_profile`); no email/meetings.
+
+Both use the **single-shot** path (`_single_shot_report`): Python pre-fetches all
+evidence and the model writes the report in one call — more reliable for small
+models than multi-round tool planning. Each is wired as a dedicated branch in
+`run_agent`. Their `pipe.md` headings are the contract; a per-app `extra_rules`
+string tells the model to ignore the day-recap "one `## YYYY-MM-DD` section per
+day" instruction (which the shared prefetch injects) and to never invent
+durations — use the per-app minutes and habit profiles instead.
+
+> These reports are also the strongest **training** signal: the `apps` source in
+> the learning pipeline mines every app's markdown output into (instruction →
+> report) SFT pairs. See [16 — Learning & training](16-learning-training.md).
 
 ## Why this shape
 

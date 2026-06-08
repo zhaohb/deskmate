@@ -156,6 +156,49 @@ def test_export_jsonl(tmp_path: Path) -> None:
     assert obj["input"] and obj["output"] and obj["source"] == "ask"
 
 
+def test_app_outputs_source_mines_markdown(tmp_path, monkeypatch) -> None:
+    """App reports on disk become (instruction → report) pairs, long-form OK."""
+    import deskmate.learning.training.data as data_mod
+
+    # Point paths.root() at a fake home with two app reports.
+    home = tmp_path / "home"
+    monkeypatch.setattr(data_mod.paths, "root", lambda: home)
+    rec = home / "apps" / "day-recap" / "output" / "20260608T120000"
+    rec.mkdir(parents=True)
+    long_report = "## Summary\n" + ("我今天主要在 VS Code 里写代码并调试性能。" * 80)
+    (rec / "day-recap.md").write_text(long_report, encoding="utf-8")
+    prof = home / "apps" / "user-profile" / "output" / "20260608T130000"
+    prof.mkdir(parents=True)
+    (prof / "user-profile.md").write_text(
+        "## 一句话画像\n一位本地大模型开发者。\n\n---\n\n_时间窗：x → y_\n",
+        encoding="utf-8",
+    )
+
+    db = _make_db(tmp_path)
+    miner = DeskMateTrainingDataMiner(db, min_chars=8)
+    pairs = miner.extract_sft_pairs(sources=["apps"], max_pairs=100)
+    miner.close()
+
+    by_app = {p["app"]: p for p in pairs}
+    assert "day-recap" in by_app and "user-profile" in by_app
+    # Long-form report kept (over the short-output cap, under the report cap).
+    assert len(by_app["day-recap"]["output"]) > _MAX_OUTPUT_CHARS
+    # Trailing "_时间窗_" metadata footer stripped from the profile report.
+    assert "时间窗" not in by_app["user-profile"]["output"]
+    assert all(p["source"] == "app_output" for p in pairs)
+
+
+def test_app_outputs_empty_when_no_apps_dir(tmp_path, monkeypatch) -> None:
+    import deskmate.learning.training.data as data_mod
+
+    monkeypatch.setattr(data_mod.paths, "root", lambda: tmp_path / "empty_home")
+    db = _make_db(tmp_path)
+    miner = DeskMateTrainingDataMiner(db, min_chars=8)
+    pairs = miner.extract_sft_pairs(sources=["apps"], max_pairs=100)
+    miner.close()
+    assert pairs == []
+
+
 def test_format_pair_prompt_is_prefix_of_full() -> None:
     """The manual chat format must keep prompt as an exact prefix of full text
     so token-length subtraction yields a correct loss-mask boundary."""

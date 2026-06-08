@@ -109,17 +109,29 @@ class Notifier:
         return self._store.count_sent_since(day_start) >= self._daily_quota
 
     def _in_cooldown(self, rule: dict[str, Any], now: datetime) -> bool:
-        last = self._store.last_suggestion_ts(rule["name"])
-        if not last:
+        # Anchor the cooldown on the LATER of "last sent" and "last acknowledged":
+        # if the user actively clicked/dismissed/rated the nudge, the quiet window
+        # restarts from that click — a manual ack means "I dealt with it, leave me
+        # alone for another cooldown" rather than re-nagging on the send schedule.
+        candidates = [
+            self._store.last_suggestion_ts(rule["name"]),
+            self._store.last_acknowledged_ts(rule["name"]),
+        ]
+        anchors: list[datetime] = []
+        for ts in candidates:
+            if not ts:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(ts).replace(" ", "T"))
+            except ValueError:
+                continue
+            if dt.tzinfo is None and now.tzinfo is not None:
+                dt = dt.replace(tzinfo=now.tzinfo)
+            anchors.append(dt)
+        if not anchors:
             return False
-        try:
-            last_dt = datetime.fromisoformat(str(last).replace(" ", "T"))
-        except ValueError:
-            return False
-        if last_dt.tzinfo is None and now.tzinfo is not None:
-            last_dt = last_dt.replace(tzinfo=now.tzinfo)
         cooldown = timedelta(minutes=int(rule.get("cooldown_min", 120)))
-        return (now - last_dt) < cooldown
+        return (now - max(anchors)) < cooldown
 
     def _decayed(self, rule: dict[str, Any]) -> bool:
         """True if the rule has been marked unhelpful too many times in a row."""

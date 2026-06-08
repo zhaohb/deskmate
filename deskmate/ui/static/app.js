@@ -364,6 +364,9 @@ function setView(name) {
   if (name === "translate") {
     refreshTranslateView();
   }
+  if (name === "settings") {
+    refreshSettingsView();
+  }
 }
 
 async function refreshAll() {
@@ -683,23 +686,25 @@ function captureViewActive() {
 }
 
 // ─── LoRA training view ─────────────────────────────────────────────────
-const TRN_SOURCES = ["habits", "pipes", "behavior", "ask", "profile"];
+const TRN_SOURCES = ["habits", "apps", "pipes", "behavior", "ask", "profile"];
 const TRN_SOURCE_LABEL = {
   habits: "习惯建议",
-  pipes: "Apps 运行",
+  apps: "Apps 输出",
+  pipes: "Pipes 运行",
   behavior: "行为习惯",
   ask: "问答记录",
   profile: "用户画像",
 };
 const TRN_SOURCE_DESC = {
   habits: "你点过「有用」的主动提醒 → 学会该在什么情境给你什么提醒",
-  pipes: "成功运行过的本地 Apps 的输入/输出 → 学会你常用的任务",
+  apps: "本地 Apps 生成的报告（日报/画像/习惯…）→ 学会用你的风格产出这些报告",
+  pipes: "成功运行过的 Pipe 任务的输入/输出 → 学会你常用的任务",
   behavior: "作息热力图里的高频规律 → 学会你「几点通常做什么」",
   ask: "你问过 Ask 的问题和它的回答 → 学会你的提问方式与偏好",
   profile: "汇总你的常用应用、主攻方向、工作日/周末作息 → 让模型「懂你是谁」",
 };
 const trainingUi = {
-  sources: { habits: true, pipes: true, behavior: true, ask: true, profile: true },
+  sources: { habits: true, apps: true, pipes: true, behavior: true, ask: true, profile: true },
   paramsInit: false,
   running: false,
   breakdown: {},
@@ -1024,7 +1029,7 @@ async function loadReminderSuggestions() {
         <div class="rem-empty-ic">\uD83D\uDD14</div>
         <div class="rem-empty-title">还没有提醒</div>
         <p>DeskMate 会观察你的作息规律，在合适的时机主动提醒你 —— 比如久坐该起来活动、该收尾今天的工作了。</p>
-        <p class="muted">规律积累足够后会自动出现，你也可以点上方「重新分析作息」立即尝试。</p>
+        <p class="muted">随着活动规律的积累，提醒会自动出现。</p>
         <div class="rem-example">
           <div class="rem-ic">\u2615</div>
           <div>
@@ -1642,16 +1647,35 @@ function scrollTranslateToEnd() {
   if (host) host.scrollTop = host.scrollHeight;
 }
 
+// Total item count per paginated view, read from the health snapshot so we can
+// show "Page X of N" without a dedicated count endpoint. Returns null when the
+// total is unknown (health not loaded yet) — the label then omits the total.
+function totalPagesFor(kind) {
+  const counts = {
+    frames: state.health?.frames,
+    events: state.health?.events,
+    transcripts: state.health?.transcripts,
+  };
+  const total = counts[kind];
+  if (typeof total !== "number" || total < 0) return null;
+  return Math.max(1, Math.ceil(total / PAGE_SIZE));
+}
+
 function renderPagination(kind, itemCount) {
   const el = $(`#${kind}Pagination`);
   if (!el) return;
   const page = state.pages[kind] || 0;
+  const totalPages = totalPagesFor(kind);
   const hasPrevious = page > 0;
-  const hasNext = itemCount === PAGE_SIZE;
+  // Prefer the known total to decide if a next page exists; fall back to the
+  // "full page implies maybe more" heuristic when the total is unknown.
+  const hasNext = totalPages != null ? page + 1 < totalPages : itemCount === PAGE_SIZE;
   el.innerHTML = "";
 
   const label = document.createElement("span");
-  label.textContent = `Page ${page + 1} · ${PAGE_SIZE} per page`;
+  label.textContent = totalPages != null
+    ? `Page ${page + 1} of ${totalPages} · ${PAGE_SIZE} per page`
+    : `Page ${page + 1} · ${PAGE_SIZE} per page`;
 
   const controls = document.createElement("div");
   controls.className = "pagination-controls";
@@ -2524,51 +2548,236 @@ function simpleMarkdown(text) {
   return html.join("");
 }
 
+// Settings UI state: the schema fetched from the server, the values currently
+// shown in the form (edited in place), and the pristine baseline so we can
+// compute the diff that "Save" sends and highlight changed rows.
+const settingsUi = { schema: null, current: {}, baseline: {}, loading: false };
+
 function renderSettings() {
-  $("#configDump").textContent = JSON.stringify(state.config || {}, null, 2);
+  // The advanced read-only panels still reflect the live config snapshot.
+  const dump = $("#configDump");
+  if (dump) dump.textContent = JSON.stringify(state.config || {}, null, 2);
   renderList("#monitorList", state.monitors || [], (monitor) => listItem({
     title: `${monitor.name} (${monitor.width}×${monitor.height})`,
     subtitle: `id=${monitor.id} stable_id=${monitor.stable_id} default=${monitor.is_default}`,
     actionLabel: "",
   }));
-  setupLanguageControl();
 }
 
-function setupLanguageControl() {
-  const input = $("#langInput");
-  const btn = $("#langSaveBtn");
-  const status = $("#langStatus");
-  if (!input || !btn || input.dataset.bound) {
-    if (input) input.value = ((state.config?.audio?.languages) || []).join(", ");
-    return;
-  }
-  input.dataset.bound = "1";
-  input.value = ((state.config?.audio?.languages) || []).join(", ");
+// Stable dotted key for a field, e.g. "audio.languages".
+function settingKey(f) { return `${f.section}.${f.key}`; }
 
-  const save = async () => {
-    const languages = input.value.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
-    btn.disabled = true;
-    status.textContent = "Saving…";
-    try {
-      const res = await api("/config/audio/languages", {
-        method: "POST",
-        body: JSON.stringify({ languages }),
-      });
-      if (state.config?.audio) state.config.audio.languages = res.languages;
-      $("#configDump").textContent = JSON.stringify(state.config || {}, null, 2);
-      input.value = res.languages.join(", ");
-      status.textContent = res.hot_applied
-        ? "Saved — applied to next clip."
-        : "Saved — restart to apply (daemon not in this process).";
-    } catch (err) {
-      status.textContent = `Error: ${err.message}`;
-    } finally {
-      btn.disabled = false;
+// Render one value as the string an input/select shows.
+function settingToInputValue(f, value) {
+  if (f.type === "csv") return Array.isArray(value) ? value.join(", ") : (value || "");
+  if (value === null || value === undefined) return "";
+  return String(value);
+}
+
+async function refreshSettingsView() {
+  renderSettings();
+  if (settingsUi.loading) return;
+  settingsUi.loading = true;
+  const host = $("#setGroups");
+  if (host && !settingsUi.schema) host.innerHTML = '<p class="muted-copy">加载设置中…</p>';
+  try {
+    const j = await api("/config/settings");
+    settingsUi.schema = j.groups || [];
+    settingsUi.current = {};
+    settingsUi.baseline = {};
+    for (const g of settingsUi.schema) {
+      for (const f of g.fields) {
+        const k = settingKey(f);
+        const v = settingToInputValue(f, f.value);
+        settingsUi.current[k] = v;
+        settingsUi.baseline[k] = v;
+      }
     }
-  };
+    renderSettingsForm();
+  } catch (err) {
+    if (host) host.innerHTML = `<p class="set-group-desc">无法加载设置：${capEscape(err.message)}</p>`;
+  } finally {
+    settingsUi.loading = false;
+  }
+}
 
-  btn.addEventListener("click", save);
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); });
+function renderSettingsForm() {
+  const host = $("#setGroups");
+  if (!host || !settingsUi.schema) return;
+  host.innerHTML = settingsUi.schema.map((g) => {
+    const rows = g.fields.map((f) => renderSettingField(f)).join("");
+    return `<section class="set-group">
+      <div class="set-group-title">${capEscape(g.title)}</div>
+      ${g.desc ? `<p class="set-group-desc">${capEscape(g.desc)}</p>` : ""}
+      ${rows}
+    </section>`;
+  }).join("");
+
+  // Wire inputs → settingsUi.current, then refresh the changed-state + bars.
+  for (const el of host.querySelectorAll("[data-setkey]")) {
+    const k = el.dataset.setkey;
+    const handler = () => {
+      settingsUi.current[k] = el.type === "checkbox" ? (el.checked ? "true" : "false") : el.value;
+      reflectSettingsDirty();
+    };
+    el.addEventListener(el.tagName === "SELECT" || el.type === "checkbox" ? "change" : "input", handler);
+  }
+  bindSettingsBars();
+  reflectSettingsDirty();
+  const hint = $("#cfgPathHint");
+  if (hint && state.config) hint.textContent = "~/.deskmate/config.toml";
+}
+
+function renderSettingField(f) {
+  const k = settingKey(f);
+  const val = settingsUi.current[k] ?? "";
+  // Minimal-text status: only restart-needed fields carry a quiet flag; the
+  // common "instant" case is the unmarked default (less visual noise).
+  const flag = f.restart ? '<span class="set-flag">需重启</span>' : "";
+  let control = "";
+  if (f.type === "bool") {
+    const checked = val === "true" ? "checked" : "";
+    control = `<label class="set-switch"><input type="checkbox" data-setkey="${k}" ${checked}><span class="slider"></span></label>`;
+  } else if (f.type === "choice") {
+    const opts = (f.choices || []).map((c) =>
+      `<option value="${capEscape(c)}" ${c === val ? "selected" : ""}>${capEscape(c)}</option>`).join("");
+    control = `<select data-setkey="${k}">${opts}</select>`;
+  } else if (f.type === "int" || f.type === "float") {
+    const step = f.type === "float" ? "0.1" : "1";
+    const min = f.min !== undefined ? `min="${f.min}"` : "";
+    const max = f.max !== undefined ? `max="${f.max}"` : "";
+    control = `<input type="number" data-setkey="${k}" value="${capEscape(val)}" step="${step}" ${min} ${max}>`;
+  } else {
+    const ph = f.placeholder ? `placeholder="${capEscape(f.placeholder)}"` : "";
+    control = `<input type="text" data-setkey="${k}" value="${capEscape(val)}" ${ph} autocomplete="off">`;
+  }
+  return `<div class="set-field" data-fieldrow="${k}">
+    <div class="set-field-main">
+      <div class="set-field-label">${capEscape(f.label)}${flag}</div>
+      ${f.help ? `<div class="set-field-help">${capEscape(f.help)}</div>` : ""}
+    </div>
+    <div class="set-field-control">${control}</div>
+  </div>`;
+}
+
+// Which keys differ from baseline; also returns whether any need restart.
+function settingsDiff() {
+  const changed = [];
+  let needsRestart = false;
+  for (const g of settingsUi.schema || []) {
+    for (const f of g.fields) {
+      const k = settingKey(f);
+      if ((settingsUi.current[k] ?? "") !== (settingsUi.baseline[k] ?? "")) {
+        changed.push({ field: f, key: k });
+        if (f.restart) needsRestart = true;
+      }
+    }
+  }
+  return { changed, needsRestart };
+}
+
+function reflectSettingsDirty() {
+  const { changed } = settingsDiff();
+  const changedKeys = new Set(changed.map((c) => c.key));
+  for (const row of document.querySelectorAll("#setGroups [data-fieldrow]")) {
+    row.classList.toggle("set-field--changed", changedKeys.has(row.dataset.fieldrow));
+  }
+  const bar = $("#setActionBar");
+  const msg = $("#setActionMsg");
+  if (bar) bar.hidden = changed.length === 0;
+  if (msg) {
+    msg.classList.remove("err");  // clear any prior save-error styling
+    msg.textContent = changed.length ? `有 ${changed.length} 项更改尚未保存` : "";
+  }
+}
+
+let settingsBarsBound = false;
+function bindSettingsBars() {
+  if (settingsBarsBound) return;
+  settingsBarsBound = true;
+  $("#setSaveBtn")?.addEventListener("click", saveSettings);
+  $("#setResetBtn")?.addEventListener("click", () => {
+    settingsUi.current = { ...settingsUi.baseline };
+    renderSettingsForm();
+  });
+  $("#setRestartBtn")?.addEventListener("click", restartServer);
+  $("#setRestartLater")?.addEventListener("click", () => {
+    const bar = $("#setRestartBar");
+    if (bar) bar.hidden = true;
+  });
+}
+
+async function saveSettings() {
+  const { changed } = settingsDiff();
+  if (!changed.length) return;
+  const values = {};
+  for (const { key } of changed) values[key] = settingsUi.current[key];
+
+  const btn = $("#setSaveBtn");
+  const msg = $("#setActionMsg");
+  if (btn) btn.disabled = true;
+  if (msg) msg.textContent = "保存中…";
+  try {
+    const res = await api("/config/settings", {
+      method: "POST",
+      body: JSON.stringify({ values }),
+    });
+    const errs = res.errors || {};
+    const errKeys = Object.keys(errs);
+    // Commit successfully-saved keys into the baseline; keep failed ones dirty.
+    for (const k of res.saved || []) settingsUi.baseline[k] = settingsUi.current[k];
+    // Refresh live config snapshot for the advanced dump.
+    try { state.config = await api("/config"); } catch (_) {}
+    // Re-render first (this resets the dirty highlight + action message), THEN
+    // overlay the save outcome so it isn't clobbered by reflectSettingsDirty().
+    renderSettingsForm();
+
+    const msgEl = $("#setActionMsg");
+    const bar = $("#setActionBar");
+    if (errKeys.length) {
+      if (bar) bar.hidden = false;
+      if (msgEl) {
+        msgEl.classList.add("err");
+        msgEl.textContent = `部分未保存：${errKeys.map((k) => `${k}（${errs[k]}）`).join("；")}`;
+      }
+    } else {
+      if (msgEl) msgEl.classList.remove("err");
+      if (bar) bar.hidden = true;
+    }
+    // Show restart prompt when any saved change needs a restart.
+    const restartBar = $("#setRestartBar");
+    if (restartBar) restartBar.hidden = !res.needs_restart;
+  } catch (err) {
+    if (msg) msg.textContent = `保存失败：${err.message}`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function restartServer() {
+  const bar = $("#setRestartBar");
+  const msg = $("#setRestartMsg");
+  if (!confirm("现在重启 DeskMate 使设置生效？重启期间界面会短暂断开。")) return;
+  if (msg) msg.textContent = "正在重启… 若几秒后页面未恢复，请手动重新启动 DeskMate。";
+  try {
+    await api("/restart", { method: "POST" });
+  } catch (_) {
+    // Expected: the process exits mid-request, so the fetch often errors.
+  }
+  // Poll /health until the server comes back, then reload.
+  let tries = 0;
+  const poll = setInterval(async () => {
+    tries += 1;
+    try {
+      await api("/health");
+      clearInterval(poll);
+      location.reload();
+    } catch (_) {
+      if (tries > 30 && msg) {
+        msg.textContent = "重启超时。如果 DeskMate 没有自动恢复，请在终端重新运行 `deskmate ui`。";
+      }
+    }
+  }, 1000);
 }
 
 async function selectFrame(frameId) {
@@ -3258,21 +3467,6 @@ function wireEvents() {
 
   // ─── Reminders ────────────────────────────────────────────────────────
   $("#remRefreshBtn")?.addEventListener("click", () => refreshRemindersView());
-  $("#remMineBtn")?.addEventListener("click", async (e) => {
-    const btn = e.currentTarget;
-    btn.disabled = true;
-    const prev = btn.textContent;
-    btn.textContent = "分析中…";
-    try {
-      await api("/habits/mine", { method: "POST" });
-      await refreshRemindersView();
-    } catch (err) {
-      showError(err);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = prev;
-    }
-  });
   for (const tab of document.querySelectorAll("#view-reminders .rem-tabs button")) {
     tab.addEventListener("click", () => {
       for (const b of document.querySelectorAll("#view-reminders .rem-tabs button")) b.classList.remove("active");
