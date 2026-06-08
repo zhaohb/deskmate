@@ -18,6 +18,7 @@ from .day_recap_context import (
 _GAP_MAX_SEC = 300
 _KEY_TEXT_CAP = 30
 _TIMELINE_CAP = 45
+_USER_INPUT_CAP = 20
 
 
 def _sql_escape(value: str) -> str:
@@ -113,6 +114,7 @@ def build_activity_summary(
         "apps": core["apps"],
         "windows": core["windows"],
         "key_texts": core["key_texts"],
+        "user_input": core["user_input"],
         "timeline": core["timeline"],
         "edited_files": core["edited_files"],
         "audio_summary": core["audio_summary"],
@@ -213,6 +215,7 @@ def _collect_summary_core(
     """
     ui_texts_query = f"""
         SELECT json_extract(data_json, '$.content') AS text,
+               event_type,
                app_name,
                COALESCE(window_title, '') AS window_name,
                timestamp
@@ -221,7 +224,7 @@ def _collect_summary_core(
            AND event_type IN ('text', 'clipboard')
            AND LENGTH(COALESCE(json_extract(data_json, '$.content'), '')) BETWEEN 15 AND 300
          ORDER BY timestamp DESC
-         LIMIT 25
+         LIMIT 40
     """
     edited_files_query = f"""
         SELECT document_path AS path, COUNT(*) AS frame_count
@@ -330,25 +333,49 @@ def _collect_summary_core(
         if len(key_texts) >= _KEY_TEXT_CAP:
             break
 
-    # UI typed text (already short, no line-filtering needed)
+    # UI typed text / clipboard (already short, no line-filtering needed).
+    # This is the strongest "what was the user actually doing/intending" signal —
+    # their own words, not noisy OCR shell text — so we ALSO surface it as a
+    # dedicated `user_input` list that doesn't compete with OCR for key_texts
+    # slots. Each entry keeps its kind ("typed" | "clipboard").
+    user_input: list[dict[str, Any]] = []
+    ui_seen: set[str] = set()
+    ui_kept_norms: list[str] = []  # normalized texts already kept, for prefix dedupe
     for row in ui_text_rows:
-        if len(key_texts) >= _KEY_TEXT_CAP:
-            break
         text = (row["text"] or "").strip()
         if len(text) < 15 or text.lower().startswith(("http", "cdn.")):
             continue
         if is_low_value_text(text):
             continue
         norm = normalize_text_key(text)
-        if norm in seen:
+        if norm in ui_seen:
             continue
-        seen.add(norm)
-        key_texts.append({
+        # Collapse keystroke-by-keystroke snapshots of one sentence. Rows arrive
+        # newest-first, so the longest (final) form is seen before its growing
+        # prefixes — skip a new text that is a prefix of something already kept.
+        if any(kept.startswith(norm) for kept in ui_kept_norms):
+            continue
+        ui_seen.add(norm)
+        ui_kept_norms.append(norm)
+        kind = "clipboard" if (row["event_type"] or "") == "clipboard" else "typed"
+        entry = {
+            "kind": kind,
             "text": _truncate(text, 400),
             "app_name": row["app_name"] or "",
             "window_name": row["window_name"] or "",
             "timestamp": row["timestamp"] or "",
-        })
+        }
+        if len(user_input) < _USER_INPUT_CAP:
+            user_input.append(entry)
+        # Keep populating key_texts too (back-compat for existing consumers).
+        if norm not in seen and len(key_texts) < _KEY_TEXT_CAP:
+            seen.add(norm)
+            key_texts.append({
+                "text": entry["text"],
+                "app_name": entry["app_name"],
+                "window_name": entry["window_name"],
+                "timestamp": entry["timestamp"],
+            })
 
     raw_timeline = []
     for row in timeline_rows:
@@ -392,6 +419,7 @@ def _collect_summary_core(
         "apps": apps,
         "windows": windows,
         "key_texts": key_texts,
+        "user_input": user_input,
         "timeline": timeline,
         "edited_files": edited_files,
         "audio_summary": {
@@ -647,6 +675,22 @@ def format_summary_for_agent(summary: dict[str, Any], *, include_date: bool = Fa
                 f"{a.get('name', '?')}: {a.get('minutes', 0)} min, {a.get('frame_count', 0)} captures"
             )
         sections.append("### Apps (active time)\n" + "\n".join(lines))
+
+    # The user's own typed text / clipboard — the clearest "what were they doing
+    # / intending" signal. Placed high so the model leans on it over noisy OCR.
+    user_input = summary.get("user_input") or []
+    if user_input:
+        lines = []
+        for u in user_input[:20]:
+            ts = fmt_ts(u.get("timestamp", ""))
+            kind = "TYPED" if u.get("kind") == "typed" else "COPIED"
+            text = (u.get("text") or "").replace("\n", " ").strip()
+            app = u.get("app_name", "")
+            lines.append(f"  [{ts}] {kind} ({app}): {text}")
+        sections.append(
+            "### User input (typed / clipboard — strongest intent signal)\n"
+            + "\n".join(lines)
+        )
 
     timeline = summary.get("timeline") or []
     if timeline:

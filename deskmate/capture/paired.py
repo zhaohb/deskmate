@@ -22,6 +22,7 @@ from typing import Any
 
 from .. import events as bus
 from ..a11y.browser_url import resolve_browser_url
+from ..a11y.document import extract_document_path
 from ..a11y.uia_tree import INTERACTIVE_TYPES, foreground_window, walk_focused_window
 from ..a11y.win_events import foreground_app_name
 from ..config import Config
@@ -212,6 +213,7 @@ class PairedCapture:
             app_name=app,
             window_name=title,
             browser_url=browser_url,
+            document_path=extract_document_path(app, title),
             focused=True,
             snapshot_path=snapshot_path,
             width=width, height=height,
