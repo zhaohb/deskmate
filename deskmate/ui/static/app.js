@@ -894,8 +894,12 @@ async function startTraining() {
       status.className = "trn-status err";
       status.textContent = `训练失败：${msg}`;
     }
+    // Surface the install hint whenever the failure is a missing training dep
+    // (the API returns e.g. "缺少 transformers, peft" — not just "torch").
     const warn = $("#trnTorchWarn");
-    if (warn && /torch/i.test(msg)) warn.style.display = "";
+    if (warn && /(torch|transformers|peft|训练依赖|deskmate\[training\])/i.test(msg)) {
+      warn.style.display = "";
+    }
     if (meta) meta.textContent = "";
   } finally {
     trainingUi.running = false;

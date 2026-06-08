@@ -143,7 +143,7 @@ construction when `torch` is missing. `train()` tokenizes via the model's chat
 template (falling back to a manual `<|user|>/<|assistant|>` format), runs an
 AdamW loop with gradient clipping, optional gradient checkpointing and 4-bit
 QLoRA, and saves per-epoch + `final` adapters. Device selection prefers an
-explicit hint > cuda > mps > cpu.
+explicit hint > cuda > **xpu** (Intel GPU) > mps > cpu (see Dependencies).
 
 ## CLI
 
@@ -166,7 +166,7 @@ Flags: `--model`, `--output-dir`, `--sources`, `--epochs`, `--max-pairs`,
 | Route | Method | Purpose |
 |-------|--------|---------|
 | `/training/data` | GET | Preview mined pairs: `sources`, per-source `breakdown`, `total`, and a `sample` |
-| `/training/lora` | POST | Mine + train; returns the training summary. Returns **503** if `torch` is not installed |
+| `/training/lora` | POST | Mine + train; returns the training summary. Returns **503** with the missing package names if the training deps (`torch` / `transformers` / `peft`) aren't all installed |
 
 `POST /training/lora` runs the (blocking) training in a threadpool and accepts
 `sources`, `model`, `epochs`, `max_pairs`, `output_dir` in the JSON body.
@@ -178,7 +178,7 @@ Flags: `--model`, `--output-dir`, `--sources`, `--epochs`, `--max-pairs`,
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `enabled` | `true` | Whether the subsystem is exposed |
-| `model_name` | `Qwen/Qwen3-0.6B` | Base model to adapt |
+| `model_name` | `Qwen/Qwen3-4B` | Base model to adapt (HF id or local HF path; **not** an Ollama/OpenVINO model) |
 | `output_dir` | `""` → `~/.deskmate/checkpoints/lora` | Adapter output dir |
 | `sources` | `["habits","apps","pipes","behavior","ask","profile"]` | Which sources to mine |
 | `min_feedback` / `min_chars` | `1` / `8` | Quality thresholds (gates `habits` & `ask`) |
@@ -190,7 +190,9 @@ Flags: `--model`, `--output-dir`, `--sources`, `--epochs`, `--max-pairs`,
 
 ## Dependencies
 
-The `[training]` extra pulls `torch`, `transformers`, `peft`, `accelerate`:
+The LoRA stack is the standard HuggingFace one — **transformers** (load base
+model) + **peft** (LoRA adapters) + **accelerate** (training loop) on top of
+**torch** (compute). The `[training]` extra installs all four:
 
 ```bash
 pip install 'deskmate[training]'
@@ -198,7 +200,60 @@ pip install 'deskmate[training]'
 
 Without it, `import deskmate.learning.training` still works (so the CLI/API load),
 `--dry-run` and `/training/data` still mine and preview data, and only actual
-training is gated.
+training is gated. `POST /training/lora` returns a **503** listing exactly which
+packages are missing (the check covers `torch`, `transformers` **and** `peft` —
+`torch` alone is not enough, since the model/tokenizer load needs the others).
+
+### CPU (default, simplest)
+
+The plain `[training]` install gives a CPU-only torch. It works for any model but
+is **slow** for ≥1B params — fine for verifying the pipeline with a small base
+like `Qwen/Qwen3-0.6B`, not for real 4B training.
+
+### Intel GPU — Arc / Core-Ultra iGPU (PyTorch XPU)
+
+You do **not** change the LoRA framework for Intel GPUs — peft/transformers/
+accelerate stay exactly the same. You only swap torch's **compute backend** to
+Intel's `xpu` (built into official PyTorch since 2.5). The default `[training]`
+wheel is CPU-only and reports `torch.xpu.is_available() == False`; install the
+XPU wheel instead:
+
+```bash
+# 1. Replace the CPU torch with the Intel XPU build
+pip uninstall -y torch
+pip install torch --index-url https://download.pytorch.org/whl/xpu
+
+# 2. The LoRA framework itself (unchanged)
+pip install transformers peft accelerate
+```
+
+Verify, then DeskMate auto-selects the GPU — `_select_device()` returns `xpu`
+once it's available, no config change needed:
+
+```python
+import torch; print(torch.xpu.is_available())   # → True when the XPU wheel + driver are in place
+```
+
+> The XPU wheel must match your Intel GPU **driver / oneAPI runtime** version; a
+> mismatch shows up as `is_available() == False`. Follow PyTorch's current
+> "Getting Started on Intel GPU" guide for the exact wheel — versions move fast.
+
+**Frameworks NOT recommended for Intel here:**
+
+- **Unsloth** — its fast LoRA kernels are CUDA-first (some ROCm); Intel GPU is
+  effectively unsupported.
+- **bitsandbytes QLoRA** (`use_4bit = true`) — CUDA-only, so 4-bit QLoRA does not
+  run on XPU. Keep `use_4bit = false` (the default) on Intel.
+- **OpenVINO / Optimum-Intel** — inference & export tooling, not a LoRA-training
+  path (it's what the Whisper/Ollama side uses, not this one).
+
+### VRAM reality check
+
+Framework support ≠ it fits. A 4B base in bf16 needs **~8 GB** just for weights,
+well over a 2 GB-class iGPU (e.g. Arc B390). Without CUDA-only QLoRA to shrink it,
+**4B LoRA on a small Intel GPU will likely OOM**. Practical path: validate the
+flow on `Qwen/Qwen3-0.6B` first, and only scale the base up if the device has the
+memory.
 
 ## Design trade-offs
 

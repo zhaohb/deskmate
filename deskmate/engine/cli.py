@@ -169,10 +169,10 @@ def train_lora(
     'deskmate[training]'` to actually train.
     """
     from ..learning.training import (  # noqa: PLC0415
-        HAS_TORCH,
         DeskMateTrainingDataMiner,
         LoRATrainer,
         LoRATrainingConfig,
+        missing_training_deps,
     )
 
     cfg = load_config().training
@@ -210,8 +210,13 @@ def train_lora(
     if not pairs:
         echo("no training data — nothing to do")
         return
-    if not HAS_TORCH:
-        echo("torch not installed — run: pip install 'deskmate[training]'", err=True)
+    missing = missing_training_deps()
+    if missing:
+        echo(
+            f"training deps not installed (missing {', '.join(missing)}) — "
+            "run: pip install 'deskmate[training]'",
+            err=True,
+        )
         raise typer.Exit(code=1)
 
     out_dir = output_dir or cfg.output_dir or str(paths.root() / "checkpoints" / "lora")

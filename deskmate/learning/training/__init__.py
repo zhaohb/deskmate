@@ -9,11 +9,21 @@ raises at construction time when ``torch`` is missing.
 from __future__ import annotations
 
 from .data import DeskMateTrainingDataMiner
-from .lora import HAS_TORCH, LoRATrainer, LoRATrainingConfig
+from .lora import (
+    HAS_PEFT,
+    HAS_TORCH,
+    HAS_TRANSFORMERS,
+    LoRATrainer,
+    LoRATrainingConfig,
+    missing_training_deps,
+)
 
 __all__ = [
     "DeskMateTrainingDataMiner",
+    "HAS_PEFT",
     "HAS_TORCH",
+    "HAS_TRANSFORMERS",
     "LoRATrainer",
     "LoRATrainingConfig",
+    "missing_training_deps",
 ]

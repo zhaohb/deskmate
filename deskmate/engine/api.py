@@ -2132,10 +2132,10 @@ def create_app(
     @app.post("/training/lora")
     async def training_lora(request: Request) -> dict[str, Any]:
         from ..learning.training import (  # noqa: PLC0415
-            HAS_TORCH,
             DeskMateTrainingDataMiner,
             LoRATrainer,
             LoRATrainingConfig,
+            missing_training_deps,
         )
 
         body = await _safe_json(request)
@@ -2154,10 +2154,14 @@ def create_app(
 
         if not pairs:
             return {"status": "skipped", "reason": "no training data", "sources": src}
-        if not HAS_TORCH:
+        missing = missing_training_deps()
+        if missing:
             raise HTTPException(
                 status_code=503,
-                detail="torch not installed — run: pip install 'deskmate[training]'",
+                detail=(
+                    f"训练依赖未安装（缺少 {', '.join(missing)}）。"
+                    "请运行： pip install 'deskmate[training]' 后重启 DeskMate。"
+                ),
             )
 
         from .. import paths as _paths  # noqa: PLC0415

@@ -46,6 +46,22 @@ except ImportError:
     get_peft_model = None  # type: ignore[assignment,misc]
 
 
+def missing_training_deps() -> list[str]:
+    """Names of the `[training]` packages that are NOT importable.
+
+    Empty list ⇒ the full LoRA stack is ready. Used to fail fast with a clear
+    install hint instead of crashing mid-train: ``torch`` alone is not enough —
+    ``transformers`` and ``peft`` are both needed before any model loads."""
+    missing: list[str] = []
+    if not HAS_TORCH:
+        missing.append("torch")
+    if not HAS_TRANSFORMERS:
+        missing.append("transformers")
+    if not HAS_PEFT:
+        missing.append("peft")
+    return missing
+
+
 # ---------------------------------------------------------------------------
 # Device selection
 # ---------------------------------------------------------------------------
@@ -54,7 +70,11 @@ except ImportError:
 def _select_device(hint: str | None = None) -> str:
     """Select the best available PyTorch device.
 
-    Priority: explicit *hint* > cuda > mps > cpu.
+    Priority: explicit *hint* > cuda > xpu (Intel GPU) > mps > cpu.
+
+    ``xpu`` is Intel's GPU backend, built into official PyTorch since 2.5 — an
+    Intel Arc / Core-Ultra iGPU shows up here when an XPU-enabled torch wheel is
+    installed (the default CPU wheel reports ``xpu.is_available() == False``).
     """
     if hint is not None:
         return hint
@@ -62,6 +82,8 @@ def _select_device(hint: str | None = None) -> str:
         return "cpu"
     if torch.cuda.is_available():
         return "cuda"
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        return "xpu"
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return "mps"
     return "cpu"
@@ -135,7 +157,7 @@ class LoRATrainer:
         self,
         config: LoRATrainingConfig,
         *,
-        model_name: str = "Qwen/Qwen3-0.6B",
+        model_name: str = "Qwen/Qwen3-4B",
         device: str | None = None,
     ) -> None:
         if not HAS_TORCH:
@@ -310,14 +332,24 @@ class LoRATrainer:
                     "bitsandbytes not installed; falling back to bf16 (QLoRA disabled)"
                 )
 
+        # cuda/auto: let accelerate shard via device_map. For single-device
+        # backends (xpu / mps / cpu) device_map string support varies by
+        # accelerate version, so we load without a map and move the model
+        # explicitly below — reliable across versions and backends.
+        explicit_move_device: str | None = None
         if self.device in ("cuda", "auto"):
             model_kwargs["device_map"] = "auto"
         else:
-            model_kwargs["device_map"] = {"": self.device}
+            explicit_move_device = self.device
 
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name, **model_kwargs
         )
+
+        # 4-bit quantized weights are already placed by bitsandbytes; moving
+        # them with .to() is unsupported, so only move a non-quantized model.
+        if explicit_move_device is not None and not self.config.use_4bit:
+            self.model = self.model.to(explicit_move_device)
 
         if self.config.gradient_checkpointing and hasattr(
             self.model, "gradient_checkpointing_enable"
@@ -348,10 +380,6 @@ class LoRATrainer:
             self.config.lora_alpha,
             self.config.target_modules,
         )
-
-    def _format_pair(self, pair: dict[str, Any]) -> str:
-        """Format an SFT pair as a chat-style training string (full text)."""
-        return self._format_pair_with_prompt(pair)[1]
 
     def _format_pair_with_prompt(self, pair: dict[str, Any]) -> tuple[str, str]:
         """Return ``(prompt_text, full_text)`` for an SFT pair.
@@ -471,7 +499,10 @@ class LoRATrainer:
 
 
 __all__ = [
+    "HAS_PEFT",
     "HAS_TORCH",
+    "HAS_TRANSFORMERS",
     "LoRATrainer",
     "LoRATrainingConfig",
+    "missing_training_deps",
 ]

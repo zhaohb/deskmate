@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260608-set3" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260608-set5" />
     <style>
       /* Scoped styles for the Capture & Unified Timeline view */
       #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
@@ -680,8 +680,8 @@
             <h3>训练参数</h3>
             <div class="trn-grid">
               <div class="trn-field" style="min-width:240px">
-                <label for="trnModel">基座模型</label>
-                <input id="trnModel" type="text" placeholder="Qwen/Qwen3-0.6B" />
+                <label for="trnModel">基座模型 (HuggingFace ID)</label>
+                <input id="trnModel" type="text" placeholder="Qwen/Qwen3-4B" />
               </div>
               <div class="trn-field">
                 <label for="trnEpochs">训练轮数 (epochs)</label>
@@ -702,7 +702,7 @@
           <div class="cap-card">
             <h3>启动训练</h3>
             <div id="trnTorchWarn" class="trn-warn" style="display:none">
-              未检测到 PyTorch — 启动训练前请先安装：<code>pip install 'deskmate[training]'</code>
+              训练依赖未安装（需要 torch / transformers / peft）— 启动训练前请先安装：<code>pip install 'deskmate[training]'</code>
             </div>
             <p class="muted" style="margin-top:0">训练在本地后台线程运行，期间可能占用较多 CPU/内存。完成后适配器 (LoRA adapter) 会保存到输出目录。</p>
             <div class="cap-row">
@@ -879,6 +879,6 @@
       </article>
     </template>
 
-    <script src="/ui/assets/app.js?v=20260608-set3" defer></script>
+    <script src="/ui/assets/app.js?v=20260608-set5" defer></script>
   </body>
 </html>
