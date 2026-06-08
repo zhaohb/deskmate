@@ -2547,7 +2547,7 @@ a:hover {
 /* changed row: a subtle left rule in the accent (white), no colored fill */
 .set-field--changed { box-shadow: inset 2px 0 0 var(--accent); padding-left: 0.65rem; margin-left: -0.65rem; }
 .set-field--changed .set-field-label::after {
-  content: "已修改"; color: var(--faint); font-size: 0.68rem; font-weight: 500;
+  content: "●"; color: var(--accent); font-size: 0.6rem; font-weight: 700;
 }
 
 /* monochrome toggle: off = bordered track, on = white fill / inverse knob */

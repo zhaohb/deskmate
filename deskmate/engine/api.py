@@ -60,6 +60,7 @@ logger = get("engine.api")
 #            False → hot-applied live by _hot_apply_settings
 SETTINGS_SCHEMA: list[dict[str, Any]] = [
     {
+        "id": "recording",
         "title": "录制 Recording",
         "desc": "控制 DeskMate 是否以及如何捕获你的屏幕与输入。",
         "fields": [
@@ -81,6 +82,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "ocr",
         "title": "文字识别 OCR",
         "desc": "把屏幕上的文字转成可搜索内容。",
         "fields": [
@@ -91,6 +93,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "audio",
         "title": "音频与转录 Audio",
         "desc": "本地语音转写与实时翻译。语言可即时生效，其余需重启。",
         "fields": [
@@ -109,6 +112,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "ollama",
         "title": "本地大模型 Ollama",
         "desc": "Ask 与各类 App 使用的本地 LLM。改完需重启生效。",
         "fields": [
@@ -121,6 +125,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "retention",
         "title": "数据保留 Retention",
         "desc": "自动清理多久以前的数据，控制磁盘占用。",
         "fields": [

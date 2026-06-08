@@ -28,6 +28,24 @@ const state = {
 
 const PAGE_SIZE = 20;
 
+// i18n shorthand: T(key, vars) → translated string (falls back to key when
+// I18N isn't loaded). Used by JS-built UI strings.
+function T(key, vars) {
+  return window.I18N ? I18N.t(key, vars) : key;
+}
+// Translate `key`, but fall back to `fallback` (e.g. server-provided text) when
+// the key isn't in the dictionary — used for backend-supplied settings labels
+// that have an i18n key but should degrade to their original text if missing.
+function TF(key, fallback) {
+  if (!window.I18N) return fallback;
+  const s = I18N.t(key);
+  return s === key ? fallback : s;
+}
+// Training source label/description resolve through i18n keys so they switch
+// language with the rest of the UI.
+function TRN_SOURCE_LABEL_T(src) { return T("training.src." + src + ".label"); }
+function TRN_SOURCE_DESC_T(src) { return T("training.src." + src + ".desc"); }
+
 const titles = {
   overview: ["Home", "Search, review recent activity, and run analysis apps"],
   timeline: ["Timeline", "Browse recent frames, screenshots, and metadata"],
@@ -206,12 +224,18 @@ function timeAgo(value) {
   return `${Math.floor(sec / 86400)}d ago`;
 }
 
+// App display name: translate via a stable key derived from the dir name,
+// falling back to the server-provided title, then the raw dir name.
+function appDisplayName(app) {
+  return TF("apps.name." + app.name, app.title || app.name);
+}
+
 function scheduleLabel(schedule) {
-  if (!schedule || schedule === "manual") return "manual";
+  if (!schedule || schedule === "manual") return T("apps.schedule.manual");
   const m = String(schedule).match(/every\s+(\d+)\s*m/i);
-  if (m) return `${m[1]}min`;
+  if (m) return T("apps.schedule.everyMin", { n: m[1] });
   const h = String(schedule).match(/every\s+(\d+)\s*h/i);
-  if (h) return `${Number(h[1]) * 60}min`;
+  if (h) return T("apps.schedule.everyMin", { n: Number(h[1]) * 60 });
   return schedule;
 }
 
@@ -339,9 +363,11 @@ function setView(name) {
     content.classList.toggle("pipes-mode", name === "apps");
     content.classList.toggle("home-mode", name === "overview");
   }
+  state.currentView = name;
   if (name !== "apps" && titles[name]) {
-    $("#viewTitle").textContent = titles[name][0];
-    $("#viewSubtitle").textContent = titles[name][1];
+    // Hardcoded English is the fallback; i18n keys override when present.
+    $("#viewTitle").textContent = TF(`view.${name}.title`, titles[name][0]);
+    $("#viewSubtitle").textContent = TF(`view.${name}.subtitle`, titles[name][1]);
   }
   if (name === "email") {
     refreshEmail().catch(showError);
@@ -572,8 +598,8 @@ async function loadCaptureControl() {
   const c = j.control || {};
   const pill = $("#capStatusPill");
   if (pill) {
-    if (c.paused) { pill.className = "cap-pill paused"; pill.textContent = "● 已暂停"; }
-    else { pill.className = "cap-pill live"; pill.textContent = "● 录制中"; }
+    if (c.paused) { pill.className = "cap-pill paused"; pill.textContent = T("capture.paused"); }
+    else { pill.className = "cap-pill live"; pill.textContent = T("capture.recording"); }
   }
   const until = $("#capPauseUntil");
   if (until) until.textContent = c.paused && c.pause_until ? `Auto-resume at ${capFmtTime(c.pause_until)}` : "";
@@ -606,7 +632,7 @@ async function loadUnifiedTimeline() {
   const rows = j.data || [];
   const box = $("#capTimeline");
   if (!box) return;
-  if (!rows.length) { box.innerHTML = '<p class="cap-empty">No data</p>'; return; }
+  if (!rows.length) { box.innerHTML = '<p class="cap-empty">${T("common.noData2")}</p>'; return; }
   // Stash rows so the expand handler can read full content/payload by index.
   trainingUi._timelineRows = rows;
   box.innerHTML = `<div class="cap-scroll"><table>
@@ -648,16 +674,16 @@ function toggleCapTimelineDetail(box, idx) {
   cell.dataset.filled = "1";
   const rowsHtml = [];
   const full = ev.summary || "";
-  if (full) rowsHtml.push(`<div class="cap-d-row"><span class="cap-d-k">完整内容</span><span class="cap-d-v">${capEscape(full)}</span></div>`);
-  if (ev.window_title) rowsHtml.push(`<div class="cap-d-row"><span class="cap-d-k">窗口</span><span class="cap-d-v">${capEscape(ev.window_title)}</span></div>`);
-  rowsHtml.push(`<div class="cap-d-row"><span class="cap-d-k">时间</span><span class="cap-d-v">${capEscape(ev.ts || "")}</span></div>`);
+  if (full) rowsHtml.push(`<div class="cap-d-row"><span class="cap-d-k">${T("capture.detail.full")}</span><span class="cap-d-v">${capEscape(full)}</span></div>`);
+  if (ev.window_title) rowsHtml.push(`<div class="cap-d-row"><span class="cap-d-k">${T("capture.detail.window")}</span><span class="cap-d-v">${capEscape(ev.window_title)}</span></div>`);
+  rowsHtml.push(`<div class="cap-d-row"><span class="cap-d-k">${T("capture.detail.time")}</span><span class="cap-d-v">${capEscape(ev.ts || "")}</span></div>`);
   const payload = ev.payload && typeof ev.payload === "object" ? ev.payload : {};
   for (const [k, v] of Object.entries(payload)) {
     if (v === null || v === undefined || v === "") continue;
     rowsHtml.push(`<div class="cap-d-row"><span class="cap-d-k">${capEscape(k)}</span><span class="cap-d-v">${capEscape(String(v))}</span></div>`);
   }
   if (ev.frame_id) {
-    rowsHtml.push(`<div class="cap-d-row"><span class="cap-d-k">画面</span><span class="cap-d-v"><a href="#" data-frame="${ev.frame_id}" class="cap-frame-link">查看截图 #${ev.frame_id}</a></span></div>`);
+    rowsHtml.push(`<div class="cap-d-row"><span class="cap-d-k">${T("capture.detail.frame")}</span><span class="cap-d-v"><a href="#" data-frame="${ev.frame_id}" class="cap-frame-link">${T("capture.detail.viewShot", { id: ev.frame_id })}</a></span></div>`);
   }
   cell.innerHTML = `<div class="cap-detail">${rowsHtml.join("")}</div>`;
   const link = cell.querySelector(".cap-frame-link");
@@ -687,22 +713,6 @@ function captureViewActive() {
 
 // ─── LoRA training view ─────────────────────────────────────────────────
 const TRN_SOURCES = ["habits", "apps", "pipes", "behavior", "ask", "profile"];
-const TRN_SOURCE_LABEL = {
-  habits: "习惯建议",
-  apps: "Apps 输出",
-  pipes: "Pipes 运行",
-  behavior: "行为习惯",
-  ask: "问答记录",
-  profile: "用户画像",
-};
-const TRN_SOURCE_DESC = {
-  habits: "你点过「有用」的主动提醒 → 学会该在什么情境给你什么提醒",
-  apps: "本地 Apps 生成的报告（日报/画像/习惯…）→ 学会用你的风格产出这些报告",
-  pipes: "成功运行过的 Pipe 任务的输入/输出 → 学会你常用的任务",
-  behavior: "作息热力图里的高频规律 → 学会你「几点通常做什么」",
-  ask: "你问过 Ask 的问题和它的回答 → 学会你的提问方式与偏好",
-  profile: "汇总你的常用应用、主攻方向、工作日/周末作息 → 让模型「懂你是谁」",
-};
 const trainingUi = {
   sources: { habits: true, apps: true, pipes: true, behavior: true, ask: true, profile: true },
   paramsInit: false,
@@ -721,10 +731,10 @@ function renderTrainingSources() {
   box.innerHTML = TRN_SOURCES.map((src) => {
     const on = !!trainingUi.sources[src];
     const count = trainingUi.breakdown[src];
-    const countTxt = (count === undefined || count === null) ? "" : `${count} 条`;
-    return `<div class="trn-src ${on ? "on" : "off"}" data-src="${src}" title="${capEscape(TRN_SOURCE_DESC[src] || "")}">
-      <div class="trn-src-head"><span class="dot"></span><span>${TRN_SOURCE_LABEL[src] || src}</span><span class="trn-src-count">${countTxt}</span></div>
-      <div class="trn-src-desc">${capEscape(TRN_SOURCE_DESC[src] || "")}</div>
+    const countTxt = (count === undefined || count === null) ? "" : T("training.count", { n: count });
+    return `<div class="trn-src ${on ? "on" : "off"}" data-src="${src}" title="${capEscape(TRN_SOURCE_DESC_T(src))}">
+      <div class="trn-src-head"><span class="dot"></span><span>${TRN_SOURCE_LABEL_T(src)}</span><span class="trn-src-count">${countTxt}</span></div>
+      <div class="trn-src-desc">${capEscape(TRN_SOURCE_DESC_T(src))}</div>
     </div>`;
   }).join("");
   for (const el of box.querySelectorAll(".trn-src")) {
@@ -774,11 +784,11 @@ async function loadTrainingData() {
     trainingUi.breakdown = {};
     renderTrainingSources();
     if (stats) stats.innerHTML = "";
-    if (sample) sample.innerHTML = '<p class="trn-empty">请至少选择一个数据来源</p>';
+    if (sample) sample.innerHTML = '<p class="trn-empty">${T("training.selectSource")}</p>';
     if (meta) meta.textContent = "";
     return;
   }
-  if (meta) meta.textContent = "加载中…";
+  if (meta) meta.textContent = T("common.loading");
   // showAll → request the FULL dataset that training will use; else preview 10.
   const qs = new URLSearchParams({ sources: sources.join(",") });
   if (trainingUi.showAll) qs.set("full", "true");
@@ -789,23 +799,22 @@ async function loadTrainingData() {
   renderTrainingSources();
   if (stats) {
     const cells = sources.map((s) =>
-      `<div class="trn-stat"><div class="n">${breakdown[s] ?? 0}</div><div class="l">${TRN_SOURCE_LABEL[s] || s}</div></div>`);
-    cells.push(`<div class="trn-stat" style="border-color:var(--accent,#5b8cff)"><div class="n">${j.total ?? 0}</div><div class="l">可训练样本合计</div></div>`);
+      `<div class="trn-stat"><div class="n">${breakdown[s] ?? 0}</div><div class="l">${TRN_SOURCE_LABEL_T(s)}</div></div>`);
+    cells.push(`<div class="trn-stat" style="border-color:var(--accent,#5b8cff)"><div class="n">${j.total ?? 0}</div><div class="l">${T("training.totalSamples")}</div></div>`);
     stats.innerHTML = cells.join("");
   }
   const rows = j.sample || [];
   if (sample) {
     if (!rows.length) {
-      sample.innerHTML =
-        '<p class="trn-empty">这些来源暂时还没有可训练样本。<br>多用几次 Apps、对提醒点「有用」、或问几次 Ask，数据会自动累积。</p>';
+      sample.innerHTML = `<p class="trn-empty">${T("training.empty")}</p>`;
     } else {
       sample.innerHTML = `<div class="trn-samples">${rows.map((p) => {
         const srcKey = String(p.source || "").split(":")[0];
-        const srcLabel = TRN_SOURCE_LABEL[srcKey] || p.source || "";
+        const srcLabel = TRN_SOURCE_LABEL_T(srcKey) || p.source || "";
         return `<div class="trn-pair">
-          <div class="trn-io"><span class="trn-tag in">提问</span><span class="trn-txt">${capEscape(p.input)}</span></div>
-          <div class="trn-io"><span class="trn-tag out">回答</span><span class="trn-txt">${capEscape(p.output)}</span></div>
-          <div class="trn-foot"><span class="trn-badge">来源：${capEscape(srcLabel)}</span></div>
+          <div class="trn-io"><span class="trn-tag in">${T("training.io.in")}</span><span class="trn-txt">${capEscape(p.input)}</span></div>
+          <div class="trn-io"><span class="trn-tag out">${T("training.io.out")}</span><span class="trn-txt">${capEscape(p.output)}</span></div>
+          <div class="trn-foot"><span class="trn-badge">${T("training.source")}${capEscape(srcLabel)}</span></div>
         </div>`;
       }).join("")}</div>`;
     }
@@ -813,14 +822,14 @@ async function loadTrainingData() {
   if (meta) {
     const total = j.total ?? 0;
     const viewLabel = trainingUi.showAll
-      ? `显示全部 ${rows.length} 条`
-      : `预览前 ${rows.length} 条`;
-    const toggleLabel = trainingUi.showAll ? "只看预览" : "查看完整数据集";
+      ? T("training.showAll", { n: rows.length })
+      : T("training.preview", { n: rows.length });
+    const toggleLabel = trainingUi.showAll ? T("training.toggle.preview") : T("training.toggle.full");
     meta.innerHTML =
-      `共 <b>${total}</b> 条将用于训练的样本 · ${viewLabel}` +
+      T("training.summary", { total, view: viewLabel }) +
       ` · <a href="#" id="trnToggleAll">${toggleLabel}</a>` +
       ` · <a href="/training/data/export?sources=${encodeURIComponent(sources.join(","))}"` +
-      ` id="trnDownload" download>下载 JSONL</a>`;
+      ` id="trnDownload" download>${T("training.download")}</a>`;
     const toggle = $("#trnToggleAll");
     if (toggle) {
       toggle.onclick = (e) => {
@@ -841,7 +850,7 @@ function refreshTrainingView() {
   // only once training reports 503. Keep warning hidden initially.
   if (warn && tc && tc.enabled === false) {
     warn.style.display = "";
-    warn.textContent = "训练功能在配置中已禁用（[training] enabled = false）。";
+    warn.textContent = T("training.disabled");
   }
   return loadTrainingData().catch((e) => console.error("[training]", e));
 }
@@ -853,10 +862,10 @@ async function startTraining() {
   const meta = $("#trnRunMeta");
   const btn = $("#trnStartBtn");
   if (!sources.length) {
-    if (status) { status.className = "trn-status err"; status.textContent = "请至少选择一个数据来源。"; }
+    if (status) { status.className = "trn-status err"; status.textContent = T("training.selectSource"); }
     return;
   }
-  if (!confirm("开始本地 LoRA 训练？期间可能占用较多 CPU/内存，且不可中途暂停。")) return;
+  if (!confirm(T("training.confirm"))) return;
 
   const body = { sources: sources.join(",") };
   const model = $("#trnModel")?.value.trim();
@@ -870,21 +879,22 @@ async function startTraining() {
 
   trainingUi.running = true;
   if (btn) btn.disabled = true;
-  if (meta) meta.textContent = "训练进行中…（请勿关闭进程）";
-  if (status) { status.className = "trn-status"; status.textContent = "正在挖掘数据并训练，请稍候…"; }
+  if (meta) meta.textContent = T("training.running");
+  if (status) { status.className = "trn-status"; status.textContent = T("training.mining"); }
   try {
     const j = await api("/training/lora", { method: "POST", body: JSON.stringify(body) });
     if (j.status === "skipped") {
-      if (status) { status.className = "trn-status"; status.textContent = `已跳过：${j.reason || "无训练数据"}`; }
+      if (status) { status.className = "trn-status"; status.textContent = T("training.skipped", { reason: j.reason || T("training.noData") }); }
     } else {
       if (status) {
         status.className = "trn-status ok";
-        status.textContent =
-          `训练完成 ✓\n` +
-          `样本数: ${j.training_samples ?? "-"}\n` +
-          `轮数: ${j.epochs ?? "-"}  总步数: ${j.total_steps ?? "-"}\n` +
-          `平均 loss: ${typeof j.avg_loss === "number" ? j.avg_loss.toFixed(4) : "-"}\n` +
-          `适配器: ${j.adapter_path ?? "-"}`;
+        status.textContent = T("training.done", {
+          samples: j.training_samples ?? "-",
+          epochs: j.epochs ?? "-",
+          steps: j.total_steps ?? "-",
+          loss: typeof j.avg_loss === "number" ? j.avg_loss.toFixed(4) : "-",
+          adapter: j.adapter_path ?? "-",
+        });
       }
     }
     if (meta) meta.textContent = "";
@@ -892,7 +902,7 @@ async function startTraining() {
     const msg = err.message || String(err);
     if (status) {
       status.className = "trn-status err";
-      status.textContent = `训练失败：${msg}`;
+      status.textContent = T("training.failed", { msg });
     }
     // Surface the install hint whenever the failure is a missing training dep
     // (the API returns e.g. "缺少 transformers, peft" — not just "torch").
@@ -912,10 +922,12 @@ const REM_CAT_COLORS = {
   coding: "#5b8cff", browsing: "#e0a458", email: "#5fb878",
   meeting: "#c678dd", writing: "#56b6c2", communication: "#e06c75", other: "#5c6370",
 };
-const REM_CAT_LABEL = {
-  coding: "编码", browsing: "浏览", email: "邮件", meeting: "会议",
-  writing: "写作", communication: "沟通", other: "其他",
-};
+// Category label resolves through i18n so it switches with the UI language.
+function REM_CAT_LABEL_T(cat) {
+  const key = "rem.cat." + cat;
+  const s = T(key);
+  return s === key ? cat : s;  // unknown category → show its raw value
+}
 const remindersUi = { day: "weekday", grid: { weekday: {}, weekend: {} } };
 
 function remSlotLabel(slot) {
@@ -942,11 +954,11 @@ function renderReminderHeatmap() {
       if (cell) {
         const color = REM_CAT_COLORS[cell.category] || REM_CAT_COLORS.other;
         const alpha = Math.max(0.2, Math.min(1, cell.frequency || 0));
-        const title = `${remSlotLabel(slot)} · ${REM_CAT_LABEL[cell.category] || cell.category}`
-          + ` · ${Math.round((cell.frequency || 0) * 100)}% 天数 · ${cell.top_app || ""} · 约 ${cell.avg_minutes || 0} 分钟`;
+        const title = `${remSlotLabel(slot)} · ${REM_CAT_LABEL_T(cell.category)}`
+          + ` · ${T("reminders.days", { pct: Math.round((cell.frequency || 0) * 100) })} · ${cell.top_app || ""} · ${T("reminders.approxMin", { n: cell.avg_minutes || 0 })}`;
         html += `<td title="${capEscape(title)}" style="background:${remHexA(color, alpha)}"></td>`;
       } else {
-        html += `<td title="${remSlotLabel(slot)} · 无规律"></td>`;
+        html += `<td title="${remSlotLabel(slot)} · ${T("reminders.noPattern")}"></td>`;
       }
     }
     html += "</tr>";
@@ -958,8 +970,8 @@ function renderReminderHeatmap() {
   const legend = $("#remLegend");
   if (legend) {
     legend.innerHTML = [...used].map((cat) =>
-      `<span><i style="background:${REM_CAT_COLORS[cat] || REM_CAT_COLORS.other}"></i>${REM_CAT_LABEL[cat] || cat}</span>`
-    ).join("") || '<span>该时段暂无规律</span>';
+      `<span><i style="background:${REM_CAT_COLORS[cat] || REM_CAT_COLORS.other}"></i>${REM_CAT_LABEL_T(cat)}</span>`
+    ).join("") || `<span>${T("reminders.noPatternSlot")}</span>`;
   }
 }
 
@@ -967,7 +979,7 @@ function renderReminderHeatmap() {
 function renderRoutineSummary() {
   const host = $("#remRoutines");
   if (!host) return;
-  const dayName = remindersUi.day === "weekend" ? "周末" : "工作日";
+  const dayName = remindersUi.day === "weekend" ? T("reminders.weekend") : T("reminders.weekday");
   const slots = remindersUi.grid[remindersUi.day] || {};
   const items = Object.entries(slots)
     .map(([slot, c]) => ({ slot: Number(slot), ...c }))
@@ -976,20 +988,20 @@ function renderRoutineSummary() {
     .slice(0, 6)
     .sort((a, b) => a.slot - b.slot);
   if (!items.length) {
-    host.innerHTML = `<div class="rem-routine" style="justify-content:center;color:var(--muted)">还没有足够的${dayName}数据来总结规律</div>`;
+    host.innerHTML = `<div class="rem-routine" style="justify-content:center;color:var(--muted)">${T("reminders.noRoutineData", { day: dayName })}</div>`;
     return;
   }
   host.innerHTML = items.map((c) => {
     const color = REM_CAT_COLORS[c.category] || REM_CAT_COLORS.other;
-    const cat = REM_CAT_LABEL[c.category] || c.category;
-    const app = c.top_app ? `（${capEscape(c.top_app)}）` : "";
-    const mins = c.avg_minutes ? ` · 约 ${c.avg_minutes} 分钟` : "";
+    const cat = REM_CAT_LABEL_T(c.category);
+    const app = c.top_app ? `(${capEscape(c.top_app)})` : "";
+    const mins = c.avg_minutes ? ` · ${T("reminders.approxMin", { n: c.avg_minutes })}` : "";
     const pct = Math.round((c.frequency || 0) * 100);
     return `<div class="rem-routine">
       <span class="rt-dot" style="background:${color}"></span>
       <span class="rt-time">${remSlotLabel(c.slot)}</span>
-      <span class="rt-text">通常在 <b>${capEscape(cat)}</b>${app}${mins}</span>
-      <span class="rt-freq">${pct}% 的${dayName}</span>
+      <span class="rt-text">${T("reminders.usually")} <b>${capEscape(cat)}</b>${app}${mins}</span>
+      <span class="rt-freq">${T("reminders.pctOfDay", { pct, day: dayName })}</span>
     </div>`;
   }).join("");
 }
@@ -1000,8 +1012,8 @@ async function loadReminderProfile() {
   const note = $("#remProfileNote");
   if (note) {
     note.textContent = j.total
-      ? `已从你的活动里学到 ${j.total} 条作息规律，并据此生成提醒。`
-      : "数据还不够 — 正常使用电脑一段时间后，这里会自动总结出你的作息规律。";
+      ? T("reminders.routineLearned", { n: j.total })
+      : T("reminders.routineNeedMore");
   }
   renderRoutineSummary();
   renderReminderHeatmap();
@@ -1022,7 +1034,7 @@ async function loadReminderSuggestions() {
   if (!box) return;
   const j = await api("/habits/suggestions?limit=40");
   const rows = (j.data || []).filter((s) => s.status === "sent" || s.status === "clicked");
-  if (meta) meta.textContent = rows.length ? `${rows.length} 条提醒` : "";
+  if (meta) meta.textContent = rows.length ? T("reminders.count", { n: rows.length }) : "";
   if (countEl) {
     if (rows.length) { countEl.textContent = rows.length; countEl.hidden = false; }
     else { countEl.hidden = true; }
@@ -1031,14 +1043,14 @@ async function loadReminderSuggestions() {
     box.innerHTML = `
       <div class="rem-empty">
         <div class="rem-empty-ic">\uD83D\uDD14</div>
-        <div class="rem-empty-title">还没有提醒</div>
-        <p>DeskMate 会观察你的作息规律，在合适的时机主动提醒你 —— 比如久坐该起来活动、该收尾今天的工作了。</p>
-        <p class="muted">随着活动规律的积累，提醒会自动出现。</p>
+        <div class="rem-empty-title">${T("reminders.empty.title")}</div>
+        <p>${T("reminders.empty.body")}</p>
+        <p class="muted">${T("reminders.empty.note")}</p>
         <div class="rem-example">
           <div class="rem-ic">\u2615</div>
           <div>
-            <div class="ex-cap">提醒长这样</div>
-            <div class="ex-msg">你已经专注编码 90 分钟了，起来喝口水、活动一下吧。</div>
+            <div class="ex-cap">${T("reminders.example.cap")}</div>
+            <div class="ex-msg">${T("reminders.example.msg")}</div>
           </div>
         </div>
       </div>`;
@@ -1046,8 +1058,8 @@ async function loadReminderSuggestions() {
   }
   box.innerHTML = rows.map((s) => {
     const fb = s.feedback === 1
-      ? '<span class="rem-fb-yes">\u2713 已标记有用</span>'
-      : s.feedback === -1 ? '<span class="rem-fb-no">已标记没用</span>' : "";
+      ? `<span class="rem-fb-yes">✓ ${T("reminders.fb.yes")}</span>`
+      : s.feedback === -1 ? `<span class="rem-fb-no">${T("reminders.fb.no")}</span>` : "";
     const when = s.created_at ? timeAgo(s.created_at) : "";
     return `
     <div class="rem-sug" data-id="${s.id}">
@@ -1056,13 +1068,13 @@ async function loadReminderSuggestions() {
         <div class="rem-msg">${capEscape(s.message)}</div>
         <div class="rem-meta">
           ${when ? `<span>${capEscape(when)}</span>` : ""}
-          <span class="rem-badge">${capEscape(s.rule_name || "提醒")}</span>
+          <span class="rem-badge">${capEscape(s.rule_name || T("reminders.defaultName"))}</span>
           ${fb}
         </div>
         <div class="rem-acts">
-          <button type="button" class="ghost ${s.feedback === 1 ? "is-on" : ""}" data-act="up">\uD83D\uDC4D 有用</button>
-          <button type="button" class="ghost ${s.feedback === -1 ? "is-on" : ""}" data-act="down">\uD83D\uDC4E 没用</button>
-          <button type="button" class="ghost" data-act="dismiss">忽略</button>
+          <button type="button" class="ghost ${s.feedback === 1 ? "is-on" : ""}" data-act="up">${T("reminders.fb.up")}</button>
+          <button type="button" class="ghost ${s.feedback === -1 ? "is-on" : ""}" data-act="down">${T("reminders.fb.down")}</button>
+          <button type="button" class="ghost" data-act="dismiss">${T("reminders.dismiss")}</button>
         </div>
       </div>
     </div>`;
@@ -1138,7 +1150,7 @@ function renderEmailProvider(provider, label) {
   statusEl.classList.toggle("connected", Boolean(connected));
   accountsEl.innerHTML = "";
   if (!data.instances.length) {
-    accountsEl.textContent = "No accounts";
+    accountsEl.textContent = T("email.noAccounts");
   } else {
     for (const account of data.instances) {
       const chip = document.createElement("span");
@@ -1248,7 +1260,7 @@ function renderHome() {
   }
   if (status) {
     if (!ok) status.textContent = "Disconnected";
-    else if (h.meeting_status === "active") status.textContent = "Meeting recording";
+    else if (h.meeting_status === "active") status.textContent = T("home.meetingRecording");
     else status.textContent = audioOn ? "Recording" : "Screen only";
   }
 
@@ -1558,7 +1570,7 @@ function renderTranslateStream() {
     const empty = document.createElement("div");
     empty.id = "trxEmpty";
     empty.className = "trx-grid-empty";
-    empty.textContent = "No speech yet — enable live translation and speak.";
+    empty.textContent = T("translate.noSpeech");
     grid.appendChild(empty);
     return;
   }
@@ -1585,7 +1597,7 @@ function appendTranslateRowCells(grid, row) {
     tgt.textContent = row.translation;
   } else {
     tgt.classList.add("pending");
-    tgt.textContent = "翻译中…";
+    tgt.textContent = T("translate.translating");
   }
   grid.append(meta, src, tgt);
 }
@@ -1829,7 +1841,7 @@ function renderApps() {
   container.innerHTML = "";
   container.classList.toggle("empty-state", items.length === 0);
   if (!items.length) {
-    container.textContent = "No matching apps";
+    container.textContent = T("apps.noMatch");
     return;
   }
   for (const app of items) {
@@ -1895,7 +1907,7 @@ function createAppRow(app) {
 
   const name = document.createElement("div");
   name.className = "pipe-row-name";
-  name.textContent = app.name;
+  name.textContent = appDisplayName(app);
 
   const meta = document.createElement("div");
   meta.className = "pipe-row-meta";
@@ -1911,14 +1923,14 @@ function createAppRow(app) {
   const runBtn = document.createElement("button");
   runBtn.className = "primary";
   runBtn.type = "button";
-  runBtn.textContent = "Run";
+  runBtn.textContent = T("apps.run");
   runBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     requestRunApp(app.name).catch(showError);
   });
   const histBtn = document.createElement("button");
   histBtn.type = "button";
-  histBtn.textContent = "History";
+  histBtn.textContent = T("apps.history");
   histBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     if (appsUi.selectedApp === app.name && isDetailPanelOpen()) {
@@ -1926,7 +1938,7 @@ function createAppRow(app) {
       return;
     }
     appsUi.selectedApp = app.name;
-    showAppHistory(app.name, app.title || app.name);
+    showAppHistory(app.name, appDisplayName(app));
     renderApps();
   });
   actions.append(runBtn, histBtn);
@@ -1937,7 +1949,7 @@ function createAppRow(app) {
       return;
     }
     appsUi.selectedApp = app.name;
-    showAppHistory(app.name, app.title || app.name);
+    showAppHistory(app.name, appDisplayName(app));
     renderApps();
   });
 
@@ -2196,7 +2208,7 @@ function populateEmailComposeAccounts() {
   const select = $("#emailComposeAccount");
   if (!select) return;
   const instances = state.email[provider]?.instances || [];
-  select.innerHTML = '<option value="">Default account</option>';
+  select.innerHTML = '<option value="">${T("email.defaultAccount")}</option>';
   for (const acc of instances) {
     const val = acc.instance || acc.email || "";
     if (!val) continue;
@@ -2229,13 +2241,13 @@ async function loadEmailComposeReplyOptions() {
   const select = $("#emailComposeReplyPick");
   if (!select) return;
   const instance = emailComposeInstance();
-  select.innerHTML = '<option value="">New email — no reply context</option>';
+  select.innerHTML = '<option value="">${T("email.noReplyCtx")}</option>';
   if (!instance) return;
 
   const loading = document.createElement("option");
   loading.value = "";
   loading.disabled = true;
-  loading.textContent = "Loading recent messages…";
+  loading.textContent = T("email.loadingRecent");
   select.appendChild(loading);
 
   try {
@@ -2243,12 +2255,12 @@ async function loadEmailComposeReplyOptions() {
     params.set("instance", instance);
     const listPayload = await api(`/connections/${provider}/messages?${params}`);
     const listed = listPayload.data?.messages || listPayload.messages || [];
-    select.innerHTML = '<option value="">New email — no reply context</option>';
+    select.innerHTML = '<option value="">${T("email.noReplyCtx")}</option>';
     if (!listed.length) {
       const empty = document.createElement("option");
       empty.value = "";
       empty.disabled = true;
-      empty.textContent = "No recent messages found";
+      empty.textContent = T("email.noRecent");
       select.appendChild(empty);
       return;
     }
@@ -2277,7 +2289,7 @@ async function loadEmailComposeReplyOptions() {
       select.appendChild(opt);
     }
   } catch (err) {
-    select.innerHTML = '<option value="">New email — no reply context</option>';
+    select.innerHTML = '<option value="">${T("email.noReplyCtx")}</option>';
     const fail = document.createElement("option");
     fail.value = "";
     fail.disabled = true;
@@ -2481,7 +2493,7 @@ async function showAppOutput(appName, runId, filename) {
     const text = await fetch(`/apps/${appName}/outputs/${runId}/${filename}`).then((r) => r.text());
     content.innerHTML = simpleMarkdown(text);
   } catch {
-    content.textContent = "(Unable to load report content)";
+    content.textContent = T("apps.reportLoadFail");
   }
   showDetailPanel(panel);
   content.scrollTop = 0;
@@ -2503,21 +2515,21 @@ async function showAppHistory(appName, appTitle) {
     histList.innerHTML = "";
     histList.classList.toggle("empty", runs.length === 0);
     if (runs.length === 0) {
-      histList.textContent = "No run history yet";
+      histList.textContent = T("apps.noHistory");
       return;
     }
     for (const run of runs) {
       const reportFile = run.report_file;
       const item = listItem({
         title: `${appTitle} · ${run.timestamp}`,
-        subtitle: `${run.files.length} file(s)${reportFile ? ` · ${reportFile}` : ""}`,
-        actionLabel: reportFile ? "View" : "",
+        subtitle: `${T("apps.fileCount", { n: run.files.length })}${reportFile ? ` · ${reportFile}` : ""}`,
+        actionLabel: reportFile ? T("common.view") : "",
         onAction: reportFile ? () => showAppOutput(appName, run.run_id, reportFile) : null,
       });
       histList.appendChild(item);
     }
   } catch (err) {
-    histList.textContent = `Load failed: ${err.message}`;
+    histList.textContent = T("apps.loadFailed", { msg: err.message });
   }
 }
 
@@ -2580,10 +2592,13 @@ function settingToInputValue(f, value) {
 
 async function refreshSettingsView() {
   renderSettings();
+  // Keep the language selector in sync with the active language.
+  const langSel = $("#setLangSelect");
+  if (langSel && window.I18N) langSel.value = I18N.lang;
   if (settingsUi.loading) return;
   settingsUi.loading = true;
   const host = $("#setGroups");
-  if (host && !settingsUi.schema) host.innerHTML = '<p class="muted-copy">加载设置中…</p>';
+  if (host && !settingsUi.schema) host.innerHTML = `<p class="muted-copy">${T("training.loading")}</p>`;
   try {
     const j = await api("/config/settings");
     settingsUi.schema = j.groups || [];
@@ -2599,7 +2614,7 @@ async function refreshSettingsView() {
     }
     renderSettingsForm();
   } catch (err) {
-    if (host) host.innerHTML = `<p class="set-group-desc">无法加载设置：${capEscape(err.message)}</p>`;
+    if (host) host.innerHTML = `<p class="set-group-desc">${T("settings.loadFailed", { msg: capEscape(err.message) })}</p>`;
   } finally {
     settingsUi.loading = false;
   }
@@ -2610,9 +2625,12 @@ function renderSettingsForm() {
   if (!host || !settingsUi.schema) return;
   host.innerHTML = settingsUi.schema.map((g) => {
     const rows = g.fields.map((f) => renderSettingField(f)).join("");
+    // Backend ships Chinese as the fallback; translate via a stable group id.
+    const title = TF(`settings.group.${g.id}.title`, g.title);
+    const desc = TF(`settings.group.${g.id}.desc`, g.desc || "");
     return `<section class="set-group">
-      <div class="set-group-title">${capEscape(g.title)}</div>
-      ${g.desc ? `<p class="set-group-desc">${capEscape(g.desc)}</p>` : ""}
+      <div class="set-group-title">${capEscape(title)}</div>
+      ${desc ? `<p class="set-group-desc">${capEscape(desc)}</p>` : ""}
       ${rows}
     </section>`;
   }).join("");
@@ -2637,7 +2655,7 @@ function renderSettingField(f) {
   const val = settingsUi.current[k] ?? "";
   // Minimal-text status: only restart-needed fields carry a quiet flag; the
   // common "instant" case is the unmarked default (less visual noise).
-  const flag = f.restart ? '<span class="set-flag">需重启</span>' : "";
+  const flag = f.restart ? `<span class="set-flag">${T("settings.flag.restart")}</span>` : "";
   let control = "";
   if (f.type === "bool") {
     const checked = val === "true" ? "checked" : "";
@@ -2655,10 +2673,12 @@ function renderSettingField(f) {
     const ph = f.placeholder ? `placeholder="${capEscape(f.placeholder)}"` : "";
     control = `<input type="text" data-setkey="${k}" value="${capEscape(val)}" ${ph} autocomplete="off">`;
   }
+  const label = TF(`settings.field.${k}.label`, f.label);
+  const help = TF(`settings.field.${k}.help`, f.help || "");
   return `<div class="set-field" data-fieldrow="${k}">
     <div class="set-field-main">
-      <div class="set-field-label">${capEscape(f.label)}${flag}</div>
-      ${f.help ? `<div class="set-field-help">${capEscape(f.help)}</div>` : ""}
+      <div class="set-field-label">${capEscape(label)}${flag}</div>
+      ${help ? `<div class="set-field-help">${capEscape(help)}</div>` : ""}
     </div>
     <div class="set-field-control">${control}</div>
   </div>`;
@@ -2691,7 +2711,7 @@ function reflectSettingsDirty() {
   if (bar) bar.hidden = changed.length === 0;
   if (msg) {
     msg.classList.remove("err");  // clear any prior save-error styling
-    msg.textContent = changed.length ? `有 ${changed.length} 项更改尚未保存` : "";
+    msg.textContent = changed.length ? T("settings.unsaved", { n: changed.length }) : "";
   }
 }
 
@@ -2720,7 +2740,7 @@ async function saveSettings() {
   const btn = $("#setSaveBtn");
   const msg = $("#setActionMsg");
   if (btn) btn.disabled = true;
-  if (msg) msg.textContent = "保存中…";
+  if (msg) msg.textContent = T("settings.saving");
   try {
     const res = await api("/config/settings", {
       method: "POST",
@@ -2742,7 +2762,7 @@ async function saveSettings() {
       if (bar) bar.hidden = false;
       if (msgEl) {
         msgEl.classList.add("err");
-        msgEl.textContent = `部分未保存：${errKeys.map((k) => `${k}（${errs[k]}）`).join("；")}`;
+        msgEl.textContent = T("settings.partialFail", { detail: errKeys.map((k) => `${k} (${errs[k]})`).join("; ") });
       }
     } else {
       if (msgEl) msgEl.classList.remove("err");
@@ -2752,7 +2772,7 @@ async function saveSettings() {
     const restartBar = $("#setRestartBar");
     if (restartBar) restartBar.hidden = !res.needs_restart;
   } catch (err) {
-    if (msg) msg.textContent = `保存失败：${err.message}`;
+    if (msg) msg.textContent = T("settings.saveFailed", { msg: err.message });
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -2761,8 +2781,8 @@ async function saveSettings() {
 async function restartServer() {
   const bar = $("#setRestartBar");
   const msg = $("#setRestartMsg");
-  if (!confirm("现在重启 DeskMate 使设置生效？重启期间界面会短暂断开。")) return;
-  if (msg) msg.textContent = "正在重启… 若几秒后页面未恢复，请手动重新启动 DeskMate。";
+  if (!confirm(T("settings.restart.confirm"))) return;
+  if (msg) msg.textContent = T("settings.restart.restarting");
   try {
     await api("/restart", { method: "POST" });
   } catch (_) {
@@ -2778,7 +2798,7 @@ async function restartServer() {
       location.reload();
     } catch (_) {
       if (tries > 30 && msg) {
-        msg.textContent = "重启超时。如果 DeskMate 没有自动恢复，请在终端重新运行 `deskmate ui`。";
+        msg.textContent = T("settings.restart.timeout");
       }
     }
   }, 1000);
@@ -2824,7 +2844,7 @@ function renderFrameDetail(detail) {
     ax.className = "detail-section";
     const axLabel = document.createElement("div");
     axLabel.className = "detail-section-label";
-    axLabel.textContent = "Window text (accessibility)";
+    axLabel.textContent = T("events.axLabel");
     ax.append(axLabel, bodyBlock(detail.accessibility_text));
     el.append(ax);
   }
@@ -2881,10 +2901,10 @@ async function runSearch(event) {
   const stats = $("#homeAskStats");
   const feedback = $("#homeAskFeedback");
 
-  if (answer) { answer.innerHTML = '<div class="ask-loading"><span class="ask-spinner"></span>Thinking and searching data…</div>'; answer.classList.remove("hidden"); }
+  if (answer) { answer.innerHTML = `<div class="ask-loading"><span class="ask-spinner"></span>${T("ask.thinkingSearching")}</div>`; answer.classList.remove("hidden"); }
   if (toolLog) { toolLog.innerHTML = ""; toolLog.classList.add("hidden"); }
   if (feedback) { feedback.innerHTML = ""; feedback.classList.add("hidden"); }
-  if (stats) stats.textContent = "Searching…";
+  if (stats) stats.textContent = T("ask.searching");
 
   try {
     const result = await api("/ask", {
@@ -2918,9 +2938,9 @@ async function runSearch(event) {
 
 function renderAskFeedback(box, askId) {
   box.innerHTML =
-    '<span class="ask-fb-q">这个回答有用吗？训练本地模型会用到你点「有用」的回答。</span>' +
-    '<button type="button" class="ghost" data-act="up">👍 有用</button>' +
-    '<button type="button" class="ghost" data-act="down">👎 没用</button>';
+    `<span class="ask-fb-q">${T("ask.fb.q")}</span>` +
+    `<button type="button" class="ghost" data-act="up">${T("ask.fb.up")}</button>` +
+    `<button type="button" class="ghost" data-act="down">${T("ask.fb.down")}</button>`;
   box.classList.remove("hidden");
   const send = async (score) => {
     try {
@@ -2929,10 +2949,10 @@ function renderAskFeedback(box, askId) {
         body: JSON.stringify({ feedback: score }),
       });
       box.innerHTML = score === 1
-        ? '<span class="ask-fb-done">已标记「有用」✓ 会用于本地训练</span>'
-        : '<span class="ask-fb-done">已标记「没用」✓ 不会用于训练</span>';
+        ? `<span class="ask-fb-done">${T("ask.fb.markedUp")}</span>`
+        : `<span class="ask-fb-done">${T("ask.fb.markedDown")}</span>`;
     } catch (err) {
-      box.innerHTML = `<span class="ask-fb-done">反馈失败：${escHtml(err.message)}</span>`;
+      box.innerHTML = `<span class="ask-fb-done">${T("ask.fb.failed", { msg: escHtml(err.message) })}</span>`;
     }
   };
   box.querySelector('[data-act="up"]')?.addEventListener("click", () => send(1));
@@ -3026,8 +3046,8 @@ async function captureNow() {
 function readTodoCustomRange() {
   const start = parseDatetimeLocalValue($("#todoRangeStart")?.value);
   const end = parseDatetimeLocalValue($("#todoRangeEnd")?.value);
-  if (!start || !end) return { error: "请填写开始和结束时间" };
-  if (start >= end) return { error: "开始时间必须早于结束时间" };
+  if (!start || !end) return { error: T("todos.err.fillTime") };
+  if (start >= end) return { error: T("todos.err.order") };
   return { startIso: toLocalIsoString(start), endIso: toLocalIsoString(end) };
 }
 
@@ -3058,19 +3078,19 @@ function updateTodoRangeSummary() {
   const summary = $("#todoRangeSummary");
   if (!summary) return;
   if (todoTimeRangeUi.preset === "all") {
-    summary.textContent = "筛选：显示全部待办";
+    summary.textContent = T("todos.filter.all");
     return;
   }
   if (todoTimeRangeUi.preset === "custom") {
     const custom = readTodoCustomRange();
     summary.textContent = custom.error
       ? custom.error
-      : `筛选时段：${formatVideoExportRange(custom.startIso, custom.endIso)}`;
+      : T("todos.filter.range", { range: formatVideoExportRange(custom.startIso, custom.endIso) });
     return;
   }
   const range = hoursRangeFromPreset(todoTimeRangeUi.preset);
   summary.textContent = range
-    ? `筛选时段：${formatVideoExportRange(range.startIso, range.endIso)}`
+    ? T("todos.filter.range", { range: formatVideoExportRange(range.startIso, range.endIso) })
     : "—";
 }
 
@@ -3130,8 +3150,8 @@ function renderTodos(payload) {
       ? ""
       : " for the selected time range";
     list.textContent = todosUi.filter === "open"
-      ? `当前没有未完成的待办${rangeHint}。请前往 Apps → Todo List Assistant 生成，或将时间范围改为「全部」。`
-      : `当前没有待办${rangeHint}。请前往 Apps → Todo List Assistant 生成，或将时间范围改为「全部」。`;
+      ? T("todos.empty.open", { hint: rangeHint })
+      : T("todos.empty.all", { hint: rangeHint });
     return;
   }
   list.classList.remove("empty");
@@ -3182,7 +3202,7 @@ function renderTodoRow(todo) {
   const del = document.createElement("button");
   del.type = "button";
   del.className = "todo-del";
-  del.title = "Delete todo";
+  del.title = T("todos.deleteTitle");
   del.setAttribute("aria-label", "Delete todo");
   del.textContent = "×";
   del.addEventListener("click", () => deleteTodo(todo.id));
@@ -3238,7 +3258,7 @@ function renderMeetings() {
   list.innerHTML = "";
   if (!state.meetings.length) {
     list.classList.add("empty");
-    list.textContent = "No meetings detected yet.";
+    list.textContent = T("meetings.noneDetected");
     return;
   }
   list.classList.remove("empty");
@@ -3263,7 +3283,7 @@ async function selectMeeting(id) {
   const detail = $("#meetingDetails");
   const sumBtn = $("#meetingSummarizeBtn");
   detail.classList.remove("muted-detail");
-  detail.textContent = "Loading…";
+  detail.textContent = T("common.loading");
   try {
     const data = await api(`/meetings/${id}`);
     const meeting = data.meeting || {};
@@ -3303,7 +3323,7 @@ function renderMeetingDetail(meeting, segs) {
   if (!segs.length) {
     const empty = document.createElement("div");
     empty.className = "muted-copy";
-    empty.textContent = "No transcript captured for this meeting.";
+    empty.textContent = T("meetings.noTranscript");
     detail.appendChild(empty);
     return;
   }
@@ -3338,7 +3358,7 @@ async function summarizeMeeting(id) {
     if (result.success) {
       await selectMeeting(id);
       statusEl.className = "app-run-status success";
-      statusEl.textContent = "Summary saved to the meeting note.";
+      statusEl.textContent = T("meetings.summarySaved");
     } else {
       statusEl.className = "app-run-status error";
       statusEl.textContent = `Summarize failed: ${result.stderr || "unknown error"}`;
@@ -3438,7 +3458,7 @@ function wireEvents() {
   });
   $("#capForgetBtn")?.addEventListener("click", async (e) => {
     const minutes = Number($("#capForgetMinutes")?.value || 5);
-    if (!confirm(`确认删除最近 ${minutes} 分钟的全部采集数据？此操作不可恢复。`)) return;
+    if (!confirm(T("capture.forget.confirm", { minutes }))) return;
     const btn = e.currentTarget;
     btn.disabled = true;
     try {
@@ -3449,9 +3469,14 @@ function wireEvents() {
       const rm = j.removed || {};
       const out = $("#capForgetResult");
       if (out) {
-        out.textContent =
-          `已删除：截图 ${rm.frames || 0}，输入 ${rm.ui_events || 0}，音频块 ${rm.audio_chunks || 0}，` +
-          `转写 ${rm.transcripts || 0}，时间线 ${rm.context_events || 0}，文件 ${rm.files || 0}`;
+        out.textContent = T("capture.forget.done", {
+          frames: rm.frames || 0,
+          events: rm.ui_events || 0,
+          audio: rm.audio_chunks || 0,
+          transcripts: rm.transcripts || 0,
+          ctx: rm.context_events || 0,
+          files: rm.files || 0,
+        });
       }
       loadUnifiedTimeline().catch(showError);
       loadTimelineBreakdown().catch(showError);
@@ -3485,12 +3510,40 @@ function wireEvents() {
 function showError(error) {
   console.error(error);
   $("#healthStatus").textContent = "Error";
-  $("#healthMessage").textContent = "API request failed";
+  $("#healthMessage").textContent = T("home.apiFailed");
   $("#healthDetails").textContent = error.message || String(error);
   const indicator = $("#homeRecIndicator");
   const status = $("#homeRecStatus");
   if (indicator) indicator.classList.add("error");
   if (status) status.textContent = "Disconnected";
+}
+
+// i18n: translate static markup at boot, sync the language selector, and on a
+// language change re-translate + re-render any view that builds strings in JS.
+if (window.I18N) {
+  I18N.apply(document);
+  const langSel = $("#setLangSelect");
+  if (langSel) {
+    langSel.value = I18N.lang;
+    langSel.addEventListener("change", () => I18N.setLang(langSel.value));
+  }
+  I18N.onChange(() => {
+    I18N.apply(document);
+    // Re-apply the current view's header (set dynamically from the titles map).
+    const name = state.currentView;
+    if (name && name !== "apps" && titles[name]) {
+      $("#viewTitle").textContent = TF(`view.${name}.title`, titles[name][0]);
+      $("#viewSubtitle").textContent = TF(`view.${name}.subtitle`, titles[name][1]);
+    }
+    // Re-render the dynamic views so JS-built strings pick up the new language.
+    const active = document.querySelector(".view.active");
+    const id = active ? active.id : "";
+    if (id === "view-training") refreshTrainingView();
+    else if (id === "view-reminders") refreshRemindersView();
+    else if (id === "view-settings") renderSettingsForm();
+    // Apps rows (Run/History buttons, schedule labels) are JS-built — re-render.
+    renderApps();
+  });
 }
 
 wireEvents();
