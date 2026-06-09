@@ -2155,10 +2155,10 @@ def create_app(
 
     @app.post("/training/lora")
     async def training_lora(request: Request) -> dict[str, Any]:
+        # Note: the trainer itself runs in a child process (see below); here we
+        # only need the miner + the dep check, which don't import torch.
         from ..learning.training import (  # noqa: PLC0415
             DeskMateTrainingDataMiner,
-            LoRATrainer,
-            LoRATrainingConfig,
             missing_training_deps,
         )
 
@@ -2203,20 +2203,63 @@ def create_app(
             body.get("output_dir") or tc.output_dir or (_paths.root() / "checkpoints" / "lora")
         )
 
-        lcfg = LoRATrainingConfig(
-            lora_rank=tc.lora_rank,
-            lora_alpha=tc.lora_alpha,
-            lora_dropout=tc.lora_dropout,
-            target_modules=list(tc.target_modules),
-            num_epochs=int(body.get("epochs") or tc.num_epochs),
-            batch_size=tc.batch_size,
-            learning_rate=tc.learning_rate,
-            max_seq_length=tc.max_seq_length,
-            use_4bit=tc.use_4bit,
-            output_dir=out_dir,
+        config_kwargs = {
+            "lora_rank": tc.lora_rank,
+            "lora_alpha": tc.lora_alpha,
+            "lora_dropout": tc.lora_dropout,
+            "target_modules": list(tc.target_modules),
+            "num_epochs": int(body.get("epochs") or tc.num_epochs),
+            "batch_size": tc.batch_size,
+            "learning_rate": tc.learning_rate,
+            "max_seq_length": tc.max_seq_length,
+            "use_4bit": tc.use_4bit,
+            "output_dir": out_dir,
+        }
+        model_name = str(body.get("model") or tc.model_name)
+
+        # Run training in a SEPARATE PROCESS, not a threadpool. Training loads the
+        # base model + LoRA + optimizer onto the GPU/iGPU; doing it in the
+        # long-lived UI process leaves that memory occupied until the server
+        # exits. A child process that trains and then exits lets the OS reclaim
+        # ALL of its accelerator memory immediately — cleaner than empty_cache.
+        jobs_dir = _paths.root() / "checkpoints" / ".jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%dT%H%M%S_%f")
+        job_file = jobs_dir / f"job_{stamp}.json"
+        result_file = jobs_dir / f"result_{stamp}.json"
+        job_file.write_text(
+            json.dumps({"model_name": model_name, "config": config_kwargs, "pairs": pairs},
+                       ensure_ascii=False),
+            encoding="utf-8",
         )
-        trainer = LoRATrainer(lcfg, model_name=str(body.get("model") or tc.model_name))
-        summary = await run_in_threadpool(trainer.train, pairs)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "deskmate.learning.training._worker",
+                str(job_file), str(result_file),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                env={**dict(os.environ),
+                     "DESKMATE_HOME": str(_paths.root()),
+                     "DESKMATE_DB": str(db.path)},
+            )
+            _out, err = await proc.communicate()
+            if proc.returncode != 0 or not result_file.exists():
+                detail = (err.decode("utf-8", "replace")[-800:] if err else "").strip()
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"训练子进程失败（退出码 {proc.returncode}）。{detail}",
+                )
+            summary = json.loads(result_file.read_text(encoding="utf-8"))
+            if summary.get("status") == "error":
+                raise HTTPException(status_code=500,
+                                    detail=f"训练失败：{summary.get('error', 'unknown')}")
+        finally:
+            for f in (job_file, result_file):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
         summary["sources"] = src
         return summary
 

@@ -589,55 +589,91 @@ class LoRATrainer:
         # Intel icx/icpx (SYCL) — g++ cannot build the kernels.
         _ensure_cxx_compiler(self.device)
 
-        dataset = self.prepare_dataset(pairs)
-        self._load_model()
-        self._apply_lora()
+        # Always free GPU/iGPU memory when training ends — success, failure or
+        # OOM — since this runs in the long-lived UI process (see _release_memory).
+        try:
+            dataset = self.prepare_dataset(pairs)
+            self._load_model()
+            self._apply_lora()
 
-        optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=self.config.learning_rate,
-            weight_decay=self.config.weight_decay,
-        )
-
-        total_steps = 0
-        cumulative_loss = 0.0
-        num_loss_steps = 0
-
-        self.model.train()
-
-        for epoch in range(self.config.num_epochs):
-            epoch_loss = self._train_epoch(dataset, optimizer)
-            steps_in_epoch = max(
-                1, (len(dataset) + self.config.batch_size - 1) // self.config.batch_size
-            )
-            total_steps += steps_in_epoch
-            cumulative_loss += epoch_loss * steps_in_epoch
-            num_loss_steps += steps_in_epoch
-
-            logger.info(
-                "Epoch %d/%d  loss=%.4f",
-                epoch + 1,
-                self.config.num_epochs,
-                epoch_loss,
+            optimizer = torch.optim.AdamW(
+                self.model.parameters(),
+                lr=self.config.learning_rate,
+                weight_decay=self.config.weight_decay,
             )
 
-            if (epoch + 1) % self.config.save_every_n_epochs == 0:
-                self._save_adapter(epoch + 1)
+            total_steps = 0
+            cumulative_loss = 0.0
+            num_loss_steps = 0
 
-        avg_loss = cumulative_loss / num_loss_steps if num_loss_steps else 0.0
-        adapter_path = str(Path(self.config.output_dir) / "final")
-        self._save_adapter_to(adapter_path)
+            self.model.train()
 
-        return {
-            "status": "completed",
-            "epochs": self.config.num_epochs,
-            "total_steps": total_steps,
-            "avg_loss": avg_loss,
-            "adapter_path": adapter_path,
-            "training_samples": len(pairs),
-        }
+            for epoch in range(self.config.num_epochs):
+                epoch_loss = self._train_epoch(dataset, optimizer)
+                steps_in_epoch = max(
+                    1, (len(dataset) + self.config.batch_size - 1) // self.config.batch_size
+                )
+                total_steps += steps_in_epoch
+                cumulative_loss += epoch_loss * steps_in_epoch
+                num_loss_steps += steps_in_epoch
+
+                logger.info(
+                    "Epoch %d/%d  loss=%.4f",
+                    epoch + 1,
+                    self.config.num_epochs,
+                    epoch_loss,
+                )
+
+                if (epoch + 1) % self.config.save_every_n_epochs == 0:
+                    self._save_adapter(epoch + 1)
+
+            avg_loss = cumulative_loss / num_loss_steps if num_loss_steps else 0.0
+            adapter_path = str(Path(self.config.output_dir) / "final")
+            self._save_adapter_to(adapter_path)
+
+            return {
+                "status": "completed",
+                "epochs": self.config.num_epochs,
+                "total_steps": total_steps,
+                "avg_loss": avg_loss,
+                "adapter_path": adapter_path,
+                "training_samples": len(pairs),
+            }
+        finally:
+            optimizer = None  # noqa: F841 - drop optimizer state before cache clear
+            self._release_memory()
 
     # -- Internal helpers ----------------------------------------------------
+
+    def _release_memory(self) -> None:
+        """Free the model/optimizer and empty the accelerator cache.
+
+        Training runs IN-PROCESS inside the long-lived UI server, so unless we
+        drop our references and clear the allocator cache, the base model +
+        LoRA + optimizer state keep occupying GPU/iGPU memory until the whole
+        process exits. We null out the references, run a GC pass, then call the
+        backend-specific ``empty_cache`` so the freed blocks are returned."""
+        self.model = None
+        self.tokenizer = None
+        self._lora_applied = False
+
+        import gc  # noqa: PLC0415
+        gc.collect()
+
+        if not HAS_TORCH or torch is None:
+            return
+        try:
+            dev = (self.device or "").split(":")[0]
+            if dev == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif dev == "xpu" and hasattr(torch, "xpu") and torch.xpu.is_available():
+                torch.xpu.empty_cache()
+            elif dev == "mps" and hasattr(torch.backends, "mps") \
+                    and torch.backends.mps.is_available():
+                if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+                    torch.mps.empty_cache()
+        except Exception as exc:  # noqa: BLE001 - cleanup must never raise
+            logger.debug("empty_cache on %s failed: %s", self.device, exc)
 
     def _ensure_tokenizer(self) -> None:
         """Lazily load the tokenizer.
