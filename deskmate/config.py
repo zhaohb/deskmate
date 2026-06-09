@@ -287,7 +287,7 @@ class TrainingConfig(BaseModel):
     enabled: bool = True
     # Base model to adapt — a HuggingFace id or local HF-format path (NOT an
     # Ollama/OpenVINO model; LoRA training loads via transformers.from_pretrained).
-    model_name: str = "Qwen/Qwen3-4B"
+    model_name: str = "Qwen/Qwen3-0.6B"
     # Adapter output directory. Empty => ~/.deskmate/checkpoints/lora.
     output_dir: str = ""
 

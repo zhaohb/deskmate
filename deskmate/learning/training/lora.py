@@ -1,10 +1,11 @@
 """LoRATrainer — fine-tune local models via LoRA/QLoRA from DeskMate SFT pairs.
 
-All ``torch``, ``transformers`` and ``peft`` imports are guarded so the module
-can be imported without GPU dependencies. :class:`LoRATrainingConfig` works with
-no optional deps; :class:`LoRATrainer` raises ``ImportError`` at construction
-time when ``torch`` is unavailable (install with ``pip install
-'deskmate[training]'``).
+The LoRA stack is **Unsloth** (``FastLanguageModel``): faster, lower-VRAM
+training that supports NVIDIA (CUDA), Intel (XPU — Arc / Core-Ultra iGPU) and
+AMD, including 4-bit QLoRA. When Unsloth isn't installed the trainer transparently
+falls back to a plain ``transformers`` + ``peft`` path, so the feature degrades
+rather than breaks. All heavy imports are guarded so this module imports cleanly
+without the ``[training]`` extra.
 """
 
 from __future__ import annotations
@@ -25,6 +26,16 @@ try:
 except ImportError:
     HAS_TORCH = False
     torch = None  # type: ignore[assignment]
+
+# Unsloth is the primary backend. Importing it patches transformers/peft for
+# speed + low VRAM and exposes FastLanguageModel for one-call model+LoRA setup.
+try:
+    from unsloth import FastLanguageModel
+
+    HAS_UNSLOTH = True
+except Exception:  # noqa: BLE001 — broad: unsloth import can fail on env/HW probe
+    HAS_UNSLOTH = False
+    FastLanguageModel = None  # type: ignore[assignment,misc]
 
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -47,18 +58,19 @@ except ImportError:
 
 
 def missing_training_deps() -> list[str]:
-    """Names of the `[training]` packages that are NOT importable.
+    """Names of the packages that are NOT importable for training.
 
-    Empty list ⇒ the full LoRA stack is ready. Used to fail fast with a clear
-    install hint instead of crashing mid-train: ``torch`` alone is not enough —
-    ``transformers`` and ``peft`` are both needed before any model loads."""
+    Empty list ⇒ a usable LoRA stack is present. ``torch`` is always required.
+    On top of that we need EITHER Unsloth (preferred) OR the
+    ``transformers`` + ``peft`` fallback — so we only report something missing
+    when neither complete stack is available."""
     missing: list[str] = []
     if not HAS_TORCH:
         missing.append("torch")
-    if not HAS_TRANSFORMERS:
-        missing.append("transformers")
-    if not HAS_PEFT:
-        missing.append("peft")
+    # A complete stack = unsloth, OR (transformers AND peft).
+    if not HAS_UNSLOTH and not (HAS_TRANSFORMERS and HAS_PEFT):
+        if not HAS_TRANSFORMERS or not HAS_PEFT:
+            missing.append("unsloth")  # the one-line install that covers it all
     return missing
 
 
@@ -87,6 +99,337 @@ def _select_device(hint: str | None = None) -> str:
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def _find_compiler(names: list[tuple[str, str]]) -> tuple[str, str] | None:
+    """Return the first available ``(cxx_path, cc_path)`` from *names*.
+
+    Searches PATH, then the active conda/Python env's ``Library/bin`` (where
+    conda-installed Intel ``icx`` lives), then a few well-known Windows dirs."""
+    import glob  # noqa: PLC0415
+    import os  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    # Windows conda layout puts python.exe in the env ROOT (…/envs/<name>);
+    # POSIX puts it in …/<name>/bin. Handle both.
+    exe_dir = os.path.dirname(sys.executable)
+    env_root = exe_dir if os.name == "nt" else os.path.dirname(exe_dir)
+    search_dirs: list[str] = []
+    # System Intel oneAPI install(s) FIRST — newest version first. Not
+    # version-pinned: we glob whatever "compiler\<ver>\bin" the Base Toolkit
+    # dropped. Preferred over the conda `dpcpp_impl` icx, whose SYCL headers are
+    # incomplete (missing ur_api.h) and can't actually build XPU kernels.
+    for base in (
+        os.environ.get("DESKMATE_ONEAPI"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                     "Intel", "oneAPI"),
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
+                     "Intel", "oneAPI"),
+    ):
+        if base and os.path.isdir(os.path.join(base, "compiler")):
+            for d in sorted(glob.glob(os.path.join(base, "compiler", "*", "bin")),
+                            reverse=True):
+                search_dirs.append(d)
+    search_dirs += [
+        os.path.join(env_root, "Library", "bin"),
+        os.path.join(env_root, "bin"),
+        r"C:\TDM-GCC-64\bin", r"C:\mingw64\bin", r"C:\msys64\mingw64\bin",
+    ]
+    for cxx, cc in names:
+        # search_dirs FIRST (system oneAPI before the conda dpcpp_impl build,
+        # whose SYCL headers are incomplete); only then fall back to PATH.
+        cxx_path = None
+        for d in search_dirs:
+            cand = os.path.join(d, cxx + ".exe")
+            if os.path.isfile(cand):
+                cxx_path = cand
+                break
+        if not cxx_path:
+            cxx_path = shutil.which(cxx)
+        if not cxx_path:
+            continue
+        cc_path = os.path.join(os.path.dirname(cxx_path), cc + ".exe")
+        if not os.path.isfile(cc_path):
+            cc_path = shutil.which(cc) or cxx_path
+        return cxx_path, cc_path
+    return None
+
+
+def _find_ze_path() -> str | None:
+    """Locate a Level-Zero SDK root (a dir with ``include/level_zero/ze_api.h``
+    and ``lib/ze_loader.lib``). Triton-XPU reads it via ``ZE_PATH``.
+
+    Searches an existing ``ZE_PATH``/``LEVEL_ZERO_V1_SDK_PATH``, the active
+    conda env's ``Library`` (where we install the SDK headers), and any Intel
+    oneAPI install. Returns the root, or ``None`` if the headers aren't found —
+    the Base Toolkit ships ``ze_loader.dll`` (runtime) but NOT the SDK headers,
+    so they're installed separately (see docs)."""
+    import glob  # noqa: PLC0415
+    import os  # noqa: PLC0415
+
+    def _ok(root: str) -> bool:
+        # A clean ZE root has the L0 headers but NOT a `sycl/` subdir — Triton
+        # prepends `<ZE_PATH>/include` to the compile, so a `sycl/` there (e.g.
+        # the conda dpcpp_impl's incomplete headers) would shadow the system
+        # oneAPI SYCL headers and break the build with `__spirv_*` errors.
+        if not (root and os.path.isfile(
+                os.path.join(root, "include", "level_zero", "ze_api.h"))):
+            return False
+        return not os.path.isdir(os.path.join(root, "include", "sycl"))
+
+    from ... import paths as _paths  # noqa: PLC0415
+
+    candidates = [
+        os.environ.get("LEVEL_ZERO_V1_SDK_PATH"),
+        os.environ.get("ZE_PATH"),
+        # DeskMate's dedicated, uncontaminated SDK dir (setup-intel-xpu.bat
+        # installs here); preferred precisely because it has no `sycl/`.
+        str(_paths.root() / "level-zero-sdk"),
+    ]
+    for base in (
+        os.environ.get("DESKMATE_ONEAPI"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                     "Intel", "oneAPI"),
+    ):
+        if base:
+            candidates += sorted(glob.glob(os.path.join(base, "*", )), reverse=True)
+    for root in candidates:
+        if _ok(root or ""):
+            return root
+    return None
+
+
+def _find_vcvars() -> str | None:
+    """Locate ``vcvarsall.bat`` (MSVC) via ``vswhere`` or well-known paths.
+
+    Override with ``DESKMATE_VCVARS``. Returns the bat path, or ``None``."""
+    import glob  # noqa: PLC0415
+    import os  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    cand = os.environ.get("DESKMATE_VCVARS")
+    if cand and os.path.isfile(cand):
+        return cand
+
+    pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    vswhere = os.path.join(pf86, "Microsoft Visual Studio", "Installer", "vswhere.exe")
+    if os.path.isfile(vswhere):
+        try:
+            out = subprocess.run(
+                [vswhere, "-latest", "-products", "*",
+                 "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                 "-property", "installationPath"],
+                capture_output=True, text=True, timeout=20,
+            ).stdout.strip()
+            if out:
+                bat = os.path.join(out, "VC", "Auxiliary", "Build", "vcvarsall.bat")
+                if os.path.isfile(bat):
+                    return bat
+        except Exception:  # noqa: BLE001 - vswhere is best-effort
+            pass
+
+    # Fallback: glob common install roots (Build Tools / Community / …).
+    for pf in (pf86, os.environ.get("ProgramFiles", r"C:\Program Files")):
+        for bat in sorted(glob.glob(os.path.join(
+                pf, "Microsoft Visual Studio", "*", "*",
+                "VC", "Auxiliary", "Build", "vcvarsall.bat")), reverse=True):
+            if os.path.isfile(bat):
+                return bat
+    return None
+
+
+def _ensure_msvc_env() -> bool:
+    """Make sure the MSVC build environment (``INCLUDE``/``LIB``/``PATH``) is in
+    this process — Intel's ``icpx`` is a clang-cl driver and links against the
+    MSVC standard library, so without it Triton's kernel build dies with
+    ``'climits' file not found``.
+
+    When DeskMate's UI is started via ``start-deskmate-train.bat`` these are
+    already set (we no-op). But for a plain ``deskmate ui`` launch they're
+    absent, so we run ``vcvarsall.bat x64`` in a subshell, diff the environment,
+    and import the new ``INCLUDE``/``LIB``/``LIBPATH``/``PATH`` entries into
+    ``os.environ`` for this process. Returns True if INCLUDE/LIB are present
+    afterwards.
+    """
+    import os  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    if os.name != "nt":
+        return True  # icpx on Linux/mac doesn't need MSVC
+    if os.environ.get("INCLUDE") and os.environ.get("LIB"):
+        return True  # already loaded (e.g. launched via the wrapper script)
+
+    bat = _find_vcvars()
+    if not bat:
+        logger.warning(
+            "MSVC build tools (vcvarsall.bat) not found; icpx can't find its C++ "
+            "standard library and Triton kernel build will fail. Install Visual "
+            "Studio Build Tools ('Desktop development with C++'), or launch via "
+            "scripts/start-deskmate-train.bat, or set DESKMATE_VCVARS."
+        )
+        return False
+
+    # Run vcvars + `set` via a temp .bat. Doing this through a file (rather than
+    # a `cmd /c "call … & set"` one-liner) avoids cmd's quote-stripping rules,
+    # which mangle the space-containing "Program Files (x86)" path. A marker
+    # line separates vcvars' own banner from the environment dump.
+    marker = "__DESKMATE_VCVARS_OK__"
+    script = (
+        "@echo off\r\n"
+        f'call "{bat}" x64 >nul 2>&1\r\n'
+        f"echo {marker}\r\n"
+        "set\r\n"
+    )
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                "w", suffix=".bat", delete=False, encoding="ascii") as fh:
+            fh.write(script)
+            tmp = fh.name
+        proc = subprocess.run(
+            ["cmd", "/c", tmp], capture_output=True, text=True, timeout=120,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to run vcvarsall.bat (%s): %s", bat, exc)
+        return False
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    imported = 0
+    seen_marker = False
+    for line in proc.stdout.splitlines():
+        if marker in line:
+            seen_marker = True
+            continue
+        if not seen_marker or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        ku = key.upper()
+        if ku in ("INCLUDE", "LIB", "LIBPATH"):
+            os.environ[key] = val
+            imported += 1
+        elif ku == "PATH":
+            # Merge: prepend any new MSVC dirs not already on our PATH.
+            cur = os.environ.get("PATH", "")
+            cur_set = {p.lower() for p in cur.split(os.pathsep)}
+            new = [p for p in val.split(os.pathsep)
+                   if p and p.lower() not in cur_set]
+            if new:
+                os.environ["PATH"] = os.pathsep.join(new) + os.pathsep + cur
+    ok = bool(os.environ.get("INCLUDE") and os.environ.get("LIB"))
+    if ok:
+        logger.info("Loaded MSVC build environment from %s (%d vars).", bat, imported)
+    else:
+        logger.warning("Ran vcvarsall.bat but INCLUDE/LIB still unset (%s).", bat)
+    return ok
+
+
+def _ensure_cxx_compiler(device: str | None = None) -> str | None:
+    """Make sure the RIGHT C++ compiler is wired up for Triton's JIT.
+
+    Unsloth/Triton compile kernels at runtime via a C++ compiler; on Windows
+    there's none on PATH by default, so the first step dies with "Failed to find
+    C++ compiler". **Backend matters:** the Intel XPU backend emits SYCL kernels
+    that need Intel's ``icpx`` with ``-fsycl``. Crucially, Triton only adds the
+    ``-fsycl`` flag when the compiler it resolves is *exactly* ``icpx`` found on
+    PATH **with ``CXX`` unset** (see ``triton/runtime/build.py``); if we pin
+    ``CXX=icx`` it silently drops ``-fsycl`` and the SYCL headers fail to compile
+    ("cannot use 'throw' with exceptions disabled"). So on ``xpu`` we:
+
+    * put a *complete* ``icpx`` (system oneAPI preferred over the conda
+      ``dpcpp_impl`` build, whose SYCL headers are incomplete) first on PATH,
+    * **clear** ``CXX``/``CC`` so Triton takes its ``icpx + -fsycl`` path,
+    * point ``ZE_PATH`` at a Level-Zero SDK so ``level_zero/ze_api.h`` resolves.
+
+    On non-XPU devices any common compiler is fine and we just set ``CXX``/``CC``.
+    Returns the chosen ``cxx`` path, or ``None`` when none is suitable.
+    """
+    import os  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+
+    intel = [("icx", "icx"), ("icpx", "icx")]
+    others = [("cl", "cl"), ("g++", "gcc"), ("clang++", "clang")]
+
+    if device == "xpu":
+        # icpx is a clang-cl driver — it needs the MSVC stdlib (climits, …).
+        # Load it into this process if a plain `deskmate ui` launch didn't.
+        _ensure_msvc_env()
+        # Prefer icpx (Triton's SYCL path keys on it); fall back to icx for the
+        # PATH/dir, but Triton itself will look up `icpx` on PATH.
+        found = _find_compiler([("icpx", "icpx"), ("icx", "icx")])
+        if not found:
+            logger.warning(
+                "Intel XPU training needs the icpx compiler (g++/MSVC can't "
+                "build SYCL kernels). Install the Intel oneAPI Base Toolkit "
+                "(DPC++/C++ Compiler), or set DESKMATE_ONEAPI to its root."
+            )
+            return None
+        cxx_path, _cc = found
+        bindir = os.path.dirname(cxx_path)
+        if bindir and bindir not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = bindir + os.pathsep + os.environ.get("PATH", "")
+        # icpx (clang-cl mode) finds its own runtime libs (libmmd.lib, …) via
+        # the MSVC-style `LIB` env var, NOT relative to the exe. Add oneAPI's
+        # own lib dirs to LIB, or linking fails with `LNK1104: libmmd.lib`.
+        cmplr_root = os.path.dirname(bindir)  # …/compiler/<ver>
+        oneapi_libs = [
+            os.path.join(cmplr_root, "lib"),
+            os.path.join(cmplr_root, "lib", "clang", "lib", "windows"),
+        ]
+        cur_lib = os.environ.get("LIB", "")
+        cur_lib_set = {p.lower() for p in cur_lib.split(os.pathsep)}
+        add_lib = [d for d in oneapi_libs
+                   if os.path.isdir(d) and d.lower() not in cur_lib_set]
+        if add_lib:
+            os.environ["LIB"] = (os.pathsep.join(add_lib)
+                                 + (os.pathsep + cur_lib if cur_lib else ""))
+        # Let Triton resolve `icpx` itself and add -fsycl; a pinned CXX would
+        # suppress that flag. Clear both.
+        os.environ.pop("CXX", None)
+        os.environ.pop("CC", None)
+        # Level-Zero SDK headers (ze_api.h) — the Base Toolkit doesn't ship them.
+        if not (os.environ.get("ZE_PATH") and os.path.isfile(
+                os.path.join(os.environ["ZE_PATH"], "include", "level_zero", "ze_api.h"))):
+            ze = _find_ze_path()
+            if ze:
+                os.environ["ZE_PATH"] = ze
+                logger.info("Using Level-Zero SDK (ZE_PATH): %s", ze)
+            else:
+                logger.warning(
+                    "Level-Zero SDK headers (level_zero/ze_api.h) not found; "
+                    "Triton XPU kernel compilation will fail. Install the "
+                    "level-zero Windows SDK (see docs/16) into the env's "
+                    "Library, or set ZE_PATH."
+                )
+        icpx = shutil.which("icpx")
+        logger.info("Intel XPU compiler for Triton: icpx=%s (CXX unset, -fsycl)", icpx)
+        return icpx or cxx_path
+
+    # --- non-XPU: any common compiler, pinned via CXX/CC ---
+    if os.environ.get("CXX") and shutil.which(os.environ["CXX"]):
+        return os.environ["CXX"]
+    found = _find_compiler(intel + others)
+    if not found:
+        logger.warning(
+            "No C++ compiler found (icx/cl/g++/clang++). Triton kernel "
+            "compilation will fail — set CXX to a C++ compiler before training."
+        )
+        return None
+
+    cxx_path, cc_path = found
+    os.environ["CXX"] = cxx_path
+    os.environ["CC"] = cc_path
+    bindir = os.path.dirname(cxx_path)
+    if bindir and bindir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = bindir + os.pathsep + os.environ.get("PATH", "")
+    logger.info("Using C++ compiler for Triton JIT: %s (device=%s)", cxx_path, device)
+    return cxx_path
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +500,7 @@ class LoRATrainer:
         self,
         config: LoRATrainingConfig,
         *,
-        model_name: str = "Qwen/Qwen3-4B",
+        model_name: str = "Qwen/Qwen3-0.6B",
         device: str | None = None,
     ) -> None:
         if not HAS_TORCH:
@@ -168,6 +511,10 @@ class LoRATrainer:
 
         self.config = config
         self.model_name = model_name
+        # Prefer Unsloth (faster, lower VRAM, multi-backend incl. Intel XPU);
+        # fall back to plain transformers + peft when it isn't installed.
+        self._use_unsloth = HAS_UNSLOTH
+        self._lora_applied = False
         self.device = _select_device(device)
         self.tokenizer: Any = None
         self.model: Any = None
@@ -237,6 +584,11 @@ class LoRATrainer:
         if not pairs:
             return {"status": "skipped", "reason": "no training data"}
 
+        # Triton (Unsloth's kernel JIT) needs a C++ compiler on PATH; ensure the
+        # right one is wired up before any kernel compiles. On XPU this MUST be
+        # Intel icx/icpx (SYCL) — g++ cannot build the kernels.
+        _ensure_cxx_compiler(self.device)
+
         dataset = self.prepare_dataset(pairs)
         self._load_model()
         self._apply_lora()
@@ -288,23 +640,32 @@ class LoRATrainer:
     # -- Internal helpers ----------------------------------------------------
 
     def _ensure_tokenizer(self) -> None:
-        """Lazily load the tokenizer."""
+        """Lazily load the tokenizer.
+
+        With the Unsloth backend the tokenizer is loaded together with the model
+        in :meth:`_load_model`; this only handles the transformers fallback.
+        """
         if self.tokenizer is not None:
             return
-
+        if self._use_unsloth:
+            self._load_model()  # Unsloth returns (model, tokenizer) together
+            return
         if not HAS_TRANSFORMERS:
             raise ImportError(
                 "transformers is required for LoRATrainer. "
                 "Install with: pip install 'deskmate[training]'"
             )
-
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
     def _load_model(self) -> None:
-        """Load the base model for fine-tuning."""
+        """Load the base model (and, for Unsloth, the tokenizer) for fine-tuning."""
         if self.model is not None:
+            return
+
+        if self._use_unsloth:
+            self._load_model_unsloth()
             return
 
         if not HAS_TRANSFORMERS:
@@ -358,8 +719,44 @@ class LoRATrainer:
                 gradient_checkpointing_kwargs={"use_reentrant": False}
             )
 
+    def _load_model_unsloth(self) -> None:
+        """Load model + tokenizer + LoRA via Unsloth's FastLanguageModel.
+
+        One call returns an optimized model and its tokenizer; a second wraps it
+        with LoRA. Unsloth picks the device itself (CUDA / XPU / etc.) and, when
+        ``use_4bit`` is set, applies its own 4-bit QLoRA path."""
+        self.model, self.tokenizer = FastLanguageModel.from_pretrained(
+            model_name=self.model_name,
+            max_seq_length=self.config.max_seq_length,
+            dtype=None,  # auto: bf16/fp16 per device capability
+            load_in_4bit=self.config.use_4bit,
+        )
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.model = FastLanguageModel.get_peft_model(
+            self.model,
+            r=self.config.lora_rank,
+            lora_alpha=self.config.lora_alpha,
+            lora_dropout=self.config.lora_dropout,
+            target_modules=self.config.target_modules,
+            use_gradient_checkpointing=(
+                "unsloth" if self.config.gradient_checkpointing else False
+            ),
+        )
+        self._lora_applied = True
+        logger.info(
+            "Unsloth LoRA: model=%s rank=%d alpha=%d 4bit=%s targets=%s",
+            self.model_name, self.config.lora_rank, self.config.lora_alpha,
+            self.config.use_4bit, self.config.target_modules,
+        )
+
     def _apply_lora(self) -> None:
-        """Wrap the loaded model with LoRA adapters via peft."""
+        """Wrap the loaded model with LoRA adapters.
+
+        With Unsloth this already happened in :meth:`_load_model_unsloth`, so
+        this only runs the ``peft`` fallback path."""
+        if self._use_unsloth or getattr(self, "_lora_applied", False):
+            return
         if not HAS_PEFT:
             raise ImportError(
                 "peft is required for LoRA training. "
@@ -375,7 +772,7 @@ class LoRATrainer:
         )
         self.model = get_peft_model(self.model, lora_config)
         logger.info(
-            "LoRA applied: rank=%d, alpha=%d, targets=%s",
+            "LoRA applied (peft fallback): rank=%d, alpha=%d, targets=%s",
             self.config.lora_rank,
             self.config.lora_alpha,
             self.config.target_modules,
@@ -450,10 +847,18 @@ class LoRATrainer:
             ids.append(torch.cat([seq, torch.full((pad,), pad_id, dtype=torch.long)]))
             masks.append(torch.cat([item["attention_mask"], torch.zeros(pad, dtype=torch.long)]))
             labels.append(torch.cat([item["labels"], torch.full((pad,), -100, dtype=torch.long)]))
+        # Move inputs to where the model actually lives. Unsloth (and accelerate
+        # device_map) place the model itself, so trust the model's device over
+        # our _select_device() guess; fall back to self.device otherwise.
+        dev = self.device
+        try:
+            dev = next(self.model.parameters()).device
+        except Exception:  # noqa: BLE001 — model not loaded yet / no params
+            pass
         return {
-            "input_ids": torch.stack(ids).to(self.device),
-            "attention_mask": torch.stack(masks).to(self.device),
-            "labels": torch.stack(labels).to(self.device),
+            "input_ids": torch.stack(ids).to(dev),
+            "attention_mask": torch.stack(masks).to(dev),
+            "labels": torch.stack(labels).to(dev),
         }
 
     def _train_step(
@@ -502,6 +907,7 @@ __all__ = [
     "HAS_PEFT",
     "HAS_TORCH",
     "HAS_TRANSFORMERS",
+    "HAS_UNSLOTH",
     "LoRATrainer",
     "LoRATrainingConfig",
     "missing_training_deps",

@@ -748,9 +748,11 @@ function renderTrainingSources() {
 }
 
 function initTrainingParams() {
-  if (trainingUi.paramsInit) return;
+  // Idempotent: safe to call on every view entry / language change. setIfEmpty
+  // never clobbers a value the user already typed; the read-only hyper row is
+  // always re-rendered so it reflects the latest config + current language.
   const tc = state.config?.training;
-  if (!tc) return;
+  if (!tc) return;  // config not loaded yet; refreshTrainingView retries
   const setIfEmpty = (sel, val) => {
     const el = $(sel);
     if (el && !el.value) el.value = val;
@@ -762,14 +764,14 @@ function initTrainingParams() {
   const hyper = $("#trnHyper");
   if (hyper) {
     hyper.innerHTML = [
-      ["LoRA rank", tc.lora_rank],
-      ["alpha", tc.lora_alpha],
-      ["dropout", tc.lora_dropout],
-      ["batch", tc.batch_size],
-      ["lr", tc.learning_rate],
-      ["max_seq", tc.max_seq_length],
-      ["4bit", tc.use_4bit ? "on" : "off"],
-      ["targets", (tc.target_modules || []).join("+")],
+      [T("training.hyper.rank"), tc.lora_rank],
+      [T("training.hyper.alpha"), tc.lora_alpha],
+      [T("training.hyper.dropout"), tc.lora_dropout],
+      [T("training.hyper.batch"), tc.batch_size],
+      [T("training.hyper.lr"), tc.learning_rate],
+      [T("training.hyper.maxSeq"), tc.max_seq_length],
+      [T("training.hyper.fourbit"), tc.use_4bit ? T("common.on") : T("common.off")],
+      [T("training.hyper.targets"), (tc.target_modules || []).join("+")],
     ].map(([k, v]) => `<span>${k}: <b>${v}</b></span>`).join("");
   }
   trainingUi.paramsInit = true;
@@ -841,8 +843,14 @@ async function loadTrainingData() {
   }
 }
 
-function refreshTrainingView() {
+async function refreshTrainingView() {
   renderTrainingSources();
+  // Config drives the parameter fields/hyper row. If it hasn't loaded yet
+  // (user opened Training before refreshAll finished), fetch it now so the
+  // params aren't left blank.
+  if (!state.config?.training) {
+    try { state.config = await api("/config"); } catch (_) { /* leave blank */ }
+  }
   initTrainingParams();
   const tc = state.config?.training;
   const warn = $("#trnTorchWarn");

@@ -422,7 +422,10 @@ a:hover {
   min-height: 0;
 }
 
-#view-settings.active {
+#view-settings.active,
+#view-training.active,
+#view-reminders.active,
+#view-capture.active {
   overflow: auto;
   padding: 1.25rem 1.5rem;
   gap: 1rem;

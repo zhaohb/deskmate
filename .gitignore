@@ -55,3 +55,8 @@ Thumbs.db
 
 # Notebook checkpoints
 .ipynb_checkpoints/
+
+# Unsloth runtime artifacts (auto-generated in CWD during training)
+unsloth_compiled_cache/
+# LoRA / training checkpoints
+checkpoints/
