@@ -25,6 +25,13 @@ from .llm import http_get as _http_get
 OLLAMA_BASE, OLLAMA_MODEL, _OLLAMA_CHAT_TIMEOUT = llm.resolve_ollama_settings()
 MAX_ROUNDS = 8
 
+# Sentinel the model prepends when a question is about DeskMate itself
+# (capabilities, greeting, how-to) and so needs NO data lookup. Letting the
+# model declare this — instead of us guessing from keywords — keeps the
+# data-grounding gate from dropping a perfectly good capability answer, while
+# still requiring tool evidence for questions about the user's recorded data.
+_NO_LOOKUP_TAG = "[[NO_DATA_NEEDED]]"
+
 _TRUNC_TAIL_RE = re.compile(r"(?:\.{2,}|…)\s*$")
 _TRUNC_LEAD_RE = re.compile(r"^\s*(?:\.{2,}|…)\s*")
 _SUMMARY_LEAD_RE = re.compile(
@@ -597,7 +604,10 @@ def _clean_answer_display(text: str) -> str:
 
 
 def _finalize_answer(text: str) -> str:
-    return _clean_answer_display(llm.strip_tool_call_markup(text))
+    # Strip the no-lookup sentinel as a safety net so it never leaks to the UI,
+    # even if the model emits it somewhere other than the clean meta-answer path.
+    cleaned = (text or "").replace(_NO_LOOKUP_TAG, "")
+    return _clean_answer_display(llm.strip_tool_call_markup(cleaned))
 
 
 def _no_data_answer(
@@ -608,8 +618,11 @@ def _no_data_answer(
 ) -> str:
     if not tool_log:
         return (
-            "未能执行数据查询：模型返回了工具调用，但未被识别。"
-            "若使用 Ollama OpenVINO + Qwen3.5，请更新 deskmate 到最新版本后重试。"
+            "未能完成查询：模型没有调用任何数据工具就想直接作答，"
+            "因此无法给出有依据的结果。请把问题说得更具体（例如带上时间范围："
+            "「今天上午我在做什么」「最近半小时用了哪些应用」），或重试一次。"
+            "若使用 Ollama OpenVINO + 较小模型（如 Qwen3.5 4B）反复出现此情况，"
+            "可换用更大的模型以改善工具调用的稳定性。"
         )
     try:
         health = _http_get(f"{api_base}/health")
@@ -1283,7 +1296,13 @@ def run_ask(
         "parentheses, e.g. '编辑了 config.toml (15:04)'. If the tools returned no relevant "
         "data, reply that you found no matching records for the range — do NOT produce a "
         "plausible-sounding answer from prior knowledge. A confident answer with no tool "
-        "evidence is a failure, not a success.\n\n"
+        "evidence is a failure, not a success.\n"
+        "14. NO-DATA QUESTIONS: if the question is about DeskMate ITSELF rather than the "
+        "user's recorded data — greetings (你好/hi), who you are, what you can do, your "
+        "features, or how to use you — answer it directly WITHOUT calling any tool, and begin "
+        f"your reply with the exact tag {_NO_LOOKUP_TAG} on its own. Use this tag ONLY for "
+        "such self/capability questions; any question about the user's activity, apps, files, "
+        "meetings or mail needs real tool data and must NOT use it.\n\n"
         f"## Context\n{context}\n"
         f"{skill_text}\n"
     )
@@ -1301,13 +1320,21 @@ def run_ask(
 
         tool_calls = llm.extract_tool_calls(response)
         if not tool_calls:
-            answer = _finalize_answer(response.get("content", ""))
-            if answer:
-                answer = _grounded_final_answer(
-                    answer, tool_log, api_base=api_base, question=question
-                )
-                return {"answer": answer, "tool_calls": tool_log, "error": None}
-            if round_idx == 0:
+            raw = response.get("content", "") or ""
+            # The model self-declares (via the system-prompt tag) when a question
+            # is about DeskMate itself and needs no data lookup — a greeting, "who
+            # are you", "what can you do", how-to. Trust that signal: strip the tag
+            # and return the answer directly, bypassing the data-grounding gate.
+            if _NO_LOOKUP_TAG in raw:
+                answer = _finalize_answer(raw.replace(_NO_LOOKUP_TAG, ""))
+                if answer:
+                    return {"answer": answer, "tool_calls": tool_log, "error": None}
+            answer = _finalize_answer(raw)
+            # Otherwise it's a data question: with NO tool data yet, a small model
+            # sometimes replies with a generic blurb instead of calling a tool. On
+            # the first round we nudge it to use its tools and retry (whether or not
+            # it emitted prose); an ungrounded answer would just be dropped anyway.
+            if not tool_log and round_idx == 0:
                 messages.append({
                     "role": "user",
                     "content": (
@@ -1316,8 +1343,13 @@ def run_ask(
                     ),
                 })
                 continue
+            if answer:
+                answer = _grounded_final_answer(
+                    answer, tool_log, api_base=api_base, question=question
+                )
+                return {"answer": answer, "tool_calls": tool_log, "error": None}
             empty = _no_data_answer(tool_log, api_base=api_base, question=question)
-            return {"answer": _finalize_answer(answer) if answer else empty, "tool_calls": tool_log, "error": None}
+            return {"answer": empty, "tool_calls": tool_log, "error": None}
 
         for tc in tool_calls:
             fn = tc.get("function", {})

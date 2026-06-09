@@ -2079,25 +2079,37 @@ def create_app(
             return list(cfg.training.sources)
         return [s.strip() for s in raw.split(",") if s.strip() in SOURCES]
 
+    def _training_apps(raw: str | None) -> list[str] | None:
+        """Parse the optional per-app allow-list. ``None`` (param omitted) means
+        all apps; an explicit empty string means *no* apps."""
+        if raw is None:
+            return None
+        return [a.strip() for a in raw.split(",") if a.strip()]
+
     @app.get("/training/data")
     def training_data(
-        sources: str | None = None, sample: int = 5, full: bool = False
+        sources: str | None = None, sample: int = 5, full: bool = False,
+        apps: str | None = None,
     ) -> dict[str, Any]:
         """Preview the mined SFT dataset.
 
         ``sample`` controls how many example pairs are returned (capped at 200);
         ``full=true`` returns every mined pair so the UI can show the exact
-        dataset that training will use.
+        dataset that training will use. ``apps`` is an optional comma-separated
+        allow-list restricting the ``apps`` source to those app folders.
         """
         from ..learning.training import DeskMateTrainingDataMiner  # noqa: PLC0415
 
         src = _training_sources(sources)
+        app_filter = _training_apps(apps)
         tc = cfg.training
         miner = DeskMateTrainingDataMiner(min_feedback=tc.min_feedback, min_chars=tc.min_chars)
         try:
             breakdown = miner.source_breakdown(sources=src, limit_per_source=tc.limit_per_source)
+            available_apps = miner.list_apps()
             pairs = miner.extract_sft_pairs(
                 sources=src, limit_per_source=tc.limit_per_source, max_pairs=tc.max_pairs,
+                apps=app_filter,
             )
         finally:
             miner.close()
@@ -2105,13 +2117,14 @@ def create_app(
         return {
             "sources": src,
             "breakdown": breakdown,
+            "apps": available_apps,
             "total": len(pairs),
             "returned": len(shown),
             "sample": shown,
         }
 
     @app.get("/training/data/export")
-    def training_data_export(sources: str | None = None) -> Response:
+    def training_data_export(sources: str | None = None, apps: str | None = None) -> Response:
         """Download the full mined dataset as JSONL (one pair per line).
 
         This is exactly what a training run would consume, so the user can
@@ -2119,11 +2132,13 @@ def create_app(
         from ..learning.training import DeskMateTrainingDataMiner  # noqa: PLC0415
 
         src = _training_sources(sources)
+        app_filter = _training_apps(apps)
         tc = cfg.training
         miner = DeskMateTrainingDataMiner(min_feedback=tc.min_feedback, min_chars=tc.min_chars)
         try:
             pairs = miner.extract_sft_pairs(
                 sources=src, limit_per_source=tc.limit_per_source, max_pairs=tc.max_pairs,
+                apps=app_filter,
             )
         finally:
             miner.close()
@@ -2147,12 +2162,21 @@ def create_app(
         tc = cfg.training
         src = _training_sources(body.get("sources"))
 
+        # Optional per-app allow-list: accept a list or a comma-string; omitted
+        # → all apps. An explicit empty list means "no apps".
+        raw_apps = body.get("apps")
+        if isinstance(raw_apps, list):
+            app_filter: list[str] | None = [str(a).strip() for a in raw_apps if str(a).strip()]
+        else:
+            app_filter = _training_apps(raw_apps)
+
         miner = DeskMateTrainingDataMiner(min_feedback=tc.min_feedback, min_chars=tc.min_chars)
         try:
             pairs = miner.extract_sft_pairs(
                 sources=src,
                 limit_per_source=tc.limit_per_source,
                 max_pairs=int(body.get("max_pairs") or tc.max_pairs),
+                apps=app_filter,
             )
         finally:
             miner.close()

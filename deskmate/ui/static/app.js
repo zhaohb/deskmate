@@ -719,10 +719,24 @@ const trainingUi = {
   running: false,
   breakdown: {},
   showAll: false,
+  // Per-app selection under the `apps` source. `appList` is what the backend
+  // discovered on disk; `appsSel[name]` is whether each app is included.
+  // Default: every app on (a newly-seen app defaults to selected).
+  appList: [],
+  appsSel: {},
 };
 
 function selectedTrainingSources() {
   return TRN_SOURCES.filter((s) => trainingUi.sources[s]);
+}
+
+// The per-app allow-list to send to the backend, or null when every known app
+// is selected (null = "all apps", keeps URLs short and is the natural default).
+function selectedTrainingApps() {
+  const names = trainingUi.appList.map((a) => a.app);
+  if (!names.length) return null;
+  const picked = names.filter((n) => trainingUi.appsSel[n] !== false);
+  return picked.length === names.length ? null : picked;
 }
 
 function renderTrainingSources() {
@@ -742,6 +756,35 @@ function renderTrainingSources() {
       const src = el.dataset.src;
       trainingUi.sources[src] = !trainingUi.sources[src];
       renderTrainingSources();
+      loadTrainingData().catch(showError);
+    };
+  }
+  renderTrainingApps();
+}
+
+// Per-app picker under the `apps` source: lets the user include/exclude
+// individual apps (e.g. drop the low-signal ai-prompt-journal while keeping
+// day-recap). Only shown when `apps` is selected and some apps were discovered.
+function renderTrainingApps() {
+  const box = $("#trnApps");
+  if (!box) return;
+  const show = !!trainingUi.sources.apps && trainingUi.appList.length > 0;
+  box.style.display = show ? "" : "none";
+  if (!show) { box.innerHTML = ""; return; }
+  const chips = trainingUi.appList.map((a) => {
+    const on = trainingUi.appsSel[a.app] !== false;
+    const cnt = T("training.count", { n: a.pairs ?? 0 });
+    return `<div class="trn-app ${on ? "on" : "off"}" data-app="${capEscape(a.app)}">
+      <span class="dot"></span><span class="trn-app-name">${capEscape(a.app)}</span><span class="trn-app-count">${cnt}</span>
+    </div>`;
+  }).join("");
+  box.innerHTML = `<div class="trn-apps-head">${T("training.apps.title")}</div>
+    <div class="trn-apps-row">${chips}</div>`;
+  for (const el of box.querySelectorAll(".trn-app")) {
+    el.onclick = () => {
+      const app = el.dataset.app;
+      trainingUi.appsSel[app] = trainingUi.appsSel[app] === false;  // toggle
+      renderTrainingApps();
       loadTrainingData().catch(showError);
     };
   }
@@ -795,9 +838,18 @@ async function loadTrainingData() {
   const qs = new URLSearchParams({ sources: sources.join(",") });
   if (trainingUi.showAll) qs.set("full", "true");
   else qs.set("sample", "10");
+  const appFilter = selectedTrainingApps();
+  if (appFilter !== null) qs.set("apps", appFilter.join(","));
   const j = await api(`/training/data?${qs.toString()}`);
   const breakdown = j.breakdown || {};
   trainingUi.breakdown = breakdown;
+  // Sync discovered apps from the backend; default newly-seen apps to selected.
+  if (Array.isArray(j.apps)) {
+    trainingUi.appList = j.apps;
+    for (const a of j.apps) {
+      if (!(a.app in trainingUi.appsSel)) trainingUi.appsSel[a.app] = true;
+    }
+  }
   renderTrainingSources();
   if (stats) {
     const cells = sources.map((s) =>
@@ -827,10 +879,11 @@ async function loadTrainingData() {
       ? T("training.showAll", { n: rows.length })
       : T("training.preview", { n: rows.length });
     const toggleLabel = trainingUi.showAll ? T("training.toggle.preview") : T("training.toggle.full");
+    const dlApps = appFilter !== null ? `&apps=${encodeURIComponent(appFilter.join(","))}` : "";
     meta.innerHTML =
       T("training.summary", { total, view: viewLabel }) +
       ` · <a href="#" id="trnToggleAll">${toggleLabel}</a>` +
-      ` · <a href="/training/data/export?sources=${encodeURIComponent(sources.join(","))}"` +
+      ` · <a href="/training/data/export?sources=${encodeURIComponent(sources.join(","))}${dlApps}"` +
       ` id="trnDownload" download>${T("training.download")}</a>`;
     const toggle = $("#trnToggleAll");
     if (toggle) {
@@ -884,6 +937,8 @@ async function startTraining() {
   if (epochs) body.epochs = Number(epochs);
   if (maxPairs) body.max_pairs = Number(maxPairs);
   if (outDir) body.output_dir = outDir;
+  const appFilter = selectedTrainingApps();
+  if (appFilter !== null) body.apps = appFilter;  // omitted = all apps
 
   trainingUi.running = true;
   if (btn) btn.disabled = true;

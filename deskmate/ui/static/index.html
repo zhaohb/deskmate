@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260608-set17" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260609-set18" />
     <style>
       /* Scoped styles for the Capture & Unified Timeline view */
       #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
@@ -71,6 +71,15 @@
       #view-training .trn-src .trn-src-head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
       #view-training .trn-src .trn-src-desc { font-size: 11px; color: var(--muted); line-height: 1.35; }
       #view-training .trn-src .trn-src-count { margin-left: auto; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+      /* per-app sub-picker under the `apps` source */
+      #view-training .trn-apps { margin: 2px 0 12px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: var(--radius); background: var(--surface-2); }
+      #view-training .trn-apps-head { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+      #view-training .trn-apps-row { display: flex; gap: 8px; flex-wrap: wrap; }
+      #view-training .trn-app { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; user-select: none; font-size: 12px; }
+      #view-training .trn-app .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+      #view-training .trn-app.on .dot { background: var(--online); }
+      #view-training .trn-app.off { opacity: .5; }
+      #view-training .trn-app .trn-app-count { color: var(--muted); font-variant-numeric: tabular-nums; }
       /* Constrain the sample list to a compact, independently-scrolling panel
          so a large dataset never pushes the params / start-training cards far
          down the page. */
@@ -681,6 +690,7 @@
             <h3 data-i18n="training.data.title">Training data</h3>
             <p class="muted" style="margin-top:0" data-i18n="training.data.intro">Instruction fine-tuning (SFT) pairs mined from your local activity.</p>
             <div class="cap-row" id="trnSources" style="margin-bottom:6px"></div>
+            <div id="trnApps" class="trn-apps" style="display:none"></div>
             <div class="trn-stats" id="trnStats"></div>
             <div class="cap-row">
               <button id="trnRefreshBtn" type="button" data-i18n="training.refresh">Refresh preview</button>
@@ -892,7 +902,7 @@
       </article>
     </template>
 
-    <script src="/ui/assets/i18n.js?v=20260608-set17" defer></script>
-    <script src="/ui/assets/app.js?v=20260608-set17" defer></script>
+    <script src="/ui/assets/i18n.js?v=20260609-set18" defer></script>
+    <script src="/ui/assets/app.js?v=20260609-set18" defer></script>
   </body>
 </html>

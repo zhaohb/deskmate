@@ -119,9 +119,12 @@ rows dominates the gradient.
    (overwork, break, late-night, …; see [19 — Habits & reminders](19-habits-reminders.md)
    for the trigger logic) is logged with its trigger context. Only rows
    the user **rated useful** become pairs:
-   - input: `"My recent activity shows: <ctx>. What helpful nudge should I get?"`
-     (or `"The '<rule>' pattern was detected…"` when context is empty)
-   - output: the exact nudge message that was shown
+   - input: a Chinese prompt with the trigger context rendered as **natural
+     language** — e.g. `"根据我最近的活动（我一直在浏览网页，当前用的是 chrome.exe；
+     已连续使用屏幕约 15 分钟…；现在是 23:00 左右），给我一句有帮助的提醒。"` (or a
+     rule-name phrasing when the context is empty). `_render_context` phrases the
+     `context_json` blob; it must **not** dump the raw `state={…}` dict.
+   - output: the exact nudge message that was shown (Chinese, as the rules emit it)
 
 2. **`pipes`** — `_from_pipe_executions`. Each automation pipe run records its
    produced report. Only **successful** runs with non-empty output are kept:
@@ -131,9 +134,11 @@ rows dominates the gradient.
 3. **`behavior`** — `_from_habit_profiles`. The learned routine profile (per
    weekday/weekend × 30-min slot: dominant category, top app, avg minutes,
    frequency). Only **statistically stable** slots (≥2 days, ≥30% frequency) are
-   turned into Q&A:
-   - input: `"What do I usually do on weekdays around 09:00?"`
-   - output: `"Typically Coding, usually in Code.exe, for about 25 min (on 80% of days)."`
+   turned into Q&A. **Bilingual**: each slot emits an English *and* a Chinese pair:
+   - EN — input `"What do I usually do on weekdays around 09:00?"` → output
+     `"Typically coding, usually in Code.exe, for about 25 min (on 80% of days)."`
+   - ZH — input `"工作日 09:00 左右我通常在做什么？"` → output
+     `"一般是写代码，通常用 Code.exe，大约 25 分钟（80% 的天数如此）。"`
 
 4. **`ask`** — `_from_ask_history`. Every answered Ask query is logged; the UI shows
    a **👍 有用 / 👎 没用** control under each answer. Only answers the user marked
@@ -145,8 +150,10 @@ rows dominates the gradient.
 5. **`profile`** — `_from_user_profile`. Aggregates the whole `habit_profiles`
    table into a few high-level identity pairs (top apps, dominant categories,
    weekday/weekend rhythm) so the model learns *who the user is*, not just
-   isolated slots. Skipped entirely when there is too little signal. Full
-   write-up: [17 — User profile](17-user-profile.md).
+   isolated slots. Skipped entirely when there is too little signal. Like
+   `behavior` it is synthetic, so each identity fact is emitted in **both English
+   and Chinese** (e.g. `"What do I mainly work on?"` and `"我主要在做什么？"`).
+   Full write-up: [17 — User profile](17-user-profile.md).
 
 6. **`apps`** — `_from_app_outputs`. Mines the markdown the LLM **apps** wrote to
    `~/.deskmate/apps/<app>/output/<run>/*.md` (day-recap, user-profile,
@@ -165,6 +172,29 @@ rows dominates the gradient.
    > `apps` mines the on-disk markdown the My-Apps runner produces. The new
    > synthesis apps ([13 — Apps](13-apps.md)) only write to disk, so `apps` is
    > what captures them.
+
+#### Language of the dataset
+
+The dataset is **bilingual (zh + en)**, but how each source gets there differs by
+whether its text is *synthesized* by the miner or is *real user data*:
+
+| Source | input | output | Language strategy |
+|--------|-------|--------|-------------------|
+| `behavior` | synthetic | synthetic | **Both** — every pair emitted in EN and ZH |
+| `profile`  | synthetic | synthetic | **Both** — every fact emitted in EN and ZH |
+| `habits`   | synthetic | real (rule message) | input rendered as natural **Chinese**; output is the message as fired |
+| `ask`      | real (user question) | real (LLM answer) | **Follows the user** — whatever language it happened in |
+| `apps` / `pipes` | synthetic instruction | real report | instruction is Chinese; report is whatever the app/pipe wrote |
+
+**Why not translate everything?** The two fully-synthetic sources are cheap and
+safe to render twice, so they are. But the real-data sources (`ask` answers, app
+`apps`/`pipes` reports) are *ground truth* — machine-translating them to
+manufacture a second language would teach the model translationese and risk
+corrupting real content, so they are kept in their **original language**. The net
+effect is still a dataset containing both languages, without any machine
+translation of user data. `_category_word()` maps the internal category enum
+(`coding`/`browsing`/…) to the right display word per language so an enum never
+leaks as a bare English token into a Chinese sentence.
 
 #### Shared post-processing (quality gate)
 
