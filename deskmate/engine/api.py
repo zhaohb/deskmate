@@ -1777,6 +1777,7 @@ def create_app(
             body = await request.json()
         except Exception:
             pass
+        hours_provided = "hours" in body and str(body.get("hours")).strip() != ""
         hours = str(body.get("hours", "16"))
         minutes = str(body.get("minutes", "5"))
         start_time = body.get("start_time") or body.get("startTime")
@@ -1834,8 +1835,11 @@ def create_app(
                 status_code=400,
                 detail="start_time and end_time must both be provided",
             )
-        else:
+        elif hours_provided:
             cmd_args += ["--hours", hours]
+        # else: omit --hours so the app's own default_hours applies (e.g.
+        # user-profile / habit-report default to 7 days). The UI always sends an
+        # explicit hours for look-back apps, so this only affects direct callers.
         import asyncio as _aio
         proc = await _aio.create_subprocess_exec(
             sys.executable, str(app_py), *cmd_args,

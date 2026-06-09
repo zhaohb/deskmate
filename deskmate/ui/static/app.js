@@ -110,6 +110,16 @@ const HOURS_RANGE_APPS = {
     title: "AI prompt journal",
     desc: "Select how far back to collect AI prompts from your recordings.",
   },
+  "user-profile": {
+    defaultPreset: "168",
+    title: "User profile",
+    desc: "Select how far back to analyze activity for your profile (a multi-day window works best).",
+  },
+  "habit-report": {
+    defaultPreset: "168",
+    title: "Habit report",
+    desc: "Select how far back to analyze activity for habit patterns (a multi-day window works best).",
+  },
 };
 
 const APP_RUN_LABELS = {

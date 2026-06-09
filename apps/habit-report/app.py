@@ -37,11 +37,6 @@ def main() -> int:
         agent.OLLAMA_MODEL = args.model
 
     kwargs = agent_time_kwargs_from_args(args)
-    # Widen the UI's default hours=16 for a meaningful habit window unless an
-    # explicit start/end range was given.
-    if "start_time" not in kwargs and float(kwargs.get("hours", 0) or 0) < DEFAULT_HOURS:
-        kwargs["hours"] = DEFAULT_HOURS
-
     report = run_agent(PIPE_MD, verbose=args.verbose, **kwargs)
 
     out = output_dir(APP_NAME)
