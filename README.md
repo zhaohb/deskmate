@@ -4,238 +4,286 @@
   <img src="./imgs/deskmate.png" alt="DeskMate" width="900" height="600">
 </div>
 
-DeskMate — local-first desktop activity recorder for **Windows**. Captures screenshots, accessibility text, UI events, clipboard activity, and optional audio transcription into a local SQLite database — then exposes everything through a REST API, browser UI, and MCP server.
+DeskMate is a **local-first** desktop activity recorder for **Windows**. It captures
+your screenshots, on-screen text (OCR / accessibility tree), keyboard/mouse/clipboard
+events, and optional audio transcription into a SQLite database **on your own machine**,
+then lets you use that data through a browser UI, a REST API, and an MCP server
+(search, natural-language Q&A, auto-generated reports, and more).
 
-All data stays on your machine.
+> **All your data stays on your own computer — nothing is uploaded to the cloud.**
 
+---
 
-## Features
+## 🚀 Quick Start (5 minutes — just get it running)
 
-- Event-driven screen capture with adaptive FPS
-- UI Automation text + OCR indexing (RapidOCR/PP-OCR, WinRT, or Tesseract)
-- Keyboard, mouse, clipboard, and window-focus events
-- Optional local audio transcription (Whisper + VAD; optional Intel NPU/GPU acceleration via OpenVINO)
-- **Live translation** — low-latency speech translation (per-utterance, via local Ollama) shown in the UI
-- **Video-call detection** (Teams, Zoom, Meet, Webex, …) with per-meeting transcripts
-- Full-text search and natural-language **Ask** (Ollama + 6 tool calls: search, activity, meetings, email)
-- **Gmail / Outlook OAuth** for real mailbox search in Ask and apps (not OCR-only)
-- Built-in browser UI — no Node build step
-- MCP server for agent integrations
-- Local LLM apps (day recap, standup, time breakdown, meeting summary, **todo-list**, email digest, …)
+If you just want to try it out, follow these 4 steps. **You don't need to understand
+anything below this section.**
 
-## Requirements
+### Step 1 — Install Python (if you don't have it)
+You need **Python 3.10 or newer**.
+- If it's not installed, get it from <https://www.python.org/downloads/> and **check
+  "Add Python to PATH"** during installation.
+- Verify: open PowerShell and run `python --version` — you should see `Python 3.10.x`
+  or higher.
 
-- Windows 10/11
-- Python 3.10+
-- Optional, by feature:
-  - **OCR** — nothing extra for `winrt` (built-in); [Tesseract](https://github.com/tesseract-ocr/tesseract) on PATH for `tesseract`; the `ocr-rapidocr` extra for PP-OCR (best on Chinese)
-  - **Audio** — a microphone or WASAPI loopback device
-  - **OpenVINO acceleration** (Whisper) — an Intel CPU; an **Intel Core Ultra (NPU)** or Arc/iGPU unlocks NPU/GPU inference
-  - **Ask & apps** — a local [Ollama](http://127.0.0.1:11434) server
-  - **LoRA training** — a GPU is recommended (CPU works but is slow)
-
-## Install
-
+### Step 2 — Get the code and create an isolated environment
 ```powershell
 git clone <repo-url>
 cd deskmate
+
+# Create an isolated Python environment (keeps your system clean)
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+```
+> Every time you open a new terminal to use DeskMate, `cd` into the folder and run
+> `.\.venv\Scripts\Activate.ps1` again to activate the environment. You'll know it
+> worked when you see `(.venv)` at the start of your prompt.
 
-# Default recipe — Windows OCR + faster-whisper audio + MCP
+### Step 3 — Install (recommended default combo)
+```powershell
 pip install -e ".[ocr-winrt,audio,vad,mcp]"
 ```
+This installs: **core features + built-in Windows OCR + audio transcription + voice
+activity detection + MCP**. That's enough for most people.
+(What each `[...]` means and what else you can add → see [Install features as needed](#-install-features-as-needed-submodule-dependencies).)
 
-### Pick extras by what you need
-
-| Extra | Adds | Notes |
-|-------|------|-------|
-| `ocr-winrt` | Windows.Media.Ocr | No extra binaries; default |
-| `ocr-rapidocr` | PP-OCR mobile via OpenVINO CPU | **Best for Chinese / small UI text** |
-| `ocr-tesseract` | pytesseract | Needs Tesseract on PATH |
-| `audio` | faster-whisper transcription (`onnx_cpu`) | The default Whisper backend |
-| `audio-openvino` | OpenVINO GenAI Whisper + ModelScope | NPU / GPU / CPU; see below |
-| `vad` | Silero VAD | Gates silence before Whisper |
-| `speaker` | speaker diarization | "who said what" |
-| `redact-onnx` | ONNX PII detector | Optional redaction model |
-| `semantic` | embeddings (fastembed) | Hybrid semantic search |
-| `training` | torch + transformers + peft | On-device LoRA fine-tuning |
-| `mcp` | MCP stdio server | Agent integrations |
-| `full` | tesseract + audio + vad + redact-onnx + semantic + notify | Everything except OpenVINO & training |
-
-### OpenVINO Whisper (Intel NPU / GPU / CPU)
-
-```powershell
-pip install -e ".[audio-openvino,vad]"
-```
-
-Then in `~/.deskmate/config.toml`:
-
-```toml
-[audio]
-whisper_backend = "openvino_genai"   # vs the default "onnx_cpu"
-openvino_device = "NPU"              # NPU | GPU | CPU | AUTO
-```
-
-The model is auto-downloaded from ModelScope on first use (default
-`OpenVINO/whisper-medium-int8-ov`). NPU's first compile is slow but cached, so
-later starts load in seconds. If the chosen device can't load, it falls back to
-`onnx_cpu` automatically. See [docs/04-audio.md](docs/04-audio.md#whisper-backends)
-for device benchmarks and the full fallback chain.
-
-### Live translation (speech → target language)
-
-Translate spoken audio in near real time via the local Ollama LLM. It cuts audio
-at speech pauses (each chunk is a full clause, ~1–4s latency) and shows the
-translation under each transcript in the UI. In `~/.deskmate/config.toml`:
-
-```toml
-[audio]
-enabled = true
-chunk_mode = "endpoint"          # low-latency per-utterance chunking
-translate_enabled = true
-translate_target_lang = "zh"     # ISO 639-1 target
-translate_latency_mode = "balanced"   # fast | balanced | quality
-```
-
-Requires a running [Ollama](http://127.0.0.1:11434). See
-[docs/18-live-translation.md](docs/18-live-translation.md) for the design.
-
-## Quick Start
-
+### Step 4 — Launch
 ```powershell
 deskmate ui
 ```
+Your browser opens at **http://127.0.0.1:3030/ui** and DeskMate starts recording.
 
-Opens the browser UI at **http://127.0.0.1:3030/ui** and starts recording.
+On first run it auto-creates a config and data folder under
+`C:\Users\<your-username>\.deskmate\`. **You're up and running.**
 
-On first run, config and data are created under `%USERPROFILE%\.deskmate\`.
+> To stop: press `Ctrl + C` in the terminal where `deskmate ui` is running.
 
-## Usage
+---
+
+## 🧩 Install features as needed (submodule dependencies)
+
+DeskMate splits the "heavy" features into **optional modules (extras)** — install only
+what you need, not everything at once. The install format is always:
+```powershell
+pip install -e ".[module-name]"          # install one
+pip install -e ".[module1,module2]"      # install several (comma-separated, NO spaces)
+```
+
+| Module | What it adds | When you need it / notes |
+|--------|--------------|--------------------------|
+| `ocr-winrt` | Built-in Windows OCR | **Recommended default**, no extra downloads |
+| `ocr-rapidocr` | PP-OCR (via OpenVINO) | **Best for Chinese / small UI text**, models bundled |
+| `ocr-tesseract` | Tesseract OCR | Requires [Tesseract](https://github.com/tesseract-ocr/tesseract) installed and on PATH |
+| `audio` | Recording + Whisper transcription | Needs a mic or system audio (WASAPI). Default transcription backend |
+| `audio-openvino` | Whisper on Intel NPU/GPU/CPU | Accelerated on Intel Core Ultra (NPU) or Arc GPU, see below |
+| `vad` | Voice activity detection (Silero VAD) | Skips silent segments to save compute; install alongside `audio` |
+| `speaker` | Speaker diarization | Tells "who said what" |
+| `redact-onnx` | PII redaction | Optional privacy-protection model |
+| `semantic` | Semantic (vector) search | Search by meaning, not just keywords |
+| `notify` | Windows desktop notifications | Used by reminder features |
+| `pipes` | Scheduled tasks (YAML) | Run reports automatically on a schedule |
+| `mcp` | MCP server | Integrate with AI agents / Claude, etc. |
+| `training` | Local LoRA fine-tuning | Fine-tune a small model on your own data, see [training docs](docs/16-learning-training.md) |
+| `full` | Most common extras at once | = tesseract + audio + vad + redact + semantic + notify + pipes. **Excludes** OpenVINO & training |
+| `dev` | Dev tools (pytest, ruff) | Only needed to modify code / run tests |
+
+> Beginner tip: start with the default combo from Step 3. Add a module later when you
+> decide you want a feature (e.g. Chinese OCR, semantic search) — re-running
+> `pip install -e ".[...]"` is safe.
+
+---
+
+## 🤖 Want Q&A / auto-reports? Install Ollama first (optional but recommended)
+
+DeskMate's **natural-language Q&A (Ask)** and the **LLM apps under My Apps** (daily
+recap, todo extraction, meeting summaries…) need a local LLM server, **Ollama**. If you
+don't use these, you can **skip this section** — recording and search work fine without it.
+
+> **💡 Recommended: use the Ollama OpenVINO build on Intel hardware**
+> If you're on an Intel CPU / Arc GPU / Core Ultra (NPU), we strongly recommend
+> **Ollama-OV (OpenVINO backend)** — it runs models on Intel CPU/GPU/NPU, faster and
+> more power-efficient:
+> 👉 <https://github.com/zhaohb/ollama_openvino>
+> The model name in DeskMate's default config, `qwen3_8b_ov:v1` (note the `_ov` suffix),
+> is meant for this OpenVINO build. On regular GPUs / other platforms, the official
+> Ollama works fine.
+
+**Option A — Ollama OpenVINO build (recommended on Intel)**
+1. Follow <https://github.com/zhaohb/ollama_openvino> to get `ollama.exe` and start the
+   service (note it needs env settings like `GODEBUG=cgocheck=0`; see that repo's README).
+2. Import a model in **OpenVINO IR format** as described there (get it from HuggingFace /
+   ModelScope → write a `Modelfile` with `ModelBackend "OpenVINO"` → `ollama create <name> -f Modelfile`).
+3. Put the model name into `config.toml` (below).
+
+**Option B — Official Ollama (other platforms / simplest)**
+1. Install Ollama: <https://ollama.com/download> (it runs a local service in the
+   background at `http://127.0.0.1:11434`).
+2. Pull a model: `ollama pull qwen3`.
+
+**Final step for both options** — in `C:\Users\<your-username>\.deskmate\config.toml`,
+set the model name to the one you actually have:
+```toml
+[ollama]
+base = "http://127.0.0.1:11434"
+model = "qwen3_8b_ov:v1"   # OpenVINO build: the name you imported it as.
+                           # Official build: the name you pulled (e.g. qwen3).
+```
+Then restart `deskmate ui` — you can now use Ask on the Home page and run reports under **My Apps**.
+
+---
+
+## ⚡ Advanced features (read when you need them)
+
+These are more specialized capabilities — **beginners can ignore them for now** and
+come back when needed:
+
+| Feature | One-liner | Docs |
+|---------|-----------|------|
+| OpenVINO-accelerated transcription | Run Whisper faster on Intel NPU/GPU | [docs/04-audio.md](docs/04-audio.md#whisper-backends) |
+| Live speech translation | Translate as you speak, shown in the UI | [docs/18-live-translation.md](docs/18-live-translation.md) |
+| Video-call detection | Auto-detect Teams/Zoom/Meet + meeting notes | [docs/09-meeting-workflow.md](docs/09-meeting-workflow.md) |
+| Gmail / Outlook integration | Search real mailboxes in Ask and apps | [docs/11-connections.md](docs/11-connections.md) |
+| Local LoRA fine-tuning | Train a small model on your data (incl. Intel iGPU) | [docs/16-learning-training.md](docs/16-learning-training.md) |
+| All technical design docs | Architecture of every module | [docs/README.md](docs/README.md) |
+
+**OpenVINO Whisper quick setup** (Intel devices):
+```powershell
+pip install -e ".[audio-openvino,vad]"
+```
+Then in `config.toml`:
+```toml
+[audio]
+whisper_backend = "openvino_genai"   # default is "onnx_cpu"
+openvino_device = "NPU"              # NPU | GPU | CPU | AUTO
+```
+The model is auto-downloaded from ModelScope on first use; if the chosen device fails to
+load, it automatically falls back to CPU.
+
+**LoRA training (Intel GPU)** has a one-click setup script — see
+[scripts/setup-intel-xpu.bat](scripts/setup-intel-xpu.bat) and [docs/16](docs/16-learning-training.md).
+
+---
+
+## Requirements
+
+- **Windows 10 / 11**
+- **Python 3.10+**
+- Optional, by feature:
+  - **OCR**: `ocr-winrt` needs nothing extra; `ocr-tesseract` needs Tesseract on PATH;
+    `ocr-rapidocr` just needs the extra (best for Chinese)
+  - **Audio**: a microphone, or a system-audio loopback (WASAPI) device
+  - **OpenVINO acceleration**: an Intel CPU; an Intel Core Ultra (NPU) or Arc/iGPU
+    unlocks NPU/GPU inference
+  - **Q&A & apps**: a local [Ollama](http://127.0.0.1:11434) server
+  - **LoRA training**: a GPU is recommended (CPU works but is slow)
+
+---
+
+## Everyday usage
 
 ### Browser UI
-
 ```powershell
-deskmate ui                  # record + API + open /ui
-deskmate ui --no-run-daemon  # view existing data only
+deskmate ui                  # record + API + auto-open /ui
+deskmate ui --no-run-daemon  # view existing data only, don't start new recording
 ```
 
 | Page | What it does |
 |------|--------------|
 | Home | Health status, recent activity, **Ask** (natural-language queries) |
-| Timeline | Browse frames and screenshots |
-| Events | Keyboard, mouse, clipboard, focus events |
+| Timeline | Browse the screenshot timeline |
+| Events | Keyboard / mouse / clipboard / window-focus events |
 | Transcripts | Audio transcriptions |
-| Todos | Structured action items from email + meetings — check off, delete, or regenerate |
-| Meetings | Detected video calls, transcripts, and one-click summary |
-| My Apps | Run LLM apps (todo-list, email-digest, meeting-summary, …); connect Gmail/Outlook in Settings |
+| Todos | Action items extracted from email + meetings |
+| Meetings | Detected video calls, transcripts, one-click summary |
+| Training | Local LoRA fine-tuning |
+| My Apps | Run LLM apps; connect Gmail/Outlook in Settings |
 | Settings | Config and monitors |
 
 ### CLI
-
 ```powershell
-deskmate serve          # HTTP API (starts recorder by default)
+deskmate serve          # HTTP API only (records by default)
 deskmate record         # recorder only
-deskmate capture-once   # one manual capture
-deskmate search "query" # keyword search via API
-deskmate mcp            # MCP stdio server (API must be running)
+deskmate capture-once   # capture one frame manually
+deskmate search "query" # keyword search via the API
+deskmate mcp            # MCP server (API must be running)
 ```
-
 Split API and recorder into two processes:
-
 ```powershell
 deskmate record
 deskmate serve --no-run-daemon
 ```
 
-### Ask
-
-Home search bar sends questions to `POST /ask`. Ollama runs an agent loop (up to 8 rounds) with these tools:
-
-| Tool | Use for |
-|------|---------|
-| `search` | Keyword search over OCR, UI events, audio transcripts |
-| `activity_summary` | “What was I doing?” — apps, windows, timeline, snippets (not video meetings) |
-| `list_meetings` | Video calls detected in the recording window (Teams / Zoom / Meet / …) |
-| `meeting_transcript` | Full transcript + action items for one meeting id |
-| `email_search` | Connected Gmail / Outlook messages (empty query = latest mail) |
-| `email_read` | Full body of one message by id |
-
-Meeting questions (e.g. “今天开了什么会”) should use `list_meetings` first — not browser tab titles from `activity_summary`. Email questions need Gmail or Outlook connected (see above). Requires Ollama running locally.
-
-### LLM Apps
-
-Apps live in `apps/` and run from the **My Apps** page or CLI. See [apps/README.md](apps/README.md) for every app and example commands.
-
-Highlights:
+### LLM apps (My Apps)
+Apps live in `apps/`. Run them from the **My Apps** page or the CLI. Full list and
+examples in [apps/README.md](apps/README.md).
 
 | App | Purpose |
 |-----|---------|
-| `todo-list` | Unified checkbox todos from **email + meetings** (OAuth + OCR) |
-| `meeting-summary` | Summarize the meeting that just ended; patch note on disk |
-| `email-digest` | Inbox overview (OAuth + mail-client screen time) |
-| `email-compose` | Draft / reply via Gmail or Outlook (`--send` optional) |
-| `standup-update` | Yesterday / Today / Blockers (~150 words) |
-| `day-recap` / `time-breakdown` / `ai-habits` | Day recap, time split, AI tool usage |
+| `todo-list` | Unified checkbox todos from **email + meetings** |
+| `meeting-summary` | Summarize the meeting that just ended |
+| `email-digest` | Inbox overview |
+| `email-compose` | Draft / reply via Gmail or Outlook |
+| `day-recap` / `time-breakdown` / `ai-habits` | Daily recap / time split / AI-tool usage habits |
+| `user-profile` / `habit-report` | Multi-day user profile / routine (default: last 7 days) |
 
-Requires Ollama + the DeskMate API. Apps use the same HTTP API as Ask but run their own Ollama orchestration (prefetch + single-shot or tool loops per `pipe.md`).
+> These apps need both **Ollama and the DeskMate API** running.
+
+---
 
 ## Configuration
 
-Config file: `%USERPROFILE%\.deskmate\config.toml`
+Config file: `C:\Users\<your-username>\.deskmate\config.toml` (auto-created on first run).
 
-Key sections: `[capture]`, `[a11y]`, `[ocr]`, `[audio]`, `[redact]`, `[filters]`, `[server]`
+Main sections: `[capture]`, `[a11y]`, `[ocr]`, `[audio]`, `[ollama]`, `[redact]`,
+`[filters]`, `[server]`
 
-Override via environment variables (`DESKMATE_` prefix):
-
+Override with environment variables (prefix `DESKMATE_`):
 ```powershell
 $env:DESKMATE_SERVER__PORT = "4040"
 $env:DESKMATE_AUDIO__ENABLED = "true"
 ```
 
-## Data
+## Where your data lives
 
 ```
-%USERPROFILE%\.deskmate\
-├── config.toml
-├── data.db          # SQLite + FTS5
-├── frames\          # JPEG snapshots
-├── audio\           # WAV chunks (when enabled)
+C:\Users\<your-username>\.deskmate\
+├── config.toml      # configuration
+├── data.db          # SQLite database (with full-text search)
+├── frames\          # screenshots
+├── audio\           # audio chunks (when enabled)
 ├── videos\          # video chunks
-├── logs\
-└── pipes\           # optional scheduled pipes
+├── checkpoints\     # LoRA training artifacts (when training)
+├── apps\            # output reports from LLM apps
+└── logs\            # logs
 ```
-
-To reset: stop deskmate, then delete `data.db` and the folders above.
+**To wipe and start over**: stop DeskMate, then delete `data.db` and the folders above.
 
 ## API
 
-Default base URL: **http://127.0.0.1:3030**
-
+Default base URL: **http://127.0.0.1:3030**. Full endpoint list is in the running
+server's `/docs` (OpenAPI). Common ones:
 ```
-GET  /health
-GET  /search?q=...
-GET  /frames?limit=20
-GET  /frames/{id}/image
-POST /capture
-POST /ask
-
-GET  /meetings
-GET  /meetings/{id}
-GET  /meetings/{id}/transcript
-POST /meetings/start
-POST /meetings/stop
-
-GET    /todos
-POST   /todos
-PATCH  /todos/{id}
-DELETE /todos/{id}
-
-GET  /connections/gmail/messages
-GET  /connections/outlook/messages
+GET  /health        GET  /search?q=...      POST /ask
+GET  /frames        POST /capture           GET  /meetings
+GET  /todos         POST /todos             PATCH /todos/{id}
 ```
 
-Full endpoint list is in the running server's OpenAPI docs at `/docs` (or `GET /api`).
+---
+
+## FAQ
+
+- **Install error / a feature is missing?** Most likely the matching extra isn't
+  installed. Go back to [Install features as needed](#-install-features-as-needed-submodule-dependencies)
+  and add that one.
+- **Ask / My Apps does nothing or errors?** Check that Ollama is running
+  (`ollama list` should list models) and that `[ollama] model` in `config.toml` matches
+  a model you actually have. On Intel hardware, use the
+  [Ollama OpenVINO build](https://github.com/zhaohb/ollama_openvino) (the default model
+  name `qwen3_8b_ov:v1` is meant for it).
+- **`deskmate` not found in a new terminal?** You didn't activate the virtual
+  environment. `cd` into the project folder, then run `.\.venv\Scripts\Activate.ps1`.
+- **Want the internals / finer config of a feature?** It's all in [docs/](docs/README.md),
+  numbered by module.
 
 ## License
 
