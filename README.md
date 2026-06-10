@@ -104,13 +104,12 @@ don't use these, you can **skip this section** — recording and search work fin
 > **Ollama-OV (OpenVINO backend)** — it runs models on Intel CPU/GPU/NPU, faster and
 > more power-efficient:
 > 👉 <https://github.com/zhaohb/ollama_openvino>
-> The model name in DeskMate's default config, `qwen3_8b_ov:v1` (note the `_ov` suffix),
-> is meant for this OpenVINO build. On regular GPUs / other platforms, the official
+> . On regular GPUs / other platforms, the official
 > Ollama works fine.
 
 **Option A — Ollama OpenVINO build (recommended on Intel)**
 1. Follow <https://github.com/zhaohb/ollama_openvino> to get `ollama.exe` and start the
-   service (note it needs env settings like `GODEBUG=cgocheck=0`; see that repo's README).
+   service (see that repo's README).
 2. Import a model in **OpenVINO IR format** as described there (get it from HuggingFace /
    ModelScope → write a `Modelfile` with `ModelBackend "OpenVINO"` → `ollama create <name> -f Modelfile`).
 3. Put the model name into `config.toml` (below).
