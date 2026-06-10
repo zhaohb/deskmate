@@ -61,6 +61,24 @@ class DatabaseManager:
             self._ensure_ask_history_columns()
             self._ensure_transcript_translation_columns()
             self._ensure_suggestion_columns()
+            self._ensure_rule_columns()
+
+    def _ensure_rule_columns(self) -> None:
+        """Add ``snoozed_until`` to ``habit_rules`` on pre-existing DBs.
+
+        Lets a rule be muted until a wall-clock time — the "再等一会" snooze and
+        the "今天别再提" same-day mute both write this column rather than touching
+        ``enabled`` (which is reserved for the user's permanent on/off choice)."""
+        cols = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(habit_rules)"
+            ).fetchall()
+        }
+        if cols and "snoozed_until" not in cols:
+            self._conn.execute(
+                "ALTER TABLE habit_rules ADD COLUMN snoozed_until TEXT"
+            )
 
     def _ensure_suggestion_columns(self) -> None:
         """Add ``acknowledged_at`` to ``habit_suggestions`` on pre-existing DBs.

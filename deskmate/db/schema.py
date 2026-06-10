@@ -7,7 +7,7 @@ historical migration. `_pca_migrations` stores the active schema version.
 from __future__ import annotations
 
 # Bumped whenever the consolidated schema changes.
-SCHEMA_VERSION = "20260906180000"
+SCHEMA_VERSION = "20260907000000"
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -359,6 +359,7 @@ CREATE TABLE IF NOT EXISTS habit_rules (
     cooldown_min  INTEGER NOT NULL DEFAULT 120,   -- min minutes between firings (anti-nag)
     quiet_hours   TEXT    NOT NULL DEFAULT '22-8', -- "start-end" local hours of silence
     priority      TEXT    NOT NULL DEFAULT 'M',   -- H|M|L
+    snoozed_until TEXT,                            -- local ISO ts; rule is muted until then ("再等一会"/"今天别再提")
     created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -376,6 +377,16 @@ CREATE TABLE IF NOT EXISTS habit_suggestions (
 );
 CREATE INDEX IF NOT EXISTS idx_suggestion_rule ON habit_suggestions(rule_name, created_at);
 CREATE INDEX IF NOT EXISTS idx_suggestion_status ON habit_suggestions(status, created_at);
+
+-- ─── habits: module-wide settings (key/value) ──────────────────────────────
+-- Small kv store for habit-module toggles that aren't per-rule, e.g. the global
+-- "notifications_enabled" master switch the UI flips. Persisted (not just in
+-- config.toml) so the daemon and UI agree without a restart or file write.
+CREATE TABLE IF NOT EXISTS habit_settings (
+    key        TEXT    PRIMARY KEY,
+    value      TEXT    NOT NULL DEFAULT '',
+    updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
 
 -- ─── fusion: unified multi-source context timeline ─────────────────────────
 -- One normalized row per signal from any source (screen / audio / input /

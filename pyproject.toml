@@ -27,6 +27,11 @@ dependencies = [
     "comtypes>=1.4.8; platform_system=='Windows'",
     "uiautomation>=2.0; platform_system=='Windows'",
     "psutil>=5.9",
+    # Native Windows toast for proactive habit reminders. Core (not optional):
+    # without these the notifier silently falls back to the UI inbox and no
+    # toast ever pops. Windows-only; degrades gracefully elsewhere.
+    "winrt-Windows.UI.Notifications>=2.0; platform_system=='Windows'",
+    "winrt-Windows.Data.Xml.Dom>=2.0; platform_system=='Windows'",
 ]
 
 [project.optional-dependencies]
@@ -35,7 +40,6 @@ ocr-tesseract = ["pytesseract>=0.3.10"]
 # Chinese + small UI text. Models (~16MB) ship with the rapidocr package.
 ocr-rapidocr = ["rapidocr>=3.0", "openvino>=2024.0", "numpy>=1.26"]
 ocr-winrt = ["winrt-Windows.Foundation>=2.0; platform_system=='Windows'", "winrt-Windows.Foundation.Collections>=2.0; platform_system=='Windows'", "winrt-Windows.Globalization>=2.0; platform_system=='Windows'", "winrt-Windows.Media.Ocr>=2.0; platform_system=='Windows'", "winrt-Windows.Graphics.Imaging>=2.0; platform_system=='Windows'", "winrt-Windows.Storage.Streams>=2.0; platform_system=='Windows'"]
-notify = ["winrt-Windows.UI.Notifications>=2.0; platform_system=='Windows'", "winrt-Windows.Data.Xml.Dom>=2.0; platform_system=='Windows'"]
 audio = ["sounddevice>=0.4.6", "faster-whisper>=1.0", "numpy>=1.26", "soundfile>=0.12", "pyaudiowpatch>=0.2; platform_system=='Windows'"]
 # OpenVINO GenAI Whisper backend (NPU/GPU/CPU). Models pulled from ModelScope.
 audio-openvino = ["sounddevice>=0.4.6", "openvino-genai>=2024.4", "modelscope>=1.15", "numpy>=1.26", "soundfile>=0.12", "pyaudiowpatch>=0.2; platform_system=='Windows'"]

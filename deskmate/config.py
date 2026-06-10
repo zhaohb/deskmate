@@ -252,6 +252,12 @@ class HabitsConfig(BaseModel):
     daily_quota: int = 30
     # Whether to attempt a native Windows toast (falls back to UI inbox).
     toast_enabled: bool = True
+    # Hold proactive nudges while the user is presumably busy — in a meeting, an
+    # app is full-screen (presentation / video), or Windows Focus Assist is on.
+    # Fail-open: if presence can't be determined, reminders still fire.
+    respect_presence: bool = True
+    # Language for reminder text: "zh" or "en". Rules carry both; this picks one.
+    reminder_lang: str = "zh"
 
 
 class FusionConfig(BaseModel):

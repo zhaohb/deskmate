@@ -179,6 +179,20 @@ class HabitStore:
                     ),
                 )
 
+    def delete_rules(self, names: tuple[str, ...]) -> int:
+        """Remove superseded rules by name (used to retire e.g. break_reminder).
+
+        Past suggestions are kept (history + feedback stay intact); only the rule
+        definition is dropped so it stops co-firing with its replacements."""
+        if not names:
+            return 0
+        placeholders = ",".join("?" for _ in names)
+        with self._lock:
+            cur = self._conn.execute(
+                f"DELETE FROM habit_rules WHERE name IN ({placeholders})", names
+            )
+            return cur.rowcount
+
     def enabled_rules(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
@@ -199,6 +213,48 @@ class HabitStore:
                 (1 if enabled else 0, name),
             )
             return cur.rowcount > 0
+
+    def snooze_rule(self, name: str, until_iso: str | None) -> bool:
+        """Mute a single rule until ``until_iso`` (local ISO). ``None`` clears the
+        snooze. Distinct from ``enabled`` (the permanent on/off): a snooze is a
+        temporary "not now" that auto-expires, used by "再等一会" and "今天别再提"."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE habit_rules SET snoozed_until = ? WHERE name = ?",
+                (until_iso, name),
+            )
+            return cur.rowcount > 0
+
+    # ─── habit_settings (module-wide kv: global switch, etc.) ────────────────
+
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM habit_settings WHERE key = ?", (key,)
+            ).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO habit_settings(key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                "updated_at = excluded.updated_at",
+                (key, value, _local_now_iso()),
+            )
+
+    def notifications_enabled(self, default: bool = True) -> bool:
+        """Global master switch for all proactive nudges (UI 'turn off reminders').
+
+        Stored as ``"1"``/``"0"`` under the ``notifications_enabled`` setting key;
+        absent means use ``default`` (on)."""
+        v = self.get_setting("notifications_enabled")
+        if v is None:
+            return default
+        return v == "1"
+
+    def set_notifications_enabled(self, enabled: bool) -> None:
+        self.set_setting("notifications_enabled", "1" if enabled else "0")
 
     # ─── habit_suggestions ───────────────────────────────────────────────────
 
@@ -294,15 +350,84 @@ class HabitStore:
             ).fetchone()
         return row["ts"] if row and row.get("ts") else None
 
+    def has_open_meeting(self, now_iso: str, *, grace_minutes: float = 3.0) -> bool:
+        """True if a meeting is currently open (``ended_at IS NULL``) and was seen
+        recently. The :class:`MeetingDetector` opens a row on call detection and
+        stamps ``ended_at`` after its end-grace; while open we treat the user as
+        in a call and hold proactive nudges. ``grace_minutes`` guards against a
+        stale open row left by an unclean shutdown."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(started_at) AS ts FROM meetings WHERE ended_at IS NULL"
+            ).fetchone()
+        ts = row["ts"] if row and row.get("ts") else None
+        if not ts:
+            return False
+        from datetime import datetime, timedelta  # noqa: PLC0415
+
+        try:
+            started = datetime.fromisoformat(str(ts).replace(" ", "T"))
+            now = datetime.fromisoformat(str(now_iso).replace(" ", "T"))
+        except ValueError:
+            return False
+        if started.tzinfo is None and now.tzinfo is not None:
+            started = started.replace(tzinfo=now.tzinfo)
+        # An open meeting with no end is trusted; the grace only filters rows that
+        # are implausibly old (e.g. days), which indicate a missed close.
+        return now - started < timedelta(days=1)
+
+    def acted_on_within(self, rule_name: str, minutes: float, now_iso: str) -> int:
+        """How many of this rule's recent nudges the user actually acted on.
+
+        "Acted on" = a continuous-screen-time nudge whose acknowledgement (the
+        '知道了'/dismiss click) landed, used as a compliance signal: if the user
+        keeps ignoring a rule, the notifier can back off. Returns the count of
+        acknowledged sends in the trailing window ending at ``now_iso``."""
+        from datetime import datetime, timedelta  # noqa: PLC0415
+
+        try:
+            now = datetime.fromisoformat(str(now_iso).replace(" ", "T"))
+        except ValueError:
+            return 0
+        since = (now - timedelta(minutes=minutes)).replace(microsecond=0).isoformat()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM habit_suggestions "
+                "WHERE rule_name = ? AND acknowledged_at IS NOT NULL "
+                "AND created_at >= ?",
+                (rule_name, since),
+            ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def sent_count_within(self, rule_name: str, minutes: float, now_iso: str) -> int:
+        """How many nudges for this rule were actually sent in the trailing window."""
+        from datetime import datetime, timedelta  # noqa: PLC0415
+
+        try:
+            now = datetime.fromisoformat(str(now_iso).replace(" ", "T"))
+        except ValueError:
+            return 0
+        since = (now - timedelta(minutes=minutes)).replace(microsecond=0).isoformat()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM habit_suggestions "
+                "WHERE rule_name = ? AND status = 'sent' AND created_at >= ?",
+                (rule_name, since),
+            ).fetchone()
+        return int(row["n"]) if row else 0
+
     def last_activity_ack_ts(self) -> str | None:
-        """Most recent acknowledgement of ANY screen-time nudge (break_reminder /
-        overwork / lunch_break). Used to clamp continuous-screen-time: clicking
-        '知道了' is the user saying 'I got up', so the run restarts from then."""
+        """Most recent acknowledgement of ANY screen-time nudge (eye_break /
+        standup / break_reminder / overwork / lunch_break). Used to clamp
+        continuous-screen-time: clicking '知道了' is the user saying 'I got up',
+        so the run restarts from then. ``break_reminder`` is kept for DBs seeded
+        before the rule was split into eye_break/standup."""
         with self._lock:
             row = self._conn.execute(
                 "SELECT MAX(acknowledged_at) AS ts FROM habit_suggestions "
                 "WHERE acknowledged_at IS NOT NULL "
-                "AND rule_name IN ('break_reminder', 'overwork', 'lunch_break')",
+                "AND rule_name IN "
+                "('eye_break', 'standup', 'break_reminder', 'overwork', 'lunch_break')",
             ).fetchone()
         return row["ts"] if row and row.get("ts") else None
 

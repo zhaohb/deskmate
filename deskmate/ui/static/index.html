@@ -742,6 +742,17 @@
             <p class="muted" style="margin-top:0" data-i18n="reminders.intro">Reminders DeskMate pushes based on your activity patterns.</p>
             <div class="rem-row" style="margin-bottom:12px">
               <button id="remRefreshBtn" type="button" data-i18n="reminders.refresh">Refresh</button>
+              <label class="rem-switch" title="" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">
+                <input id="remGlobalToggle" type="checkbox" checked>
+                <span data-i18n="reminders.globalToggle">Reminders on</span>
+              </label>
+              <label style="display:inline-flex;align-items:center;gap:6px">
+                <span class="muted" data-i18n="reminders.lang">Language</span>
+                <select id="remLangSelect">
+                  <option value="zh">中文</option>
+                  <option value="en">English</option>
+                </select>
+              </label>
               <span id="remMeta" class="muted"></span>
             </div>
             <div id="remSuggestions"></div>

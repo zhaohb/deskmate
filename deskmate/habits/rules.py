@@ -18,7 +18,37 @@ from .store import HabitStore
 logger = get("habits.rules")
 
 
+# Reminder text is bilingual: every rule carries a ``messages`` dict keyed by
+# language ("zh"/"en"). The notifier renders the user's chosen reminder_lang and
+# falls back to zh. A legacy single ``message`` string is still honored.
+DEFAULT_LANG = "zh"
+
+
+def render_message(params: dict[str, Any], lang: str, fields: dict[str, Any], default: str) -> str:
+    """Pick the message template for ``lang`` (zh/en) and format it with ``fields``.
+
+    Resolution order: ``params['messages'][lang]`` → ``params['messages']['zh']``
+    → legacy ``params['message']`` → ``default``. Unknown ``{placeholders}`` in a
+    user-edited template never raise — they're left as-is."""
+    messages = params.get("messages")
+    template: str | None = None
+    if isinstance(messages, dict):
+        template = messages.get(lang) or messages.get(DEFAULT_LANG)
+    if not template:
+        template = params.get("message") or default
+    try:
+        return template.format(**fields)
+    except (KeyError, IndexError, ValueError):
+        return template
+
+
 # Default rule set seeded into habit_rules (idempotent).
+#
+# Three tiers of health nudges, by what they measure (see docs/19):
+#   • eye_break  — CONTINUOUS screen time, light touch  (~35min, 20-20-20 eyes)
+#   • standup    — CONTINUOUS screen time, bigger break  (~70min, get up / move)
+#   • overwork   — CUMULATIVE work today (short breaks don't reset)  (~240min)
+# Plus fixed time-of-day rules (late_night, lunch_break) that need no history.
 DEFAULT_RULES: list[dict[str, Any]] = [
     {
         "name": "distraction_peak",
@@ -49,22 +79,52 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "params": {
             "categories": ["coding", "meeting", "writing"],
             "max_minutes": 240,
+            "messages": {
+                "zh": "今天你已累计工作 {minutes} 分钟了，起来活动一下、喝口水、歇会儿吧。",
+                "en": "You've worked {minutes} min in total today — stretch, grab some water, take a breather.",
+            },
         },
     },
-    # ── Fixed strategies (no learned history needed; fire from day one) ────────
+    # ── Continuous-screen-time tier (fixed; fire from day one) ─────────────────
     {
-        # Continuous screen use in ANY category for too long → stand up / rest
-        # the eyes. Empty `categories` means "match any category".
-        "name": "break_reminder",
-        "rule_type": "threshold",
+        # Light eye-rest nudge on a CONTINUOUS run (resets when you step away
+        # ≥ idle_gap). 20-20-20: every ~30-40min look 20ft away for 20s.
+        "name": "eye_break",
+        "rule_type": "continuous",
+        "enabled": True,
+        "priority": "L",
+        "cooldown_min": 30,
+        "quiet_hours": "22-8",
+        "params": {
+            "categories": [],
+            "max_minutes": 35,
+            # Smart deferral: once past threshold, wait up to defer_minutes for a
+            # natural break (app switch / input pause) before firing anyway.
+            "defer_minutes": 8,
+            "idle_reset_sec": 180,  # away ≥ 3 min counts as an eye break
+            "messages": {
+                "zh": "已经连续看屏幕 {minutes} 分钟啦，抬头远眺 20 秒，让眼睛歇一歇。",
+                "en": "You've been looking at the screen for {minutes} min — glance 20ft away for 20s and rest your eyes.",
+            },
+        },
+    },
+    {
+        # Bigger "get up and move" nudge on a longer CONTINUOUS run.
+        "name": "standup",
+        "rule_type": "continuous",
         "enabled": True,
         "priority": "M",
         "cooldown_min": 60,
         "quiet_hours": "22-8",
         "params": {
             "categories": [],
-            "max_minutes": 50,
-            "message": "你已经连续用屏 {minutes} 分钟了，起身活动一下、远眺放松眼睛吧。",
+            "max_minutes": 70,
+            "defer_minutes": 10,
+            "idle_reset_sec": 300,  # away ≥ 5 min counts as a real break
+            "messages": {
+                "zh": "你已经连续用屏 {minutes} 分钟了，起身活动一下、走两步、放松一下吧。",
+                "en": "You've been at the screen for {minutes} min straight — stand up, move around, take a real break.",
+            },
         },
     },
     {
@@ -78,7 +138,10 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "quiet_hours": "0-0",
         "params": {
             "between": [23, 4],
-            "message": "已经深夜了，准备收尾、早点休息吧。",
+            "messages": {
+                "zh": "已经深夜了，准备收尾、早点休息吧。",
+                "en": "It's late — start wrapping up and get some rest.",
+            },
         },
     },
     {
@@ -93,10 +156,19 @@ DEFAULT_RULES: list[dict[str, Any]] = [
             "between": [12, 13],
             "categories": ["coding", "meeting", "writing"],
             "min_minutes": 40,
-            "message": "午饭时间到了，已连续工作 {minutes} 分钟，去吃点东西、歇一会吧。",
+            "messages": {
+                "zh": "午饭时间到了，已连续工作 {minutes} 分钟，去吃点东西、歇一会吧。",
+                "en": "It's lunchtime and you've worked {minutes} min straight — go eat something and take a break.",
+            },
         },
     },
 ]
+
+
+# Rules that previous versions seeded but are now superseded. The watcher deletes
+# these on startup so a stale break_reminder (old "threshold on cumulative time"
+# wiring) doesn't co-fire alongside the new eye_break/standup split.
+RETIRED_RULE_NAMES: tuple[str, ...] = ("break_reminder",)
 
 
 class CurrentState:
@@ -111,6 +183,7 @@ class CurrentState:
         continuous_minutes: float,
         app_minutes: float | None = None,
         today_category_minutes: dict[str, float] | None = None,
+        seconds_since_app_switch: float | None = None,
     ) -> None:
         self.category = category
         self.app_name = app_name
@@ -123,12 +196,22 @@ class CurrentState:
         # attributed; short breaks do NOT reset it). Used by overwork, whose
         # notion of "too long" is "total time worked today", not an unbroken run.
         self.today_category_minutes = today_category_minutes or {}
+        # Seconds since the most recent app switch — a small value means the user
+        # JUST changed context, i.e. a natural seam to interrupt at. Used by the
+        # smart-deferral logic so a break nudge lands between tasks, not mid-flow.
+        self.seconds_since_app_switch = seconds_since_app_switch
 
     def worked_minutes_today(self, categories: list[str]) -> float:
         """Total cumulative minutes today across the given categories (all if empty)."""
         if not categories:
             return sum(self.today_category_minutes.values())
         return sum(self.today_category_minutes.get(c, 0.0) for c in categories)
+
+    def at_natural_break(self, window_sec: float = 75.0) -> bool:
+        """True if the user just hit a natural seam (an app switch within the last
+        ``window_sec``). A good moment to interrupt without breaking deep focus."""
+        s = self.seconds_since_app_switch
+        return s is not None and s <= window_sec
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -140,6 +223,10 @@ class CurrentState:
             "today_category_minutes": {
                 k: round(v, 1) for k, v in self.today_category_minutes.items()
             },
+            "seconds_since_app_switch": (
+                round(self.seconds_since_app_switch, 1)
+                if self.seconds_since_app_switch is not None else None
+            ),
         }
 
 
@@ -219,8 +306,10 @@ def read_current_state(store: HabitStore, now: datetime, *, window_minutes: int 
     app_minutes = float(window_minutes)
     switch_ts = store.last_app_switch_ts(app_name, end)
     anchor = _parse_ts(switch_ts) if switch_ts else None
+    seconds_since_app_switch: float | None = None
     if anchor is not None:
         app_minutes = max(0.0, (now - anchor).total_seconds() / 60.0)
+        seconds_since_app_switch = max(0.0, (now - anchor).total_seconds())
 
     # Cross-app continuity: how long continuously at the screen (resets on idle).
     continuous_minutes = _continuous_screen_minutes(store, now)
@@ -243,6 +332,7 @@ def read_current_state(store: HabitStore, now: datetime, *, window_minutes: int 
         continuous_minutes=continuous_minutes,
         app_minutes=app_minutes,
         today_category_minutes=_today_category_minutes(store, now),
+        seconds_since_app_switch=seconds_since_app_switch,
     )
 
 
@@ -257,7 +347,7 @@ def _slot_habit_frequency(profiles: list[dict[str, Any]], categories: list[str])
 
 def evaluate_distraction(
     rule: dict[str, Any], state: CurrentState, profiles: list[dict[str, Any]],
-    now: datetime | None = None,
+    now: datetime | None = None, lang: str = DEFAULT_LANG,
 ) -> tuple[bool, str, dict[str, Any]]:
     params = rule.get("params", {})
     focus_cats = params.get("focus_categories", ["coding", "writing"])
@@ -276,17 +366,71 @@ def evaluate_distraction(
         "state": state.as_dict(),
         "focus_categories": focus_cats,
     }
-    msg = (
-        f"现在通常是你的专注时段（{int(round(habit_freq * 100))}% 的同类日子在做 "
-        f"{'/'.join(focus_cats)}），但你已经在 {state.app_name} 上停留了 "
-        f"{int(state.app_minutes)} 分钟。要回到专注状态吗？"
-    )
+    pct = int(round(habit_freq * 100))
+    cats = "/".join(focus_cats)
+    if lang == "en":
+        msg = (
+            f"This is usually your focus time ({pct}% of similar days you're doing "
+            f"{cats}), but you've spent {int(state.app_minutes)} min in "
+            f"{state.app_name}. Want to get back to it?"
+        )
+    else:
+        msg = (
+            f"现在通常是你的专注时段（{pct}% 的同类日子在做 {cats}），"
+            f"但你已经在 {state.app_name} 上停留了 {int(state.app_minutes)} 分钟。要回到专注状态吗？"
+        )
+    return hit, msg, ctx
+
+
+def evaluate_continuous(
+    rule: dict[str, Any], state: CurrentState, profiles: list[dict[str, Any]],
+    now: datetime | None = None, lang: str = DEFAULT_LANG,
+) -> tuple[bool, str, dict[str, Any]]:
+    """Fire on CONTINUOUS on-screen time (resets when the user steps away), with
+    smart deferral so the nudge lands at a natural seam rather than mid-flow.
+
+    Logic:
+      • below ``max_minutes`` → no hit.
+      • in the deferral band ``[max_minutes, max_minutes + defer_minutes)`` → only
+        hit when the user is at a natural break (a recent app switch). This avoids
+        interrupting deep focus the instant the threshold is crossed.
+      • past ``max_minutes + defer_minutes`` → hit regardless: health wins, we
+        won't defer forever.
+    Category filter (``categories=[]`` = any) lets a rule target only work apps.
+    """
+    params = rule.get("params", {})
+    cats = params.get("categories") or []
+    max_minutes = float(params.get("max_minutes", 50))
+    defer_minutes = float(params.get("defer_minutes", 0))
+
+    mins = state.continuous_minutes
+    cat_ok = (not cats) or (state.category in cats)
+    deferred = False
+    if not cat_ok or mins < max_minutes:
+        hit = False
+    elif mins < max_minutes + defer_minutes:
+        # Past target but inside the grace window: wait for a natural seam.
+        hit = state.at_natural_break()
+        deferred = not hit
+    else:
+        hit = True  # grace exhausted — fire anyway
+
+    fields = {"minutes": int(mins), "category": state.category, "app": state.app_name}
+    default = "你已经连续用屏 {minutes} 分钟了，起身活动一下、远眺放松眼睛吧。"
+    msg = render_message(params, lang, fields, default)
+    ctx = {
+        "state": state.as_dict(),
+        "max_minutes": max_minutes,
+        "defer_minutes": defer_minutes,
+        "continuous_minutes": round(mins, 1),
+        "deferred": deferred,
+    }
     return hit, msg, ctx
 
 
 def evaluate_overwork(
     rule: dict[str, Any], state: CurrentState, profiles: list[dict[str, Any]],
-    now: datetime | None = None,
+    now: datetime | None = None, lang: str = DEFAULT_LANG,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Overwork = too much CUMULATIVE work today, not one unbroken run.
 
@@ -304,24 +448,15 @@ def evaluate_overwork(
     cat_ok = (not cats) or (state.category in cats)
     hit = cat_ok and worked >= max_minutes
     ctx = {"state": state.as_dict(), "max_minutes": max_minutes, "worked_today": round(worked, 1)}
-    template = params.get("message")
-    if template:
-        msg = template.format(
-            minutes=int(worked),
-            category=state.category,
-            app=state.app_name,
-        )
-    else:
-        msg = (
-            f"今天你已累计工作 {int(worked)} 分钟了，"
-            "起来活动一下、喝口水、歇会儿吧。"
-        )
+    fields = {"minutes": int(worked), "category": state.category, "app": state.app_name}
+    default = "今天你已累计工作 {minutes} 分钟了，起来活动一下、喝口水、歇会儿吧。"
+    msg = render_message(params, lang, fields, default)
     return hit, msg, ctx
 
 
 def evaluate_schedule(
     rule: dict[str, Any], state: CurrentState, profiles: list[dict[str, Any]],
-    now: datetime | None = None,
+    now: datetime | None = None, lang: str = DEFAULT_LANG,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Time-of-day fixed rule — fires on wall-clock + optional duration, no
     learned history required.
@@ -358,12 +493,12 @@ def evaluate_schedule(
     dur_ok = state.continuous_minutes >= min_minutes
 
     hit = in_window and cat_ok and dur_ok
-    template = params.get("message") or "现在该休息一下了。"
-    msg = template.format(
-        minutes=int(state.continuous_minutes),
-        category=state.category,
-        app=state.app_name,
-    )
+    fields = {
+        "minutes": int(state.continuous_minutes),
+        "category": state.category,
+        "app": state.app_name,
+    }
+    msg = render_message(params, lang, fields, "现在该休息一下了。")
     ctx = {"state": state.as_dict(), "hour": h}
     return hit, msg, ctx
 
@@ -371,20 +506,21 @@ def evaluate_schedule(
 _EVALUATORS = {
     "deviation": evaluate_distraction,
     "threshold": evaluate_overwork,
+    "continuous": evaluate_continuous,
     "schedule": evaluate_schedule,
 }
 
 
 def evaluate_rule(
     rule: dict[str, Any], state: CurrentState, profiles: list[dict[str, Any]],
-    now: datetime | None = None,
+    now: datetime | None = None, lang: str = DEFAULT_LANG,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Dispatch a rule to its evaluator. Unknown types never fire."""
     evaluator = _EVALUATORS.get(rule.get("rule_type", ""))
     if evaluator is None:
         return False, "", {}
     try:
-        return evaluator(rule, state, profiles, now)
+        return evaluator(rule, state, profiles, now, lang)
     except Exception as exc:  # noqa: BLE001 — a bad rule must never crash the watcher
         logger.warning("rule %s failed: %s", rule.get("name"), exc)
         return False, "", {}

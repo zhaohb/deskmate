@@ -1094,6 +1094,8 @@ async function loadReminderProfile() {
 
 const REM_RULE_ICON = {
   break_reminder: "\u2615", focus: "\uD83C\uDFAF", standup: "\uD83E\uDDCD",
+  eye_break: "\uD83D\uDC41\uFE0F", overwork: "\uD83D\uDD14", distraction_peak: "\uD83C\uDFAF",
+  late_night: "\uD83C\uDF19", lunch_break: "\uD83C\uDF7D\uFE0F",
   hydrate: "\uD83D\uDCA7", wrapup: "\uD83C\uDF19", meeting: "\uD83D\uDCC5",
 };
 function remRuleIcon(rule) {
@@ -1147,6 +1149,8 @@ async function loadReminderSuggestions() {
         <div class="rem-acts">
           <button type="button" class="ghost ${s.feedback === 1 ? "is-on" : ""}" data-act="up">${T("reminders.fb.up")}</button>
           <button type="button" class="ghost ${s.feedback === -1 ? "is-on" : ""}" data-act="down">${T("reminders.fb.down")}</button>
+          <button type="button" class="ghost" data-act="snooze">${T("reminders.snooze")}</button>
+          <button type="button" class="ghost" data-act="muteToday">${T("reminders.muteToday")}</button>
           <button type="button" class="ghost" data-act="dismiss">${T("reminders.dismiss")}</button>
         </div>
       </div>
@@ -1156,8 +1160,39 @@ async function loadReminderSuggestions() {
     const id = Number(el.dataset.id);
     el.querySelector('[data-act="up"]')?.addEventListener("click", () => reminderFeedback(id, 1));
     el.querySelector('[data-act="down"]')?.addEventListener("click", () => reminderFeedback(id, -1));
+    el.querySelector('[data-act="snooze"]')?.addEventListener("click", () => reminderSnooze(id, { minutes: 30 }));
+    el.querySelector('[data-act="muteToday"]')?.addEventListener("click", () => reminderSnooze(id, { rest_of_day: true }));
     el.querySelector('[data-act="dismiss"]')?.addEventListener("click", () => reminderDismiss(id));
   }
+}
+
+async function reminderSnooze(id, opts) {
+  try {
+    await api(`/habits/suggestions/${id}/snooze`, {
+      method: "POST", body: JSON.stringify(opts || {}),
+    });
+    await loadReminderSuggestions();
+  } catch (err) { showError(err); }
+}
+
+// Global master switch + reminder language. Reads /habits/settings, reflects it
+// in the toggle, and writes back on change.
+async function loadReminderSettings() {
+  const toggle = $("#remGlobalToggle");
+  const langSel = $("#remLangSelect");
+  if (!toggle && !langSel) return;
+  try {
+    const s = await api("/habits/settings");
+    if (toggle) toggle.checked = s.notifications_enabled !== false;
+    if (langSel && s.reminder_lang) langSel.value = s.reminder_lang;
+  } catch (err) { console.error("[reminders] settings", err); }
+}
+
+async function reminderSettingsUpdate(patch) {
+  try {
+    await api("/habits/settings", { method: "POST", body: JSON.stringify(patch) });
+    await loadReminderSettings();
+  } catch (err) { showError(err); }
 }
 
 async function reminderFeedback(id, score) {
@@ -1178,6 +1213,7 @@ async function reminderDismiss(id) {
 
 function refreshRemindersView() {
   return Promise.all([
+    loadReminderSettings().catch((e) => console.error("[reminders]", e)),
     loadReminderSuggestions().catch((e) => console.error("[reminders]", e)),
     loadReminderProfile().catch((e) => console.error("[reminders]", e)),
   ]);
@@ -3569,6 +3605,10 @@ function wireEvents() {
 
   // ─── Reminders ────────────────────────────────────────────────────────
   $("#remRefreshBtn")?.addEventListener("click", () => refreshRemindersView());
+  $("#remGlobalToggle")?.addEventListener("change", (e) =>
+    reminderSettingsUpdate({ notifications_enabled: e.target.checked }));
+  $("#remLangSelect")?.addEventListener("change", (e) =>
+    reminderSettingsUpdate({ reminder_lang: e.target.value }));
   for (const tab of document.querySelectorAll("#view-reminders .rem-tabs button")) {
     tab.addEventListener("click", () => {
       for (const b of document.querySelectorAll("#view-reminders .rem-tabs button")) b.classList.remove("active");

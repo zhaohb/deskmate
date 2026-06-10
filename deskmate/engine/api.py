@@ -1976,6 +1976,63 @@ def create_app(
             raise HTTPException(status_code=404, detail="suggestion not found")
         return {"ok": True}
 
+    @app.post("/habits/suggestions/{suggestion_id}/snooze")
+    async def habits_suggestion_snooze(suggestion_id: int, request: Request) -> dict[str, Any]:
+        """Snooze the RULE behind a suggestion. ``minutes`` mutes it for that long
+        ("再等一会"); ``rest_of_day`` mutes it until local midnight ("今天别再提").
+        Also marks the suggestion handled so it leaves the active inbox."""
+        from datetime import datetime, timedelta  # noqa: PLC0415
+
+        body = await _safe_json(request)
+        store = _habit_store()
+        rows = store.list_suggestions(limit=500)
+        row = next((r for r in rows if int(r.get("id", -1)) == suggestion_id), None)
+        if row is None:
+            raise HTTPException(status_code=404, detail="suggestion not found")
+        rule_name = row.get("rule_name") or ""
+        now = datetime.now().astimezone()
+        if body.get("rest_of_day"):
+            until = (now + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+        else:
+            try:
+                minutes = int(body.get("minutes", 15))
+            except (TypeError, ValueError):
+                minutes = 15
+            minutes = max(1, min(minutes, 24 * 60))
+            until = now + timedelta(minutes=minutes)
+        store.snooze_rule(rule_name, until.replace(microsecond=0).isoformat())
+        store.set_suggestion_status(suggestion_id, "dismissed")
+        return {"ok": True, "rule": rule_name, "snoozed_until": until.isoformat()}
+
+    @app.get("/habits/settings")
+    def habits_settings() -> dict[str, Any]:
+        """Module-wide reminder settings the UI reads/flips (global on/off, lang)."""
+        store = _habit_store()
+        return {
+            "notifications_enabled": store.notifications_enabled(),
+            "reminder_lang": store.get_setting("reminder_lang", cfg.habits.reminder_lang),
+        }
+
+    @app.post("/habits/settings")
+    async def habits_settings_update(request: Request) -> dict[str, Any]:
+        """Update reminder settings. Accepts ``notifications_enabled`` (bool) — the
+        global "turn off reminders" switch — and/or ``reminder_lang`` ("zh"/"en")."""
+        body = await _safe_json(request)
+        store = _habit_store()
+        if "notifications_enabled" in body:
+            store.set_notifications_enabled(bool(body.get("notifications_enabled")))
+        lang = body.get("reminder_lang")
+        if lang in ("zh", "en"):
+            store.set_setting("reminder_lang", lang)
+            cfg.habits.reminder_lang = lang
+        return {
+            "ok": True,
+            "notifications_enabled": store.notifications_enabled(),
+            "reminder_lang": store.get_setting("reminder_lang", cfg.habits.reminder_lang),
+        }
+
     @app.get("/habits/ui")
     def habits_ui():  # noqa: ANN201
         return FileResponse(static_dir() / "habits.html", media_type="text/html")

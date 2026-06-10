@@ -98,11 +98,13 @@ class Notifier:
         daily_quota: int = 5,
         toast_enabled: bool = True,
         feedback_decay_strikes: int = 3,
+        toast_title: str = "DeskMate",
     ) -> None:
         self._store = store
         self._daily_quota = daily_quota
         self._toast_enabled = toast_enabled
         self._decay_strikes = feedback_decay_strikes
+        self._toast_title = toast_title
 
     def _quota_exceeded(self, now: datetime) -> bool:
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -130,22 +132,86 @@ class Notifier:
             anchors.append(dt)
         if not anchors:
             return False
-        cooldown = timedelta(minutes=int(rule.get("cooldown_min", 120)))
+        cooldown = timedelta(minutes=self._cooldown_minutes(rule, now))
         return (now - max(anchors)) < cooldown
+
+    def _cooldown_minutes(self, rule: dict[str, Any], now: datetime) -> float:
+        """Effective cooldown, lengthened when the user keeps ignoring this rule.
+
+        Compliance backoff: over a trailing window, if several nudges were sent
+        but none acted on, the user clearly isn't responding to this rule's
+        current pacing — so we space it out (×2, then ×3) instead of nagging on
+        the base schedule. As soon as they act on one, it relaxes back."""
+        base = float(rule.get("cooldown_min", 120))
+        name = rule.get("name", "")
+        try:
+            now_iso = now.replace(microsecond=0).isoformat()
+            window = max(base * 4, 240.0)  # look back a few cooldowns' worth
+            sent = self._store.sent_count_within(name, window, now_iso)
+            acted = self._store.acted_on_within(name, window, now_iso)
+        except Exception:  # noqa: BLE001 — backoff is best-effort
+            return base
+        ignored = sent - acted
+        if acted == 0 and ignored >= 4:
+            return base * 3
+        if acted == 0 and ignored >= 2:
+            return base * 2
+        return base
+
+    def _snoozed(self, rule: dict[str, Any], now: datetime) -> bool:
+        """True if the rule is muted by a 'snooze until' that hasn't passed yet."""
+        until = rule.get("snoozed_until")
+        if not until:
+            return False
+        try:
+            dt = datetime.fromisoformat(str(until).replace(" ", "T"))
+        except ValueError:
+            return False
+        if dt.tzinfo is None and now.tzinfo is not None:
+            dt = dt.replace(tzinfo=now.tzinfo)
+        return now < dt
 
     def _decayed(self, rule: dict[str, Any]) -> bool:
         """True if the rule has been marked unhelpful too many times in a row."""
         recent = self._store.recent_feedback(rule["name"], limit=self._decay_strikes)
         return len(recent) >= self._decay_strikes and all(v < 0 for v in recent)
 
-    def deliver(self, rule: dict[str, Any], message: str, context: dict[str, Any], now: datetime) -> dict[str, Any]:
-        """Run all gates, then deliver. Returns a result dict for logging/tests."""
+    def deliver(
+        self,
+        rule: dict[str, Any],
+        message: str,
+        context: dict[str, Any],
+        now: datetime,
+        *,
+        busy_reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Run all gates, then deliver. Returns a result dict for logging/tests.
+
+        ``busy_reason`` (e.g. ``"in_meeting"``/``"fullscreen"``) is supplied by
+        the watcher from presence detection; when set, the nudge is held (logged
+        as suppressed) so we never interrupt a call or a presentation."""
         name = rule["name"]
+
+        # Global master switch (UI "turn off reminders") — suppresses everything.
+        if not self._store.notifications_enabled():
+            return {"status": "suppressed", "reason": "globally_disabled", "rule": name}
 
         if self._decayed(rule):
             self._store.set_rule_enabled(name, False)
             logger.info("rule %s auto-disabled after repeated negative feedback", name)
             return {"status": "disabled", "rule": name}
+
+        # Per-rule snooze ("再等一会" / "今天别再提") — a temporary, auto-expiring mute.
+        if self._snoozed(rule, now):
+            return {"status": "suppressed", "reason": "snoozed", "rule": name}
+
+        # Don't interrupt a meeting / presentation / focus-assist session.
+        if busy_reason:
+            self._store.insert_suggestion(
+                rule_name=name, message=message, context={**context, "busy_reason": busy_reason},
+                channel="ui", status="suppressed",
+            )
+            return {"status": "suppressed", "reason": busy_reason, "rule": name}
 
         if in_quiet_hours(now, rule.get("quiet_hours", "22-8")):
             self._store.insert_suggestion(
@@ -165,7 +231,7 @@ class Notifier:
             return {"status": "suppressed", "reason": "daily_quota", "rule": name}
 
         channel = "ui"
-        if self._toast_enabled and _try_windows_toast("DeskMate", message):
+        if self._toast_enabled and _try_windows_toast(self._toast_title, message):
             channel = "toast"
 
         sid = self._store.insert_suggestion(

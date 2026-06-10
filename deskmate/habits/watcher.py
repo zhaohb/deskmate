@@ -43,6 +43,9 @@ class HabitWatcher:
             return
         self._store = HabitStore()
         try:
+            # Retire superseded rules BEFORE seeding so a stale break_reminder
+            # doesn't linger, then seed the current 3-tier default set.
+            self._store.delete_rules(rules_mod.RETIRED_RULE_NAMES)
             self._store.ensure_rules(rules_mod.DEFAULT_RULES)
         except Exception as exc:  # noqa: BLE001
             logger.warning("could not seed default habit rules: %s", exc)
@@ -114,12 +117,31 @@ class HabitWatcher:
 
         day_type, slot = rules_mod.current_slot_key(now)
         profiles = store.profiles_for_slot(day_type, slot)
+        # Store setting is authoritative (the UI writes it there so daemon + API
+        # agree without a restart); fall back to the config default.
+        lang = store.get_setting(
+            "reminder_lang", getattr(self._hcfg, "reminder_lang", "zh")
+        ) or "zh"
 
         notifier = Notifier(
             store,
             daily_quota=self._hcfg.daily_quota,
             toast_enabled=self._hcfg.toast_enabled,
+            toast_title="DeskMate 小助手" if lang == "zh" else "DeskMate",
         )
+
+        # Interruptibility: don't nudge during a meeting / presentation / DND.
+        # Fail-open — any probe error leaves busy_reason None (reminders fire).
+        busy_reason: str | None = None
+        if getattr(self._hcfg, "respect_presence", True):
+            try:
+                from . import presence as presence_mod  # noqa: PLC0415
+
+                in_meeting = store.has_open_meeting(now.replace(microsecond=0).isoformat())
+                busy_reason = presence_mod.busy_reason(in_meeting=in_meeting)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("presence check failed: %s", exc)
+                busy_reason = None
 
         # At most one suggestion per tick. The first rule that is actually
         # *delivered* wins — NOT merely the first rule that hits. A rule can hit
@@ -128,16 +150,22 @@ class HabitWatcher:
         # lower-priority rule that is ready to fire. So a per-rule cooldown skip
         # falls through to the next rule. Global gates (quiet hours / daily
         # quota) suppress every rule alike, so we stop as soon as one hits them.
+        # Global suppressors stop ALL rules this tick (no point trying the rest):
+        # the master switch, presence (meeting/fullscreen/DND), quiet hours, and
+        # the daily quota gate every rule alike. Per-rule skips (cooldown, snooze,
+        # auto-disabled) fall through so a ready lower-priority rule can fire.
+        global_reasons = ("globally_disabled", "in_meeting", "fullscreen",
+                          "focus_assist", "quiet_hours", "daily_quota")
         skipped: list[dict[str, Any]] = []
         for rule in store.enabled_rules():
-            hit, message, ctx = rules_mod.evaluate_rule(rule, state, profiles, now)
+            hit, message, ctx = rules_mod.evaluate_rule(rule, state, profiles, now, lang)
             if not hit:
                 continue
-            result = notifier.deliver(rule, message, ctx, now)
+            result = notifier.deliver(rule, message, ctx, now, busy_reason=busy_reason)
             status, reason = result.get("status"), result.get("reason")
             if status == "sent":
                 return {"status": "evaluated", "fired": rule["name"], "result": result}
-            if status == "suppressed" and reason in ("quiet_hours", "daily_quota"):
+            if status == "suppressed" and reason in global_reasons:
                 return {"status": "evaluated", "fired": None, "result": result}
             # cooldown or auto-disabled → this rule isn't deliverable now; let a
             # ready lower-priority rule have its turn.
