@@ -43,6 +43,63 @@ class MeetingProfile:
     call_signals: tuple[str, ...]
 
 
+# Words that, when present, indicate the user is NOT yet/anymore in a live call
+# even though a meeting app is focused: a waiting room, a join prompt, a call
+# that already ended. These VETO detection so a parked lobby / "join" screen
+# (which often still shows a "Leave" button) doesn't open a meeting.
+NEGATIVE_SIGNALS: tuple[str, ...] = (
+    "waiting for the host",
+    "host will let you in",
+    "please wait",
+    "waiting room",
+    "you're in the lobby",
+    "in the lobby",
+    "join now",
+    "ready to join",
+    "meeting ended",
+    "call ended",
+    "meeting has ended",
+    "removed from the meeting",
+    "正在等待",
+    "等待主持人",
+    "等候室",
+    "加入会议",
+    "立即加入",
+    "会议已结束",
+    "通话已结束",
+)
+
+
+def _signal_in_title(signal: str, title_l: str) -> bool:
+    """A call control surfaced in the WINDOW TITLE — strong, low-noise evidence."""
+    return signal in title_l
+
+
+def _signal_as_control(signal: str, text_l: str) -> bool:
+    """A call control that looks like a CLICKABLE CONTROL in captured text, not a
+    word buried in a sentence.
+
+    The old code did a raw substring match over the entire OCR + a11y dump, so a
+    chat message like "going to leave early" or a sidebar label "voice connected"
+    falsely looked like an in-call control. Here we only accept the signal when
+    it appears as its own short, line-isolated token — the shape a11y/OCR gives a
+    button — bounded by line breaks or a couple of separator chars. This is the
+    practical stand-in for "matched a control element" given we only receive a
+    flat text blob (see UiEventInsert.text_content)."""
+    for raw_line in text_l.splitlines():
+        line = raw_line.strip(" \t　|·•-—:：")
+        if not line:
+            continue
+        # A button's accessible name is the control text itself (optionally with
+        # a trailing short qualifier, e.g. "leave meeting"). Reject lines that are
+        # really sentences that merely contain the word.
+        if line == signal:
+            return True
+        if line.startswith(signal) and len(line) <= len(signal) + 12:
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class MeetingObservation:
     in_meeting: bool
@@ -272,12 +329,28 @@ def detect_meeting(
     hang-up button), we treat it as a lobby / idle tab and do NOT open a
     meeting — this cuts the most common false positive (a parked Meet/Zoom tab).
     When None (unknown), behavior is unchanged and backward-compatible.
+
+    Call signals are matched conservatively: in the window TITLE, or as a
+    line-isolated CONTROL in captured text — never as a bare substring of the
+    full OCR/a11y dump (which made chat text and sidebar labels false-positive).
+    A NEGATIVE_SIGNAL (waiting room / join prompt / ended call) vetoes detection.
     """
     app_l = (app_name or "").lower()
     title_l = (window_title or "").lower()
     url_l = (browser_url or "").lower()
     text_l = (text or "").lower()
-    combined = "\n".join((title_l, url_l, text_l))
+
+    # Veto: a waiting-room / join / ended-call screen is not a live meeting, even
+    # if a meeting app is focused and a "Leave" button is on screen.
+    if any(neg in title_l or neg in text_l for neg in NEGATIVE_SIGNALS):
+        return MeetingObservation(
+            in_meeting=False,
+            app_name=app_name or "",
+            window_title=window_title or "",
+            browser_url=browser_url,
+            profile_name=None,
+            matched_signals=(),
+        )
 
     for profile in PROFILES:
         app_match = bool(profile.app_tokens) and any(token in app_l for token in profile.app_tokens)
@@ -286,7 +359,13 @@ def detect_meeting(
         if not (app_match or url_match or title_match):
             continue
 
-        matched = tuple(signal for signal in profile.call_signals if signal.lower() in combined)
+        # A control in the title is strongest; a line-isolated control in the
+        # captured text is next. Bare substrings of the OCR dump are NOT accepted.
+        matched = tuple(
+            signal for signal in profile.call_signals
+            if _signal_in_title(signal.lower(), title_l)
+            or _signal_as_control(signal.lower(), text_l)
+        )
         # An explicit active-call control (hang up / leave) is the strongest
         # evidence. A meeting-specific URL is next, but a parked lobby tab also
         # carries that URL — so when we KNOW audio is silent, require a call

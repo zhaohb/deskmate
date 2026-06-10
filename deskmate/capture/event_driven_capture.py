@@ -78,10 +78,24 @@ def run_event_driven_capture_loop(
     linker: FrameLinkerActor,
     stop: threading.Event,
     meeting_observe: Any | None = None,
+    meeting_expire: Any | None = None,
+    meeting_expire_interval_s: float = 30.0,
 ) -> None:
-    """Blocking loop — run on daemon thread."""
+    """Blocking loop — run on daemon thread.
+
+    ``meeting_expire`` is an optional no-arg callback invoked on a slow timer
+    (independent of capture). It drives the meeting state machine's end-of-call
+    check so a meeting still closes when the user walks away the instant a call
+    ends — i.e. when no further frames or transcripts arrive to passively trip
+    ``expire_if_idle``. Without it, an event-driven session could leave a meeting
+    open indefinitely after an abrupt end."""
     state = EventDrivenCapture(cfg)
     poll_interval_s = 0.25
+    # Slow tick for the meeting end-check (default 30s — coarser than
+    # poll_interval_s since a 120s end-grace needs no sub-second precision).
+    # last == -inf so the FIRST iteration fires the tick (don't wait one interval
+    # to start checking).
+    last_meeting_expire = float("-inf")
 
     # Startup capture seeds the timeline immediately.
     if state.can_capture() and capture_allowed("screen"):
@@ -99,6 +113,19 @@ def run_event_driven_capture_loop(
             _observe_frames(db, meeting_observe, frame_ids[0])
 
     while not stop.is_set():
+        # End-of-meeting tick: runs every loop iteration (incl. while the user is
+        # idle, where the body below `continue`s before any observe) so a meeting
+        # closes on its end-grace even with no new frames/transcripts. Throttled
+        # by a monotonic timer; best-effort — a failing callback never breaks
+        # capture.
+        now_mono = time.monotonic()
+        if meeting_expire and now_mono - last_meeting_expire >= meeting_expire_interval_s:
+            last_meeting_expire = now_mono
+            try:
+                meeting_expire()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("meeting expire tick failed: %s", exc)
+
         drained: list[CaptureTriggerMsg] = []
         try:
             first = trigger_rx.get(timeout=poll_interval_s)

@@ -468,6 +468,27 @@ class DatabaseManager:
                 "UPDATE audio_chunks SET processing_status = ? WHERE id = ?", (status, chunk_id)
             )
 
+    def has_recent_speech(self, *, within_seconds: float = 90.0) -> bool:
+        """True if any speech was transcribed in the last ``within_seconds``.
+
+        Used as the ``audio_active`` corroboration signal for meeting detection:
+        a meeting URL with NO recent speech is a parked/lobby tab, not a live
+        call. Reads ``audio_transcriptions.timestamp`` (local ISO). A non-empty
+        transcription is required so VAD-only silence rows don't count."""
+        from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+
+        since = (
+            datetime.now(timezone.utc).astimezone()
+            - timedelta(seconds=within_seconds)
+        ).replace(microsecond=0).isoformat()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM audio_transcriptions "
+                "WHERE timestamp >= ? AND text_length > 0 LIMIT 1",
+                (since,),
+            ).fetchone()
+        return row is not None
+
     def insert_transcript(
         self,
         *,

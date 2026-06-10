@@ -188,12 +188,33 @@ class Daemon:
         self._translate_thread = t
         t.start()
 
+    def _recent_speech(self) -> bool | None:
+        """audio_active corroboration for meeting detection.
+
+        Counts speech transcribed recently from ANY device — crucially including
+        the system-audio loopback, i.e. OTHER people's voices. So a call where the
+        user only listens (mic muted) still reads as audio-active as long as
+        someone is talking. Returns ``None`` (unknown) — never ``False`` — when
+        audio capture is off, so disabling audio doesn't suppress legitimate
+        URL-detected meetings (it only loses the lobby-tab guard). Note this is
+        only a *corroborator*: an explicit call control (a Leave button in the
+        title) opens a meeting regardless, so a fully silent moment with the
+        in-call UI visible is still detected. Fail-open: any error → None."""
+        if not self.audio:
+            return None
+        try:
+            return self.db.has_recent_speech(within_seconds=120.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("recent-speech probe failed: %s", exc)
+            return None
+
     def _meeting_observe_insert(self, insert: UiEventInsert) -> None:
         self.meeting_detector.observe(
             app_name=insert.app_name or "",
             window_title=insert.window_title or "",
             browser_url=insert.browser_url,
             text=insert.text_content or "",
+            audio_active=self._recent_speech(),
         )
 
     def start(self) -> None:
@@ -239,6 +260,7 @@ class Daemon:
                         linker=self._linker,
                         stop=self._stop,
                         meeting_observe=self._meeting_observe_frame,
+                        meeting_expire=self.meeting_detector.expire_if_idle,
                     ),
                     name="event-driven-capture",
                     daemon=True,
@@ -305,6 +327,7 @@ class Daemon:
             window_title=window_title,
             browser_url=browser_url,
             text=text,
+            audio_active=self._recent_speech(),
         )
 
     def _on_bus_event(self, event: "bus.Event") -> None:
