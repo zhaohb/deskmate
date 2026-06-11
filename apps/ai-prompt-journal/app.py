@@ -8,7 +8,7 @@ today's journal file at::
     %USERPROFILE%\\.deskmate\\apps\\ai-prompt-journal\\journal\\YYYY-MM-DD.md
 
 Deduplication keys on the first 80 characters of each prompt's body, so the
-same prompt captured by repeated hourly runs is not re-appended.
+same prompt captured by repeated manual runs is not re-appended.
 """
 
 from __future__ import annotations

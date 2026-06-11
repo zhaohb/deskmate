@@ -93,7 +93,7 @@ Perplexity, Grok, DeepSeek, Copilot, Cursor, local models, etc.) over the
 supplied window (default 1 hour) and appends only the genuinely new prompts to
 a daily markdown journal at
 `%USERPROFILE%\.deskmate\apps\ai-prompt-journal\journal\YYYY-MM-DD.md`.
-Designed to be scheduled hourly.
+Run manually from the My Apps UI or CLI when you want to capture prompts.
 
 ```cmd
 python apps\ai-prompt-journal\app.py --hours 1 --verbose
@@ -158,7 +158,7 @@ python apps\email-compose\app.py --provider outlook --to a@b.com --intent "ÊàëÂê
 | Write a new business email | `email-compose` | LLM draft + 2 alternatives, then `--send` |
 | Reply to a specific message | `email-compose --reply-to <id>` | Grounds the draft in the source message |
 | A meeting just ended | `meeting-summary` (auto on `meeting_ended`) | Patches summary back to the meeting record |
-| Capture what I asked AI this hour | `ai-prompt-journal` (auto every 1h) | Appends new prompts to today's journal |
+| Capture what I asked AI in a time window | `ai-prompt-journal` (manual) | Appends new prompts to today's journal |
 | End-of-day reflection | `day-recap` | Accomplishments + key moments + unfinished work |
 | Audit my email time today | `email-digest` | Tool minutes + senders + drafts + todos + patterns |
 | Weekly time breakdown | `time-breakdown` | App / category / project + productivity score |

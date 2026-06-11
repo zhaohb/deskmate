@@ -1,5 +1,5 @@
 ---
-schedule: every 1h
+schedule: manual
 enabled: true
 template: true
 title: AI Prompt Journal
