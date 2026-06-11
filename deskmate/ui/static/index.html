@@ -539,6 +539,18 @@
                 </label>
               </div>
               <p class="todo-range-summary" id="todoRangeSummary">—</p>
+              <form id="todoAddForm" class="todo-add-row" autocomplete="off">
+                <input type="text" id="todoAddInput" class="todo-add-input"
+                       data-i18n-attr="placeholder:todos.add.placeholder"
+                       placeholder="Add a todo and press Enter…" />
+                <select id="todoAddPriority" class="todo-add-pri" aria-label="Priority">
+                  <option value="" data-i18n="todos.add.noPriority">No priority</option>
+                  <option value="H" data-i18n="todos.add.high">High</option>
+                  <option value="M" data-i18n="todos.add.medium">Medium</option>
+                  <option value="L" data-i18n="todos.add.low">Low</option>
+                </select>
+                <button type="submit" id="todoAddBtn" data-i18n="todos.add.btn">Add</button>
+              </form>
               <div id="todosList" class="todos-list list empty">No todos yet</div>
             </section>
           </div>

@@ -2314,6 +2314,30 @@ a:hover {
   color: var(--muted, #8a94a6);
 }
 
+.todo-add-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0 14px;
+}
+.todo-add-row .todo-add-input {
+  flex: 1 1 auto;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 11px;
+  font-size: 13px;
+}
+.todo-add-row .todo-add-pri {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 9px;
+  font-size: 13px;
+}
+
 .todos-list {
   display: flex;
   flex-direction: column;

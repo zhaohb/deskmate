@@ -47,7 +47,15 @@ PIPE_MD = Path(__file__).with_name("pipe.md")
 # Capturing an optional x/✓ and ignoring surrounding spaces avoids silently
 # dropping (and therefore never storing) otherwise valid todo lines.
 _CHECKBOX_RE = re.compile(r"^\s*[-*]\s*\[\s*([xX✓✔])?\s*\]\s*(.+?)\s*$")
-_SPLIT_RE = re.compile(r"\s+[—–]\s+|\s{1,}-\s{1,}")
+# Recognised valid sources (the leading token of `source: <src>:<detail>`).
+_VALID_SOURCES = ("email", "meeting", "screen", "manual")
+# Field labels we understand inside a `| key: value` segment. Anything else is
+# ignored rather than mis-bucketed.
+_KNOWN_KEYS = ("from", "due", "source", "priority")
+# Legacy em-dash split, kept ONLY as a fallback for output that predates the
+# pipe-delimited format. The pipe path is preferred because it never slices a
+# task that itself contains an em-dash.
+_LEGACY_SPLIT_RE = re.compile(r"\s+[—–]\s+|\s{2,}-\s{2,}")
 _PRIORITY_MAP = {
     "high": "H", "medium": "M", "low": "L",
     "h": "H", "m": "M", "l": "L",
@@ -70,8 +78,40 @@ def _field(segments: list[str], key: str) -> str:
     return ""
 
 
+def _split_segments(rest: str) -> list[str]:
+    """Split a checkbox line into [task, *meta] segments.
+
+    Prefer the pipe `|` delimiter (the current format) — it is unambiguous and
+    never cuts a task that contains an em-dash. Fall back to the legacy em-dash
+    split only when there is no pipe, so old generated reports still parse."""
+    if "|" in rest:
+        return [s.strip() for s in rest.split("|")]
+    return _LEGACY_SPLIT_RE.split(rest)
+
+
+def _classify_source(source_detail: str) -> str:
+    """Map a `source:` value to one of _VALID_SOURCES.
+
+    Accepts both the labelled form (`email:gmail`, `screen:Code.exe`) and looser
+    phrasings; falls back to a substring sniff before giving up. Robust to the
+    model omitting the canonical `<src>:` prefix."""
+    sd = source_detail.lower()
+    head = sd.split(":", 1)[0].strip()
+    if head in _VALID_SOURCES:
+        return head
+    for src in _VALID_SOURCES:
+        if src in sd or (src == "meeting" and "meetings" in sd):
+            return src
+    return ""
+
+
 def parse_todos(markdown: str) -> list[dict[str, Any]]:
-    """Parse the generated checklist into structured todo dicts."""
+    """Parse the generated checklist into structured todo dicts.
+
+    Each line is `- [ ] <task> | from: … | due: … | source: … | priority: …`.
+    Fields are key-anchored, so reordering or a missing field never shifts the
+    others, and an em-dash inside the task is preserved (the task is everything
+    before the first labelled `|` segment)."""
     todos: list[dict[str, Any]] = []
     for line in markdown.splitlines():
         m = _CHECKBOX_RE.match(line)
@@ -81,24 +121,21 @@ def parse_todos(markdown: str) -> list[dict[str, Any]]:
         rest = _strip_md(m.group(2))
         if not rest:
             continue
-        segments = _SPLIT_RE.split(rest)
+        segments = _split_segments(rest)
         task = _strip_md(segments[0]) if segments else rest
         if not task:
             continue
         meta = segments[1:]
-        source_ref = _field(meta, "from ")
-        due = _field(meta, "due ")
+        source_ref = _field(meta, "from")
+        due = _field(meta, "due")
         source_detail = _field(meta, "source")
         priority_raw = _field(meta, "priority").lower()
 
         priority = _PRIORITY_MAP.get(priority_raw, "")
-        source = ""
-        if source_detail:
-            source = source_detail.split(":", 1)[0].strip().lower()
-        if source not in ("email", "meeting", "manual"):
-            source = "meeting" if "meeting" in source_detail.lower() else (
-                "email" if "email" in source_detail.lower() else ""
-            )
+        source = _classify_source(source_detail)
+        # Normalize an empty/absent due to "" (the UI hides "no date").
+        if due.lower() in ("no date", "none", "n/a"):
+            due = ""
 
         dedup_seed = f"{source_detail}|{source_ref}|{task}".lower()
         dedup_key = "todo-list:" + hashlib.md5(dedup_seed.encode("utf-8")).hexdigest()

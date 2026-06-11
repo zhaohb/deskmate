@@ -3517,6 +3517,27 @@ async function deleteTodo(id) {
   await loadTodos();
 }
 
+async function addTodoFromInput() {
+  const input = $("#todoAddInput");
+  const priSel = $("#todoAddPriority");
+  const text = (input?.value || "").trim();
+  if (!text) return;
+  // Manual todos are tagged source: manual so they're never mistaken for
+  // extracted ones; no dedup_key (each manual add is intentional).
+  await api("/todos", {
+    method: "POST",
+    body: JSON.stringify({
+      text,
+      source: "manual",
+      priority: priSel?.value || "",
+      origin_app: "ui",
+    }),
+  });
+  if (input) input.value = "";
+  if (priSel) priSel.value = "";
+  await loadTodos();
+}
+
 // ── Meetings ─────────────────────────────────────────────────────────────────
 
 function formatMeetingTime(start, end) {
@@ -3706,6 +3727,10 @@ function wireEvents() {
   $("#todoFilter")?.addEventListener("change", (e) => {
     todosUi.filter = e.target.value;
     loadTodos().catch(showError);
+  });
+  $("#todoAddForm")?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    addTodoFromInput().catch(showError);
   });
   $("#meetingsRefreshBtn")?.addEventListener("click", () => loadMeetings().catch(showError));
   $("#emailRefreshButton")?.addEventListener("click", () => refreshEmail().catch(showError));

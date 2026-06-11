@@ -176,7 +176,8 @@ def test_parse_action_items_structured() -> None:
     )
     items = agent._parse_action_items(body)
     assert len(items) == 3
-    assert items[0] == {"task": "Ship the OCR fix", "owner": "Alice", "due": "2026-06-10"}
+    assert items[0]["task"] == "Ship the OCR fix"
+    assert items[0]["owner"] == "Alice" and items[0]["due"] == "2026-06-10"
     assert items[1]["due"] == ""  # 'none' normalized to empty
     assert items[2]["task"] == "Review PR" and items[2]["owner"] == "Bob"
 

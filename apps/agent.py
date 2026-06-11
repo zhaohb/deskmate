@@ -1555,6 +1555,114 @@ def _meeting_in_range(meeting: dict[str, Any], start_iso: str, end_iso: str) -> 
     return True
 
 
+# ── Screen evidence for todos (OCR / chat / notes) — heavily guarded ─────────
+#
+# OCR is noisy: a page title, an article, code you're reading, or a menu label
+# can all look task-ish to a model. To avoid polluting the todolist we do NOT
+# hand the raw screen dump to the LLM. Instead we pre-filter to lines that match
+# an EXPLICIT task shape, and hard-drop anything matching a noise pattern. The
+# LLM then makes the final call on this already-narrow candidate set, with a
+# prompt rule telling it to drop anything that isn't a personal task.
+
+# A candidate task line must match one of these (case-insensitive):
+#   • an explicit TODO/FIXME/action marker
+#   • a checklist line ("- [ ] ...", "□ ...", "todo: ...")
+#   • a directed ask ("@me please ...", "can you ...", "请你 ...", "麻烦 ...")
+_SCREEN_TASK_PATTERNS = (
+    re.compile(r"\b(todo|fixme|to-do|action item|action required)\b[:：]", re.I),
+    re.compile(r"^\s*[-*]?\s*\[\s*[ xX]?\s*\]\s+\S"),          # checkbox line
+    re.compile(r"^\s*(todo|fixme)\b", re.I),                    # leading TODO
+    re.compile(r"\b(can|could|would)\s+you\s+(please\s+)?\w+", re.I),
+    re.compile(r"\bplease\s+(review|send|check|confirm|update|fix|finish|reply|sign)\b", re.I),
+    re.compile(r"(请|麻烦|帮我|需要你|记得|别忘了|待办|跟进)\s*\S"),
+    re.compile(r"\bdue\s+(today|tomorrow|by|on)\b", re.I),
+    re.compile(r"(截止|deadline|今天之前|本周内|明天前)", re.I),
+)
+# Lines matching any of these are NEVER candidates — typical OCR noise that
+# super­ficially resembles a task (code, search boxes, nav, marketing, etc.).
+_SCREEN_NOISE_PATTERNS = (
+    re.compile(r"^\s*(def|class|function|import|from|return|const|let|var|if|for|while|#include)\b"),
+    re.compile(r"[{}<>;]\s*$"),                                  # code-ish line ends
+    re.compile(r"\b(stack overflow|github|documentation|search results?|how to)\b", re.I),
+    re.compile(r"^\s*(home|file|edit|view|settings?|menu|sign in|log ?in|subscribe|cookie)\b", re.I),
+    re.compile(r"https?://\S+\s*$"),                             # a bare URL
+    re.compile(r"^\s*\d+\s*(comments?|likes?|views?|赞|评论|播放)\b", re.I),
+)
+# Apps whose content is almost always personal tasks/chat. Used to LABEL the
+# source app cleanly; not a filter (other apps can still surface a TODO: line).
+_SCREEN_CHAT_APPS = (
+    "wechat", "weixin", "slack", "teams", "telegram", "discord", "qq",
+    "feishu", "lark", "dingtalk", "钉钉", "飞书", "微信",
+)
+
+
+def _looks_like_screen_task(text: str) -> bool:
+    """True only if a single screen line has the explicit shape of a user task
+    AND does not match a known noise pattern. Conservative on purpose."""
+    line = text.strip()
+    if len(line) < 6 or len(line) > 240:
+        return False
+    if any(p.search(line) for p in _SCREEN_NOISE_PATTERNS):
+        return False
+    return any(p.search(line) for p in _SCREEN_TASK_PATTERNS)
+
+
+def _do_screen_todos_prefetch(
+    start_iso: str, end_iso: str, verbose: bool = False, *, max_candidates: int = 25,
+) -> tuple[str, list[str]]:
+    """Surface EXPLICIT on-screen tasks (OCR / chat / notes) as todo candidates.
+
+    Returns (data_text, app_names). app_names lists the apps that contributed at
+    least one candidate line — empty when nothing passed the strict filter, in
+    which case the LLM is told to emit no screen todos. We deliberately only
+    forward lines that already look like a task; the model still does the final
+    judgement, so this is a two-stage guard against OCR false positives.
+    """
+    try:
+        items = _do_content_search(start_iso, end_iso, limit=120, verbose=verbose)
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            echo_stderr(f"  [todo-list] screen search error: {exc}")
+        return "(no screen data — /search unavailable)", []
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    apps: list[str] = []
+    for item in items:
+        c = item.get("content") or {}
+        # OCR text or UI typed/clipboard text — both can carry an explicit task.
+        raw = normalize_capture_text(c.get("text") or c.get("text_content") or "")
+        if not raw:
+            continue
+        app = (c.get("app_name") or "").strip()
+        ts = format_ts_local(c.get("timestamp") or "")
+        for ln in raw.splitlines():
+            if not _looks_like_screen_task(ln):
+                continue
+            key = ln.strip().lower()[:80]
+            if key in seen:
+                continue
+            seen.add(key)
+            app_label = app or "screen"
+            if app_label not in apps:
+                apps.append(app_label)
+            candidates.append(f"- [{ts}] {app_label}: {ln.strip()[:200]}")
+            if len(candidates) >= max_candidates:
+                break
+        if len(candidates) >= max_candidates:
+            break
+
+    if verbose:
+        echo_stderr(f"  [todo-list] screen task candidates={len(candidates)} from {len(apps)} app(s)")
+    if not candidates:
+        return "(no explicit on-screen tasks detected in this time range)", []
+    header = (
+        "Candidate task lines extracted from screen content (each already matched "
+        "a task pattern; confirm each is a real personal task before including):"
+    )
+    return header + "\n" + "\n".join(candidates), apps
+
+
 def _do_meeting_todos_prefetch(
     start_iso: str, end_iso: str, verbose: bool = False,
 ) -> tuple[str, list[str]]:
@@ -1670,9 +1778,12 @@ def _do_meeting_summary(
         "3. Then a blank line, then the summary body starting with '## Summary'.\n"
         "4. Cover: key topics and decisions (use bullet lists).\n"
         "5. Then a '## Action Items' section. Put EACH action item on its own line in EXACTLY "
-        "this format (machine-parsed — keep the separators):\n"
-        "   - [ ] <task> | owner: <name or unknown> | due: <YYYY-MM-DD or none>\n"
-        "   Only list action items explicitly stated or clearly implied in the transcript. "
+        "this format (machine-parsed — keep the `|` separators and the `key:` labels):\n"
+        "   - [ ] <task> | owner: <name or unknown> | due: <YYYY-MM-DD or none> | priority: <high|medium|low>\n"
+        "   Set owner to the speaker who committed to the task (from `speaker_name` in the "
+        "transcript) when clear, else 'unknown'. Infer priority from the transcript's urgency "
+        "cues ('urgent/ASAP/今天' → high; a future date or 'this week' → medium; else low). "
+        "Only list action items explicitly stated or clearly implied in the transcript. "
         "If there are none, write the single line 'NONE' under the heading.\n"
         "6. Be concise. If something is unclear in the transcript, omit it.\n\n"
         f"{skill_text}\n"
@@ -1741,16 +1852,32 @@ def _do_meeting_summary(
     return f"{summary_section}\n\n{status}{todo_note}"
 
 
-_ACTION_ITEM_RE = re.compile(
-    r"^\s*[-*]\s*\[[ xX]?\]\s*(?P<task>.+?)"
-    r"(?:\s*\|\s*owner:\s*(?P<owner>[^|]*?))?"
-    r"(?:\s*\|\s*due:\s*(?P<due>[^|]*?))?\s*$"
-)
+# Order-independent, key-anchored field extraction. The task is everything up to
+# the first ` | key:` segment; owner/due/priority are matched wherever they
+# appear. This mirrors the todo-list app's pipe-delimited contract so the two
+# todo-producing paths share one format (and one mental model).
+_ACTION_TASK_RE = re.compile(r"^\s*[-*]\s*\[[ xX✓✔]?\]\s*(?P<task>.+?)\s*(?:\||$)")
+
+
+def _action_field(line: str, key: str) -> str:
+    """Pull `| key: value` from an action-item line, regardless of field order."""
+    m = re.search(rf"\|\s*{key}\s*:\s*(?P<v>[^|]*)", line, re.I)
+    return (m.group("v").strip() if m else "")
+
+
+# Priority words → canonical H/M/L (shared intent with todo-list's _PRIORITY_MAP).
+_ACTION_PRIORITY_MAP = {
+    "high": "H", "medium": "M", "low": "L", "h": "H", "m": "M", "l": "L",
+    "urgent": "H", "critical": "H", "normal": "M",
+    "紧急": "H", "高": "H", "中": "M", "低": "L",
+}
 
 
 def _parse_action_items(summary_body: str) -> list[dict[str, str]]:
-    """Extract `- [ ] task | owner: X | due: Y` lines from the Action Items
-    section into structured dicts. Returns [] when the section is NONE/empty."""
+    """Extract `- [ ] task | owner: X | due: Y | priority: Z` lines from the
+    Action Items section into structured dicts. Fields are key-anchored so order
+    doesn't matter and a missing field never shifts the others. Returns [] when
+    the section is NONE/empty."""
     items: list[dict[str, str]] = []
     in_section = False
     for line in summary_body.splitlines():
@@ -1762,17 +1889,18 @@ def _parse_action_items(summary_body: str) -> list[dict[str, str]]:
             break  # next section
         if not in_section or not stripped or stripped.upper() == "NONE":
             continue
-        m = _ACTION_ITEM_RE.match(line)
+        m = _ACTION_TASK_RE.match(line)
         if not m:
             continue
         task = (m.group("task") or "").strip()
         if not task:
             continue
-        owner = (m.group("owner") or "").strip()
-        due = (m.group("due") or "").strip()
+        owner = _action_field(line, "owner")
+        due = _action_field(line, "due")
         if due.lower() in ("none", "n/a", ""):
             due = ""
-        items.append({"task": task, "owner": owner, "due": due})
+        priority = _ACTION_PRIORITY_MAP.get(_action_field(line, "priority").lower(), "")
+        items.append({"task": task, "owner": owner, "due": due, "priority": priority})
     return items
 
 
@@ -1792,14 +1920,20 @@ def _write_meeting_todos(
     payload = []
     for it in items:
         task = it["task"]
-        owner = it.get("owner") or ""
-        text = f"{task} (owner: {owner})" if owner and owner.lower() != "unknown" else task
+        owner = (it.get("owner") or "").strip()
+        has_owner = bool(owner) and owner.lower() != "unknown"
+        # Owner (the responsible person) goes in source_ref — same slot the
+        # todo-list path uses for an email sender — so both paths store the
+        # "who" consistently instead of one jamming it into the task text. Fall
+        # back to the meeting name when no owner was attributed.
+        source_ref = owner if has_owner else (meeting_name or f"meeting #{meeting_id}")
         payload.append({
-            "text": text,
+            "text": task,
             "source": "meeting",
-            "source_ref": meeting_name or f"meeting #{meeting_id}",
+            "source_ref": source_ref,
             "source_detail": f"meeting:{meeting_name}" if meeting_name else "meeting",
             "meeting_id": meeting_id,
+            "priority": it.get("priority") or "",
             "due": it.get("due") or "",
             "origin_app": "meeting-summary",
             # Stable per-meeting+task key so repeated summaries upsert, not dup.
@@ -2032,6 +2166,7 @@ def run_agent(
             start_iso, end_iso, verbose=verbose, limit_per_tool=3,
         )
         meeting_text, verified_meetings = _do_meeting_todos_prefetch(start_iso, end_iso, verbose=verbose)
+        screen_text, verified_screen = _do_screen_todos_prefetch(start_iso, end_iso, verbose=verbose)
         if multi_day_todos:
             days = calendar_days_in_range(start_iso, end_iso)
             range_note = (
@@ -2041,12 +2176,14 @@ def run_agent(
             data_text = (
                 f"{range_note}\n"
                 f"## Email evidence (by day)\n\n{email_text}\n\n"
-                f"## Meeting evidence (whole range)\n\n{meeting_text}"
+                f"## Meeting evidence (whole range)\n\n{meeting_text}\n\n"
+                f"## Screen evidence (explicit on-screen tasks)\n\n{screen_text}"
             )
         else:
             data_text = (
                 f"## Email evidence\n\n{email_text}\n\n"
-                f"## Meeting evidence\n\n{meeting_text}"
+                f"## Meeting evidence\n\n{meeting_text}\n\n"
+                f"## Screen evidence (explicit on-screen tasks)\n\n{screen_text}"
             )
 
         email_rule = (
@@ -2065,34 +2202,50 @@ def run_agent(
                 f"MEETING todos: these meetings have transcripts you may extract action items "
                 f"from: {', '.join(verified_meetings)}. Tag each as `source: meeting:<name>`. "
                 f"Only use what a transcript actually says — never invent spoken dialogue, "
-                f"owners, or commitments. Meetings without a transcript yield no todos."
+                f"owners, or commitments. Meetings without a transcript yield no todos. "
+                f"When the transcript shows who made a commitment, put that speaker as the owner."
             )
             if verified_meetings
             else "MEETING todos: no meeting transcripts were available — do not list any meeting todos."
         )
-        empty = not verified_email and not verified_meetings
+        screen_rule = (
+            (
+                f"SCREEN todos: the screen-evidence block contains lines flagged as candidate "
+                f"tasks from these apps: {', '.join(verified_screen)}. Extract a SCREEN todo ONLY "
+                f"when the line is an explicit task the USER owns — a `TODO:`/`FIXME:` note, a "
+                f"chat message asking the user to do something, or a checklist item. Tag each "
+                f"`source: screen:<app>`. Do NOT convert article text, page titles, code being "
+                f"read, menu/UI labels, or search results into todos. When in doubt, DROP it."
+            )
+            if verified_screen
+            else "SCREEN todos: no explicit on-screen tasks were found — do not list any screen todos."
+        )
+        empty = not verified_email and not verified_meetings and not verified_screen
         if empty:
             extra = (
-                "NO email tools and NO meeting transcripts were found. State clearly that no "
-                "actionable todos could be extracted in the given time range, then give the Tip. "
-                "Do NOT list any todos or invent tasks."
+                "NO email tools, NO meeting transcripts and NO actionable screen tasks were found. "
+                "State clearly that no actionable todos could be extracted in the given time range, "
+                "then give the Tip. Do NOT list any todos or invent tasks."
             )
         elif multi_day_todos:
             day_headers = ", ".join(d.isoformat() for d, _, _ in calendar_days_in_range(start_iso, end_iso))
             extra = (
-                f"{email_rule} {meeting_rule} "
+                f"{email_rule} {meeting_rule} {screen_rule} "
                 f"MULTI-DAY RANGE: Start with `## Range summary` (1–2 sentences naming each day: "
                 f"{day_headers}). Then one `## YYYY-MM-DD` section per day that has todos. "
-                f"Under each day use `### Todolist` with checkbox bullets (same line format as pipe.md). "
+                f"Under each day use `### Todolist` with checkbox bullets (same `| key: value` line "
+                f"format as pipe.md — fields separated by `|`, never an em-dash). "
                 f"Assign each todo to the day of its source email date or meeting start time from the data. "
                 f"After all day sections, add `## By Source` and `## Suggested Next Action` for the "
                 f"whole range (not repeated per day). "
-                f"If a task has no explicit deadline, write `due no date`. Deduplicate across sources."
+                f"If a task has no explicit deadline, write `due: no date`. Deduplicate across sources."
             )
         else:
             extra = (
-                f"{email_rule} {meeting_rule} "
-                f"If a task has no explicit deadline in the data, write `due no date`. "
+                f"{email_rule} {meeting_rule} {screen_rule} "
+                f"Every bullet MUST use the `- [ ] <task> | from: … | due: … | source: … | priority: …` "
+                f"format with `|` separators (never an em-dash between fields). "
+                f"If a task has no explicit deadline in the data, write `due: no date`. "
                 f"Deduplicate across sources and tag every bullet's `source:` field correctly."
             )
         return _single_shot_report(
