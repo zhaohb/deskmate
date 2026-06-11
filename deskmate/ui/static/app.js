@@ -242,12 +242,30 @@ function appDisplayName(app) {
 
 function scheduleLabel(schedule) {
   if (!schedule || schedule === "manual") return T("apps.schedule.manual");
+  const daily = String(schedule).match(/^daily\s+(\d{1,2}:\d{2})$/i);
+  if (daily) return T("apps.schedule.daily", { time: daily[1] });
   const m = String(schedule).match(/every\s+(\d+)\s*m/i);
   if (m) return T("apps.schedule.everyMin", { n: m[1] });
   const h = String(schedule).match(/every\s+(\d+)\s*h/i);
-  if (h) return T("apps.schedule.everyMin", { n: Number(h[1]) * 60 });
+  if (h) return T("apps.schedule.everyHour", { n: h[1] });
+  const s = String(schedule).match(/every\s+(\d+)\s*s/i);
+  if (s) return T("apps.schedule.everySec", { n: s[1] });
   return schedule;
 }
+
+const UNSCHEDULABLE_APPS = new Set(["email-compose"]);
+const SCHEDULE_HOURS_APPS = new Set([
+  ...Object.keys(HOURS_RANGE_APPS),
+  "day-recap",
+  "email-digest",
+  "standup-update",
+  "todo-list",
+  "ai-habits",
+]);
+
+const appScheduleUi = {
+  appName: null,
+};
 
 function isScheduledPipe(app) {
   const s = app.schedule || "manual";
@@ -2051,6 +2069,16 @@ function createAppRow(app) {
     renderApps();
   });
   actions.append(runBtn, histBtn);
+  if (!UNSCHEDULABLE_APPS.has(app.name) && app.has_app_py !== false) {
+    const schedBtn = document.createElement("button");
+    schedBtn.type = "button";
+    schedBtn.textContent = T("apps.schedule.configure");
+    schedBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openAppScheduleModal(app).catch(showError);
+    });
+    actions.append(schedBtn);
+  }
 
   row.addEventListener("click", () => {
     if (appsUi.selectedApp === app.name && isDetailPanelOpen()) {
@@ -2286,6 +2314,153 @@ function buildAppTimeRangeRunBody() {
   const range = hoursRangeFromPreset(appTimeRangeUi.preset);
   if (!range) throw new Error("Invalid time preset");
   return { hours: String(range.hours) };
+}
+
+function syncAppScheduleFields() {
+  const mode = $("#appScheduleMode")?.value || "manual";
+  const intervalBox = $("#appScheduleIntervalFields");
+  const dailyField = $("#appScheduleDailyField");
+  const hoursField = $("#appScheduleHoursField");
+  intervalBox?.classList.toggle("hidden", mode !== "interval");
+  dailyField?.classList.toggle("hidden", mode !== "daily");
+  const appName = appScheduleUi.appName;
+  const showHours = appName && SCHEDULE_HOURS_APPS.has(appName);
+  hoursField?.classList.toggle("hidden", mode === "manual" || !showHours);
+}
+
+function fillAppScheduleForm(schedule) {
+  const cfg = schedule || {};
+  const mode = cfg.enabled ? (cfg.mode || "interval") : "manual";
+  const modeEl = $("#appScheduleMode");
+  if (modeEl) modeEl.value = mode;
+
+  const interval = String(cfg.interval || "every 1h");
+  const im = interval.match(/every\s+(\d+)\s*([hms])/i);
+  const iv = $("#appScheduleIntervalValue");
+  const iu = $("#appScheduleIntervalUnit");
+  if (iv && iu) {
+    if (im) {
+      iv.value = im[1];
+      iu.value = im[2].toLowerCase() === "m" ? "m" : "h";
+    } else {
+      iv.value = "1";
+      iu.value = "h";
+    }
+  }
+
+  const timeEl = $("#appScheduleDailyTime");
+  if (timeEl) {
+    timeEl.value = cfg.time || "09:00";
+  }
+
+  const hoursEl = $("#appScheduleRunHours");
+  if (hoursEl) {
+    const preset = HOURS_RANGE_APPS[appScheduleUi.appName]?.defaultPreset;
+    hoursEl.value = cfg.hours || preset || "1";
+  }
+  syncAppScheduleFields();
+}
+
+function closeAppScheduleModal() {
+  const modal = $("#appScheduleModal");
+  if (modal) modal.classList.add("hidden");
+  const suffix = $("#appScheduleModalAppSuffix");
+  if (suffix) suffix.textContent = "";
+  appScheduleUi.appName = null;
+}
+
+function refreshAppScheduleModalTexts() {
+  const modal = $("#appScheduleModal");
+  if (!modal || modal.classList.contains("hidden") || !appScheduleUi.appName) return;
+  I18N.apply(modal);
+  const app = state.apps.find((a) => a.name === appScheduleUi.appName);
+  const suffix = $("#appScheduleModalAppSuffix");
+  if (suffix && app) suffix.textContent = ` — ${appDisplayName(app)}`;
+}
+
+async function openAppScheduleModal(app) {
+  const modal = $("#appScheduleModal");
+  if (!modal) return;
+  appScheduleUi.appName = app.name;
+  const suffix = $("#appScheduleModalAppSuffix");
+  if (suffix) suffix.textContent = ` — ${appDisplayName(app)}`;
+  I18N.apply(modal);
+
+  let schedule = app.schedule_config;
+  try {
+    schedule = await api(`/apps/${app.name}/schedule`);
+  } catch {
+    schedule = app.schedule_config || {};
+  }
+  fillAppScheduleForm(schedule);
+  modal.classList.remove("hidden");
+}
+
+function buildAppSchedulePayload() {
+  const mode = $("#appScheduleMode")?.value || "manual";
+  if (mode === "manual") {
+    return { enabled: false, mode: "manual" };
+  }
+  const payload = { enabled: true, mode };
+  if (mode === "interval") {
+    const n = parseInt($("#appScheduleIntervalValue")?.value || "0", 10);
+    if (!Number.isFinite(n) || n < 1) throw new Error(T("apps.schedule.intervalInvalid"));
+    const unit = $("#appScheduleIntervalUnit")?.value === "m" ? "m" : "h";
+    payload.interval = `every ${n}${unit}`;
+  } else if (mode === "daily") {
+    const time = $("#appScheduleDailyTime")?.value?.trim();
+    if (!time) throw new Error(T("apps.schedule.timeRequired"));
+    payload.time = time;
+  }
+  const appName = appScheduleUi.appName;
+  if (appName && SCHEDULE_HOURS_APPS.has(appName) && mode !== "manual") {
+    const hours = $("#appScheduleRunHours")?.value?.trim();
+    if (hours) payload.hours = hours;
+  }
+  return payload;
+}
+
+async function saveAppSchedule() {
+  const appName = appScheduleUi.appName;
+  if (!appName) return;
+  let payload;
+  try {
+    payload = buildAppSchedulePayload();
+  } catch (err) {
+    showError(err);
+    return;
+  }
+  try {
+    await api(`/apps/${appName}/schedule`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    showError(new Error(T("apps.schedule.saveFailed", { msg: err.message })));
+    return;
+  }
+  closeAppScheduleModal();
+  const statusEl = $("#appRunStatus");
+  if (statusEl) {
+    statusEl.style.display = "block";
+    statusEl.className = "app-run-status success";
+    statusEl.textContent = T("apps.schedule.saved");
+    focusAppRunStatus();
+  }
+  await refreshAll();
+}
+
+function initAppScheduleModal() {
+  const modal = $("#appScheduleModal");
+  if (!modal) return;
+  $("#appScheduleMode")?.addEventListener("change", syncAppScheduleFields);
+  initRunnableModal({
+    overlay: modal,
+    close: closeAppScheduleModal,
+    confirmButton: $("#appScheduleSave"),
+    confirmDefaultLabel: "Save",
+    onSubmit: () => saveAppSchedule(),
+  });
 }
 
 function initAppTimeRangeModal() {
@@ -3497,6 +3672,7 @@ function wireEvents() {
   }
   initHomePrompts();
   initVideoExportModal();
+  initAppScheduleModal();
   initAppTimeRangeModal();
   initEmailComposeModal();
   initTodoRangeControls();
@@ -3654,8 +3830,9 @@ if (window.I18N) {
     if (id === "view-training") refreshTrainingView();
     else if (id === "view-reminders") refreshRemindersView();
     else if (id === "view-settings") renderSettingsForm();
-    // Apps rows (Run/History buttons, schedule labels) are JS-built — re-render.
+    // Apps rows (Run/History/Schedule buttons, schedule labels) are JS-built — re-render.
     renderApps();
+    refreshAppScheduleModalTexts();
   });
 }
 

@@ -116,7 +116,9 @@ class Daemon:
         self.pipes = load_pipes(pipes_dir)
         self.pipe_runtime = PipeRuntime(self.db, self.cfg)
         self.pipe_scheduler = PipeScheduler(self.db, self.pipes, runtime=self.pipe_runtime) if self.pipes else None
-        self.app_scheduler = AppScheduler()
+        self.app_scheduler = AppScheduler(
+            api_base=f"http://{self.cfg.server.host}:{self.cfg.server.port}",
+        )
 
         # Additive: learn routines + proactive suggestions. Owns its own thread
         # and DB connection; only constructed when explicitly enabled.

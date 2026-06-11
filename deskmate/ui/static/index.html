@@ -840,6 +840,50 @@
       </div>
     </div>
 
+    <div id="appScheduleModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="appScheduleModalTitle">
+      <div class="modal-card">
+        <header class="modal-header">
+          <h3 id="appScheduleModalTitle"><span data-i18n="apps.schedule.title">Schedule app</span><span id="appScheduleModalAppSuffix"></span></h3>
+          <button type="button" class="icon-btn modal-close" id="appScheduleModalClose" title="Close" aria-label="Close">×</button>
+        </header>
+        <p class="modal-desc" id="appScheduleModalDesc" data-i18n="apps.schedule.desc">Run this app automatically on an interval or at a fixed time each day.</p>
+        <label class="modal-field">
+          <span data-i18n="apps.schedule.mode">Run mode</span>
+          <select id="appScheduleMode">
+            <option value="manual" data-i18n="apps.schedule.mode.manual">Manual only</option>
+            <option value="interval" data-i18n="apps.schedule.mode.interval">Every …</option>
+            <option value="daily" data-i18n="apps.schedule.mode.daily">Daily at …</option>
+          </select>
+        </label>
+        <div id="appScheduleIntervalFields" class="modal-form-grid hidden">
+          <label class="modal-field">
+            <span data-i18n="apps.schedule.intervalEvery">Every</span>
+            <input type="number" id="appScheduleIntervalValue" min="1" max="10080" value="1" />
+          </label>
+          <label class="modal-field">
+            <span data-i18n="apps.schedule.intervalUnit">Unit</span>
+            <select id="appScheduleIntervalUnit">
+              <option value="h" data-i18n="apps.schedule.unit.hours">Hours</option>
+              <option value="m" data-i18n="apps.schedule.unit.minutes">Minutes</option>
+            </select>
+          </label>
+        </div>
+        <label class="modal-field hidden" id="appScheduleDailyField">
+          <span data-i18n="apps.schedule.dailyTime">Time (local)</span>
+          <input type="time" id="appScheduleDailyTime" value="09:00" />
+        </label>
+        <label class="modal-field hidden" id="appScheduleHoursField">
+          <span data-i18n="apps.schedule.runHours">Data window (hours)</span>
+          <input type="number" id="appScheduleRunHours" min="1" max="168" value="1" />
+        </label>
+        <p class="modal-desc muted-copy" id="appScheduleNote" data-i18n="apps.schedule.note">Changes apply immediately; DeskMate must stay running in the background.</p>
+        <footer class="modal-footer">
+          <button type="button" id="appScheduleCancel" data-i18n="common.cancel">Cancel</button>
+          <button type="button" class="primary" id="appScheduleSave" data-i18n="common.save">Save</button>
+        </footer>
+      </div>
+    </div>
+
     <div id="appTimeRangeModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="appTimeRangeModalTitle">
       <div class="modal-card">
         <header class="modal-header">

@@ -46,6 +46,7 @@ from ..screen.redact_image import redact_image_bytes, regions_from_ocr
 from ..screen.video_chunks import video_chunk_path
 from ..ui import index_file, static_dir
 from ..workflow import WorkflowClassifier
+from . import app_schedules
 
 logger = get("engine.api")
 
@@ -1672,12 +1673,17 @@ def create_app(
                         v = v.strip().strip('"').strip("'")
                         fm[k.strip()] = v
             name = pipe_md.parent.name
+            pipe_schedule = fm.get("schedule", "manual")
+            sched = app_schedules.entry_for_api(name, pipe_schedule)
             apps_list.append({
                 "name": name,
                 "title": fm.get("title", name),
                 "description": fm.get("description", ""),
                 "icon": fm.get("icon", ""),
-                "schedule": fm.get("schedule", "manual"),
+                "schedule": sched["display"],
+                "schedule_source": sched["source"],
+                "schedule_config": sched,
+                "pipe_schedule": pipe_schedule,
                 "has_app_py": (pipe_md.parent / "app.py").exists(),
             })
         return apps_list
@@ -1753,6 +1759,53 @@ def create_app(
         for a in apps_list:
             a["recent_outputs"] = _scan_outputs(a["name"])[:3]
         return {"data": apps_list, "total": len(apps_list)}
+
+    @app.get("/apps/{app_name}/schedule")
+    def get_app_schedule(app_name: str) -> dict[str, Any]:
+        app_py = _APPS_SRC / app_name / "app.py"
+        if not app_py.is_file():
+            raise HTTPException(status_code=404, detail=f"app '{app_name}' not found")
+        pipe_md = _APPS_SRC / app_name / "pipe.md"
+        pipe_schedule = "manual"
+        if pipe_md.is_file():
+            fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", pipe_md.read_text(encoding="utf-8"), re.DOTALL)
+            if fm_match:
+                for line in fm_match.group(1).splitlines():
+                    if line.strip().startswith("schedule:"):
+                        pipe_schedule = line.split(":", 1)[1].strip().strip('"').strip("'")
+                        break
+        return app_schedules.entry_for_api(app_name, pipe_schedule)
+
+    @app.put("/apps/{app_name}/schedule")
+    async def put_app_schedule(app_name: str, request: Request) -> dict[str, Any]:
+        app_py = _APPS_SRC / app_name / "app.py"
+        if not app_py.is_file():
+            raise HTTPException(status_code=404, detail=f"app '{app_name}' not found")
+        body = await _safe_json(request)
+        try:
+            entry = app_schedules.validate_schedule_payload(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if entry.get("enabled"):
+            app_schedules.save_entry(app_name, entry)
+        else:
+            app_schedules.save_entry(app_name, {"enabled": False, "mode": "manual"})
+        daemon = getattr(app.state, "daemon", None)
+        if daemon is not None and getattr(daemon, "app_scheduler", None) is not None:
+            daemon.app_scheduler.reload()
+        pipe_schedule = "manual"
+        pipe_md = _APPS_SRC / app_name / "pipe.md"
+        if pipe_md.is_file():
+            fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", pipe_md.read_text(encoding="utf-8"), re.DOTALL)
+            if fm_match:
+                for line in fm_match.group(1).splitlines():
+                    if line.strip().startswith("schedule:"):
+                        pipe_schedule = line.split(":", 1)[1].strip().strip('"').strip("'")
+                        break
+        return {
+            "status": "ok",
+            "schedule": app_schedules.entry_for_api(app_name, pipe_schedule),
+        }
 
     @app.get("/apps/{app_name}/outputs")
     def app_outputs(app_name: str) -> dict[str, Any]:

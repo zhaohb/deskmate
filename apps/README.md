@@ -93,7 +93,7 @@ Perplexity, Grok, DeepSeek, Copilot, Cursor, local models, etc.) over the
 supplied window (default 1 hour) and appends only the genuinely new prompts to
 a daily markdown journal at
 `%USERPROFILE%\.deskmate\apps\ai-prompt-journal\journal\YYYY-MM-DD.md`.
-Run manually from the My Apps UI or CLI when you want to capture prompts.
+Run manually from the My Apps UI or CLI, or set a custom schedule in **My Apps → Schedule** (interval or daily time). User schedules are stored in ``~/.deskmate/apps/schedules.json``.
 
 ```cmd
 python apps\ai-prompt-journal\app.py --hours 1 --verbose
