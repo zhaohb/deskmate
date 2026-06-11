@@ -1199,12 +1199,9 @@ a:hover {
 
 .pipe-row-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 0.35rem;
-  opacity: 0;
-  transition: opacity 100ms ease;
-}
-
-.pipe-row:hover .pipe-row-actions {
   opacity: 1;
 }
 
