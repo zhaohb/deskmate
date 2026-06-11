@@ -1656,13 +1656,15 @@ def create_app(
         )
 
     # ─── apps (LLM-agent pipe apps) ─────────────────────────────────────
-    _APPS_SRC = Path(__file__).resolve().parents[2] / "apps"
+    # Apps are discovered across BOTH the built-in app dir and the user plugin
+    # dir (~/.deskmate/apps/plugins); see deskmate.paths. User apps shadow
+    # built-ins of the same name. Resolve an app's source dir with
+    # paths.find_app_dir(name) — never a hardcoded source-relative path.
 
     def _scan_apps() -> list[dict[str, Any]]:
         apps_list: list[dict[str, Any]] = []
-        if not _APPS_SRC.is_dir():
-            return apps_list
-        for pipe_md in sorted(_APPS_SRC.glob("*/pipe.md")):
+        for app_dir in paths.discover_app_dirs():
+            pipe_md = app_dir / "pipe.md"
             text = pipe_md.read_text(encoding="utf-8")
             fm: dict[str, Any] = {}
             fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
@@ -1760,26 +1762,27 @@ def create_app(
             a["recent_outputs"] = _scan_outputs(a["name"])[:3]
         return {"data": apps_list, "total": len(apps_list)}
 
-    @app.get("/apps/{app_name}/schedule")
-    def get_app_schedule(app_name: str) -> dict[str, Any]:
-        app_py = _APPS_SRC / app_name / "app.py"
-        if not app_py.is_file():
-            raise HTTPException(status_code=404, detail=f"app '{app_name}' not found")
-        pipe_md = _APPS_SRC / app_name / "pipe.md"
-        pipe_schedule = "manual"
+    def _pipe_schedule_for(app_dir: Path) -> str:
+        pipe_md = app_dir / "pipe.md"
         if pipe_md.is_file():
             fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", pipe_md.read_text(encoding="utf-8"), re.DOTALL)
             if fm_match:
                 for line in fm_match.group(1).splitlines():
                     if line.strip().startswith("schedule:"):
-                        pipe_schedule = line.split(":", 1)[1].strip().strip('"').strip("'")
-                        break
-        return app_schedules.entry_for_api(app_name, pipe_schedule)
+                        return line.split(":", 1)[1].strip().strip('"').strip("'")
+        return "manual"
+
+    @app.get("/apps/{app_name}/schedule")
+    def get_app_schedule(app_name: str) -> dict[str, Any]:
+        app_dir = paths.find_app_dir(app_name)
+        if app_dir is None or not (app_dir / "app.py").is_file():
+            raise HTTPException(status_code=404, detail=f"app '{app_name}' not found")
+        return app_schedules.entry_for_api(app_name, _pipe_schedule_for(app_dir))
 
     @app.put("/apps/{app_name}/schedule")
     async def put_app_schedule(app_name: str, request: Request) -> dict[str, Any]:
-        app_py = _APPS_SRC / app_name / "app.py"
-        if not app_py.is_file():
+        app_dir = paths.find_app_dir(app_name)
+        if app_dir is None or not (app_dir / "app.py").is_file():
             raise HTTPException(status_code=404, detail=f"app '{app_name}' not found")
         body = await _safe_json(request)
         try:
@@ -1793,18 +1796,9 @@ def create_app(
         daemon = getattr(app.state, "daemon", None)
         if daemon is not None and getattr(daemon, "app_scheduler", None) is not None:
             daemon.app_scheduler.reload()
-        pipe_schedule = "manual"
-        pipe_md = _APPS_SRC / app_name / "pipe.md"
-        if pipe_md.is_file():
-            fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", pipe_md.read_text(encoding="utf-8"), re.DOTALL)
-            if fm_match:
-                for line in fm_match.group(1).splitlines():
-                    if line.strip().startswith("schedule:"):
-                        pipe_schedule = line.split(":", 1)[1].strip().strip('"').strip("'")
-                        break
         return {
             "status": "ok",
-            "schedule": app_schedules.entry_for_api(app_name, pipe_schedule),
+            "schedule": app_schedules.entry_for_api(app_name, _pipe_schedule_for(app_dir)),
         }
 
     @app.get("/apps/{app_name}/outputs")
@@ -1822,8 +1816,9 @@ def create_app(
 
     @app.post("/apps/{app_name}/run")
     async def run_app(app_name: str, request: Request) -> dict[str, Any]:
-        app_py = _APPS_SRC / app_name / "app.py"
-        if not app_py.is_file():
+        app_dir = paths.find_app_dir(app_name)
+        app_py = app_dir / "app.py" if app_dir else None
+        if app_py is None or not app_py.is_file():
             raise HTTPException(status_code=404, detail=f"app '{app_name}' not found")
         body = {}
         try:

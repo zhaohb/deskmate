@@ -81,6 +81,11 @@ include = ["deskmate*"]
 
 [tool.setuptools.package-data]
 deskmate = ["ui/static/*.html", "ui/static/*.css", "ui/static/*.js"]
+# Built-in pipe apps live under deskmate/apps. agent.py / common.py are real
+# package modules; the per-app folders are hyphenated (day-recap, …) so they
+# are NOT importable packages — their app.py / pipe.md ship as DATA files and
+# are run as scripts (python <path>) / read at runtime. SKILL.md is shared.
+"deskmate.apps" = ["*.md", "*/app.py", "*/pipe.md", "*/*.md"]
 
 [tool.ruff]
 line-length = 100

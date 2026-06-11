@@ -10,26 +10,17 @@ Network calls are stubbed by monkeypatching `_do_content_search`.
 
 from __future__ import annotations
 
-import importlib.util
 import sys
-from pathlib import Path
 from types import ModuleType
 
 import pytest
 
-_APPS_DIR = Path(__file__).resolve().parents[1] / "apps"
-
 
 def _load_agent_module() -> ModuleType:
-    if str(_APPS_DIR) not in sys.path:
-        sys.path.insert(0, str(_APPS_DIR))
-    sys.modules.pop("agent", None)
-    spec = importlib.util.spec_from_file_location("agent", _APPS_DIR / "agent.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["agent"] = module
-    spec.loader.exec_module(module)
-    return module
+    import deskmate.apps.agent as agent  # noqa: PLC0415
+
+    sys.modules.setdefault("agent", agent)
+    return agent
 
 
 @pytest.fixture()

@@ -354,11 +354,13 @@ class Daemon:
         the summary + extracted todos back to the DB."""
         import subprocess  # noqa: PLC0415
         import sys  # noqa: PLC0415
-        from pathlib import Path  # noqa: PLC0415
 
-        app_py = Path(__file__).resolve().parents[2] / "apps" / "meeting-summary" / "app.py"
-        if not app_py.is_file():
-            logger.debug("meeting-summary app not found at %s", app_py)
+        from .. import paths  # noqa: PLC0415
+
+        app_dir = paths.find_app_dir("meeting-summary")
+        app_py = app_dir / "app.py" if app_dir else None
+        if app_py is None or not app_py.is_file():
+            logger.debug("meeting-summary app not found")
             return
 
         def _run() -> None:

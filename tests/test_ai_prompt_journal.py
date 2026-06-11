@@ -15,7 +15,7 @@ from types import ModuleType
 
 import pytest
 
-_APP_DIR = Path(__file__).resolve().parents[1] / "apps" / "ai-prompt-journal"
+_APP_DIR = Path(__file__).resolve().parents[1] / "deskmate" / "apps" / "ai-prompt-journal"
 _APPS_DIR = _APP_DIR.parent
 
 
@@ -225,17 +225,11 @@ def test_merge_journals_filters_to_precise_window(app: ModuleType, tmp_path) -> 
 
 
 def _load_agent_module() -> ModuleType:
-    """Load apps/agent.py as an importable module for pure-helper tests."""
-    if "agent" in sys.modules:
-        return sys.modules["agent"]
-    if str(_APPS_DIR) not in sys.path:
-        sys.path.insert(0, str(_APPS_DIR))
-    spec = importlib.util.spec_from_file_location("agent", _APPS_DIR / "agent.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["agent"] = module  # required: dataclasses resolves via sys.modules
-    spec.loader.exec_module(module)
-    return module
+    """agent.py is a real package module now (deskmate.apps.agent)."""
+    import deskmate.apps.agent as agent  # noqa: PLC0415
+
+    sys.modules.setdefault("agent", agent)
+    return agent
 
 
 @pytest.fixture(scope="module")

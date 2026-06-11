@@ -151,18 +151,10 @@ def test_note_participant_from_ui(tmp_path: Path) -> None:
 
 
 def _agent():
-    import importlib.util
     import sys
-    apps_dir = Path(__file__).resolve().parents[1] / "apps"
-    if str(apps_dir) not in sys.path:
-        sys.path.insert(0, str(apps_dir))
-    if "agent" in sys.modules:
-        return sys.modules["agent"]
-    spec = importlib.util.spec_from_file_location("agent", apps_dir / "agent.py")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["agent"] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    import deskmate.apps.agent as agent
+    sys.modules.setdefault("agent", agent)
+    return agent
 
 
 def test_parse_action_items_structured() -> None:

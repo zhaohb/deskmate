@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from apps.agent import (
+from deskmate.apps.agent import (
     PIPE_TOOL_CONFIG,
     ToolSession,
     _check_search_budget,

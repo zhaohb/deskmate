@@ -42,7 +42,12 @@ flowchart LR
    cost/noise saver.
 3. **Transcription** runs Whisper on speech segments. `transcribe.py` handles:
    - language detection vs. a forced language (and an optional translate mode);
-   - an energy gate (`MIN_RMS_ENERGY`) so near-silent audio is skipped;
+   - a two-stage speech gate: an absolute silence floor (`MIN_RMS_ENERGY`) drops
+     dead air, then a **relative SNR gate** (`MIN_SNR_DB`) keeps a clip only when
+     its loud portion stands ≥6 dB above its own estimated noise floor — adapting
+     to mic vs loopback gain and quiet vs noisy rooms instead of one global
+     threshold that is simultaneously too high for soft speech and too low for
+     noise;
    - **hallucination filtering** — Whisper tends to emit canned phrases on
      low-information audio, which are filtered by confidence/repetition thresholds.
 4. **Speaker identification** uses an embedding model to assign a `speaker_id`,

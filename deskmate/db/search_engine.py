@@ -3,13 +3,25 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
 from .search_types import ContentType, normalize_content_type
-from .text_normalizer import sanitize_fts5_query, value_to_fts5_column_query
+from .text_normalizer import (
+    expand_search_query,
+    sanitize_fts5_query,
+    value_to_fts5_column_query,
+)
+
+# FTS5 bm25 column weights for ``frames_full_text`` (columns in declared order:
+# frame_id, timestamp, app_name, window_name, browser_url, document_path,
+# ocr_text, accessibility_text). UNINDEXED columns (frame_id/timestamp) carry
+# weight 0; on-screen text outranks window/url metadata, and accessibility text
+# — being cleaner than OCR — outranks raw OCR.
+_FRAME_BM25_WEIGHTS = "0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 2.0, 3.0"
 
 
 ResultKind = Literal["ocr", "audio", "ui", "input", "memory"]
@@ -63,9 +75,12 @@ def _build_frame_fts_query(
     if browser_url:
         parts.append(value_to_fts5_column_query("browser_url", browser_url))
     if query.strip():
-        sanitized = sanitize_fts5_query(query)
-        if sanitized:
-            parts.append(sanitized)
+        # Expand the free-text query: camelCase/number splitting + prefix
+        # wildcards so e.g. ``submit`` also matches ``submitButton``. Column
+        # filters above stay exact (they target a known field value).
+        expanded = expand_search_query(query)
+        if expanded:
+            parts.append(expanded)
     fts_query = " ".join(parts)
     return fts_query, bool(fts_query.strip())
 
@@ -224,7 +239,15 @@ class SearchEngine:
             ):
                 results.append(self._memory_result(row))
 
-        results.sort(key=lambda r: _parse_ts(r.timestamp), reverse=True)
+        # Single-type frame searches with a free-text query are already returned
+        # in BM25 relevance order by the SQL — preserve it. Re-sort by recency
+        # only for the merged ALL case (one shared timeline across sources) and
+        # for query-less browsing (no relevance signal to rank by).
+        preserve_relevance = (
+            bool(q.strip()) and ct in (ContentType.OCR, ContentType.ACCESSIBILITY)
+        )
+        if not preserve_relevance:
+            results.sort(key=lambda r: _parse_ts(r.timestamp), reverse=True)
         if ct == ContentType.ALL:
             results = results[offset : offset + limit]
         return results
@@ -289,12 +312,29 @@ class SearchEngine:
               FROM frames_full_text fft
               JOIN frames f ON f.id = fft.frame_id
              WHERE {' AND '.join(wheres)}
-             ORDER BY fft.timestamp DESC
+             ORDER BY {self._frame_order_by(has_fts)}
              LIMIT ? OFFSET ?
         """
         args.extend([limit, offset])
         with self._lock:
             return self._conn.execute(sql, args).fetchall()
+
+    @staticmethod
+    def _frame_order_by(has_fts: bool) -> str:
+        """ORDER BY clause for frame FTS searches.
+
+        With a MATCH clause, rank by relevance (BM25, column-weighted) so exact
+        keyword hits surface above merely-recent frames; the lowest (most
+        negative) bm25 score is best, so ascending order is correct. A timestamp
+        tiebreak keeps recent frames ahead among equally-relevant hits. Without
+        a MATCH clause bm25() is unavailable, so fall back to recency.
+        """
+        if has_fts:
+            return (
+                f"bm25(frames_full_text, {_FRAME_BM25_WEIGHTS}) ASC, "
+                "fft.timestamp DESC"
+            )
+        return "fft.timestamp DESC"
 
     def _search_accessibility(
         self,
@@ -333,7 +373,7 @@ class SearchEngine:
               FROM frames_full_text fft
               JOIN frames f ON f.id = fft.frame_id
              WHERE {' AND '.join(wheres)}
-             ORDER BY fft.timestamp DESC
+             ORDER BY {self._frame_order_by(has_fts)}
              LIMIT ? OFFSET ?
         """
         args.extend([limit, offset])
@@ -926,15 +966,27 @@ class SearchEngine:
         speaker_ids: list[int] | None = None,
         rrf_k: int = 60,
         candidate_pool: int = 5000,
+        recency_halflife_hours: float = 24.0,
     ) -> list[SearchResult]:
         """Combine keyword (FTS5/BM25) and semantic hits via Reciprocal Rank
-        Fusion.
+        Fusion, weighted by recency and semantic confidence.
 
         Neither leg is sufficient on its own: keyword search nails exact terms
         and identifiers but misses paraphrases, while embeddings capture meaning
-        but can drift on rare tokens. RRF fuses the two ranked lists using only
-        rank position (``score = Σ 1/(k + rank)``), which sidesteps the fact
-        that BM25 and cosine scores live on incomparable scales.
+        but can drift on rare tokens. RRF fuses the two ranked lists using rank
+        position (``base = 1/(k + rank)``), which sidesteps the fact that BM25
+        and cosine scores live on incomparable scales. On top of plain RRF we
+        add three corrections (see optimization note 5.3):
+
+        - **Recency decay** — each contribution is scaled by
+          ``exp(-age / halflife)`` so a minutes-old exact hit outranks a
+          weeks-old paraphrase of equal rank. Age is measured against the newest
+          result in this batch (robust to clock/timezone skew, and testable).
+        - **Semantic confidence** — the embedding leg's contribution is scaled
+          by its cosine similarity, so a weak 0.2 paraphrase match counts far
+          less than a strong 0.9 one instead of by rank alone.
+        - **Adaptive k** — a sparse candidate pool uses a smaller ``k`` so the
+          few real hits separate more sharply (large ``k`` flattens everything).
 
         Falls back to the keyword list when semantic search is unavailable or
         the query is empty.
@@ -971,15 +1023,35 @@ class SearchEngine:
         if not semantic_results:
             return fts_results[offset : offset + limit]
 
+        # Adaptive k: shrink for a sparse pool so the few real hits separate.
+        pool_size = max(len(fts_results), len(semantic_results))
+        eff_k = rrf_k if pool_size >= 20 else max(10, pool_size)
+
+        # Reference time = newest result across both legs; ages are measured
+        # back from it so decay is relative to this batch, not the wall clock.
+        all_results = list(fts_results) + [r for r, _ in semantic_results]
+        newest = max((_parse_ts(r.timestamp) for r in all_results), default=datetime.min)
+
+        def _recency_weight(result: SearchResult) -> float:
+            if recency_halflife_hours <= 0:
+                return 1.0
+            ts = _parse_ts(result.timestamp)
+            if ts == datetime.min or newest == datetime.min:
+                return 1.0
+            age_hours = max(0.0, (newest - ts).total_seconds() / 3600.0)
+            return math.exp(-age_hours / recency_halflife_hours)
+
         scores: dict[tuple[str, Any], float] = {}
         holder: dict[tuple[str, Any], SearchResult] = {}
         for rank, result in enumerate(fts_results):
             key = self._result_key(result)
-            scores[key] = scores.get(key, 0.0) + 1.0 / (rrf_k + rank + 1)
+            scores[key] = scores.get(key, 0.0) + (1.0 / (eff_k + rank + 1)) * _recency_weight(result)
             holder.setdefault(key, result)
-        for rank, (result, _sim) in enumerate(semantic_results):
+        for rank, (result, sim) in enumerate(semantic_results):
             key = self._result_key(result)
-            scores[key] = scores.get(key, 0.0) + 1.0 / (rrf_k + rank + 1)
+            # Cosine sim ∈ [-1, 1]; clamp to [0, 1] as a confidence coefficient.
+            confidence = min(1.0, max(0.0, sim))
+            scores[key] = scores.get(key, 0.0) + (1.0 / (eff_k + rank + 1)) * confidence * _recency_weight(result)
             holder.setdefault(key, result)
 
         ordered = sorted(holder.values(), key=lambda r: scores[self._result_key(r)], reverse=True)

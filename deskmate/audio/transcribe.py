@@ -43,8 +43,21 @@ from .vad import SileroVAD, SpeechSegment
 
 logger = get("audio.transcribe")
 
-# Skip near-silent audio below this RMS energy (Whisper hallucinates on silence).
-MIN_RMS_ENERGY = 0.015
+# Absolute digital-silence floor. Below this the clip is effectively dead air
+# (muted mic, no signal) — there is no noise floor to estimate an SNR against,
+# so we drop it outright. This is intentionally far lower than the old
+# ``MIN_RMS_ENERGY`` so that genuinely quiet *speech* is no longer discarded by
+# an absolute energy gate; the SNR gate below decides those cases instead.
+MIN_RMS_ENERGY = 1e-4
+
+# Relative speech gate: keep a clip only when its loud portion stands at least
+# this many dB above its own estimated noise floor. Because it is measured
+# within each clip, it adapts to mic vs loopback gain and to quiet vs noisy
+# rooms — unlike a single global energy threshold, which is simultaneously too
+# high for soft speakers and too low for noisy environments. A clip that is
+# uniformly noise (no speech peaks) has a low SNR and is dropped; quiet speech
+# riding above a quiet noise floor has a high SNR and is kept.
+MIN_SNR_DB = 6.0
 
 # Minimum VAD clip duration; shorter clips produce garbage Chinese fragments
 MIN_CLIP_DURATION_S = 1.0
@@ -262,6 +275,49 @@ class WhisperTranscriber:
             return 0.0
         return float(np.sqrt((audio * audio).mean()))
 
+    @staticmethod
+    def _audio_snr_db(wav_path: Path) -> tuple[float, float] | None:
+        """Estimate ``(overall_rms, snr_db)`` for a clip.
+
+        SNR is the ratio between the clip's loud portion (90th-percentile frame
+        RMS ≈ speech) and its quiet portion (10th-percentile frame RMS ≈ noise
+        floor), in dB. Estimating the floor from the clip itself makes the gate
+        adapt to device gain and ambient noise. Returns ``None`` when audio
+        can't be read (caller then skips SNR gating for that clip).
+        """
+        try:
+            import numpy as np  # type: ignore[import-untyped]  # noqa: PLC0415
+            import soundfile as sf  # type: ignore[import-untyped]  # noqa: PLC0415
+        except Exception:  # noqa: BLE001
+            return None
+        try:
+            audio, sample_rate = sf.read(str(wav_path), dtype="float32", always_2d=False)
+        except Exception:  # noqa: BLE001
+            return None
+        if getattr(audio, "ndim", 1) == 2:
+            audio = audio.mean(axis=1)
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.size == 0:
+            return (0.0, 0.0)
+
+        overall_rms = float(np.sqrt((audio * audio).mean()))
+
+        # Framewise RMS over ~30ms windows; percentiles separate speech peaks
+        # from the noise floor without needing a VAD pass here.
+        frame_len = max(1, int(float(sample_rate) * 0.03))
+        n_frames = audio.size // frame_len
+        if n_frames < 2:
+            # Too short to estimate a floor — treat overall energy as the signal
+            # and report a high SNR so only the absolute-silence gate applies.
+            return (overall_rms, float("inf"))
+        frames = audio[: n_frames * frame_len].reshape(n_frames, frame_len)
+        frame_rms = np.sqrt((frames * frames).mean(axis=1))
+        noise_floor = float(np.percentile(frame_rms, 10))
+        speech_level = float(np.percentile(frame_rms, 90))
+        eps = 1e-9
+        snr_db = 20.0 * float(np.log10((speech_level + eps) / (noise_floor + eps)))
+        return (overall_rms, snr_db)
+
     def _transcribe_file(
         self,
         wav_path: Path,
@@ -276,13 +332,23 @@ class WhisperTranscriber:
         ``base_offset`` to recover absolute (recording-relative) times.
         """
         try:
-            rms = self._audio_rms(wav_path)
-            if rms is not None and rms < MIN_RMS_ENERGY:
-                logger.debug(
-                    "skip whisper for %s: RMS %.6f < %.6f",
-                    wav_path.name, rms, MIN_RMS_ENERGY,
-                )
-                return []
+            snr = self._audio_snr_db(wav_path)
+            if snr is not None:
+                rms, snr_db = snr
+                # Absolute silence: dead air, nothing to estimate SNR against.
+                if rms < MIN_RMS_ENERGY:
+                    logger.debug(
+                        "skip whisper for %s: RMS %.6f < %.6f (silence)",
+                        wav_path.name, rms, MIN_RMS_ENERGY,
+                    )
+                    return []
+                # Relative gate: uniform noise (no speech peaks) has low SNR.
+                if snr_db < MIN_SNR_DB:
+                    logger.debug(
+                        "skip whisper for %s: SNR %.1f dB < %.1f dB (no speech above noise)",
+                        wav_path.name, snr_db, MIN_SNR_DB,
+                    )
+                    return []
 
             result = self._backend.transcribe(str(wav_path), vad_filter=vad_filter)
             language = self._resolve_language(result.detected_language)

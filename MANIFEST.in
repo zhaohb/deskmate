@@ -1,0 +1,9 @@
+# Source-distribution (sdist) contents beyond the auto-included .py files.
+# Wheels get app/UI data via [tool.setuptools.package-data]; this mirrors it for
+# sdists and adds top-level docs.
+include README.md LICENSE
+recursive-include deskmate/apps *.md app.py pipe.md
+recursive-include deskmate/ui/static *.html *.css *.js
+recursive-include docs *.md
+global-exclude __pycache__ *.py[cod]
+prune deskmate/apps/**/output

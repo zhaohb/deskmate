@@ -7,7 +7,11 @@ from pathlib import Path
 import json
 import sqlite3
 
-from deskmate.a11y.input_hooks import return_flush_reason, return_inserts_newline
+from deskmate.a11y.input_hooks import (
+    return_flush_reason,
+    return_inserts_newline,
+    send_text_filter_reason,
+)
 from deskmate.a11y.ui_event_types import (
     CaptureTrigger,
     ScrollBurstTracker,
@@ -60,6 +64,25 @@ def test_return_flush_reason() -> None:
     assert return_flush_reason(ctrl_down=True, shift_down=True) is None
     assert return_inserts_newline(shift_down=True) is True
     assert return_inserts_newline(shift_down=False) is False
+
+
+def test_send_text_filter_reason_keeps_short_and_cjk() -> None:
+    # Short Latin commands and CJK short sentences must NOT be dropped (the old
+    # `len(value) < 5` floor silently discarded these).
+    assert send_text_filter_reason("help") is None
+    assert send_text_filter_reason("next") is None
+    assert send_text_filter_reason("你好") is None
+    assert send_text_filter_reason("ok") is None
+    assert send_text_filter_reason("a") is None
+
+
+def test_send_text_filter_reason_drops_junk() -> None:
+    assert send_text_filter_reason("") == "empty"
+    assert send_text_filter_reason("   ") == "empty"
+    assert send_text_filter_reason("...") == "punctuation_only"
+    assert send_text_filter_reason("!?!") == "punctuation_only"
+    # Punctuation mixed with a real token is kept.
+    assert send_text_filter_reason("go!") is None
 
 
 def test_capture_trigger_kind_text_is_typing_pause() -> None:

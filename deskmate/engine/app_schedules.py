@@ -21,7 +21,6 @@ logger = get("engine.app_schedules")
 
 _SCHEDULE_RE = re.compile(r"^\s*every\s+(\d+)\s*([hms])\s*$", re.IGNORECASE)
 _DAILY_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
-_APPS_SRC = Path(__file__).resolve().parents[2] / "apps"
 
 ScheduleMode = Literal["manual", "interval", "daily"]
 ScheduleSource = Literal["user", "default", "manual"]
@@ -282,17 +281,24 @@ def entry_for_api(app_name: str, pipe_schedule: str | None = None) -> dict[str, 
 
 
 def discover_scheduled_apps(apps_src: Path | None = None) -> list[tuple[str, EffectiveSchedule]]:
-    """Return apps that should be fired by :class:`AppScheduler`."""
-    root = apps_src or _APPS_SRC
-    if not root.is_dir():
-        return []
+    """Return apps that should be fired by :class:`AppScheduler`.
+
+    Scans both built-in and user-plugin app roots (see
+    :func:`deskmate.paths.discover_app_dirs`). ``apps_src`` overrides the scan
+    with a single directory (used by tests).
+    """
+    if apps_src is not None:
+        app_dirs = [d for d in sorted(apps_src.glob("*/pipe.md"))] if apps_src.is_dir() else []
+        app_dirs = [p.parent for p in app_dirs]
+    else:
+        app_dirs = paths.discover_app_dirs()
 
     out: list[tuple[str, EffectiveSchedule]] = []
-    for pipe_md in sorted(root.glob("*/pipe.md")):
-        if not (pipe_md.parent / "app.py").is_file():
+    for app_dir in app_dirs:
+        if not (app_dir / "app.py").is_file():
             continue
-        name = pipe_md.parent.name
-        fm = _read_frontmatter(pipe_md)
+        name = app_dir.name
+        fm = _read_frontmatter(app_dir / "pipe.md")
         eff = effective_schedule(name, fm.get("schedule"))
         if eff.enabled and eff.mode in ("interval", "daily"):
             out.append((name, eff))

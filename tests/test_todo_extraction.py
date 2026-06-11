@@ -14,12 +14,22 @@ import importlib.util
 import sys
 from pathlib import Path
 
+_APPS_DIR = Path(__file__).resolve().parents[1] / "deskmate" / "apps"
+
+
+def _agent_module():
+    """agent.py is a real package module now (deskmate.apps.agent)."""
+    import deskmate.apps.agent as agent  # noqa: PLC0415
+
+    sys.modules.setdefault("agent", agent)
+    return agent
+
 
 def _load(mod_name: str, rel: str):
-    apps_dir = Path(__file__).resolve().parents[1] / "apps"
-    if str(apps_dir) not in sys.path:
-        sys.path.insert(0, str(apps_dir))
-    path = apps_dir / rel
+    # The hyphenated per-app folders (todo-list, …) are NOT importable packages,
+    # so their app.py is still loaded from file by path. Their own imports are
+    # absolute (deskmate.apps.*), so a bare module name loads cleanly.
+    path = _APPS_DIR / rel
     spec = importlib.util.spec_from_file_location(mod_name, path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[mod_name] = mod
@@ -28,9 +38,7 @@ def _load(mod_name: str, rel: str):
 
 
 def _todo_app():
-    # agent.py is imported by app.py; make sure it's importable first.
-    if "agent" not in sys.modules:
-        _load("agent", "agent.py")
+    _agent_module()  # ensure the shared agent module is importable first
     return _load("todo_list_app", "todo-list/app.py")
 
 
@@ -115,22 +123,23 @@ def test_non_checkbox_lines_ignored():
 # ── screen evidence guard: accept explicit tasks, reject noise ────────────────
 
 def test_screen_task_accepts_explicit_shapes():
-    agent = sys.modules.get("agent") or _load("agent", "agent.py")
+    agent = _agent_module()
     accept = [
         "TODO: fix the OCR fallback path",
         "FIXME: race in the audio loop",
         "- [ ] follow up with the vendor",
         "Can you please review the PR today?",
-        "请你今天之前确认报销单",
-        "麻烦帮我把会议纪要发一下",
-        "记得明天前提交季度报告",
+        "请你今天之前确认报销单",            # directed (请你)
+        "麻烦帮我把会议纪要发一下",          # directed (帮我)
+        "记得你明天前提交季度报告",          # ambiguous (记得) + second-person (你)
+        "@alice 麻烦更新一下文档",           # ambiguous + @-mention
     ]
     for line in accept:
         assert agent._looks_like_screen_task(line), f"should accept: {line}"
 
 
 def test_screen_task_rejects_noise():
-    agent = sys.modules.get("agent") or _load("agent", "agent.py")
+    agent = _agent_module()
     reject = [
         "def parse_todos(markdown):",            # code
         "import re",                              # code
@@ -146,10 +155,44 @@ def test_screen_task_rejects_noise():
         assert not agent._looks_like_screen_task(line), f"should reject: {line}"
 
 
+# ── 7.8: ownership/direction gate — reject tasks not owned by the user ────────
+
+def test_screen_task_rejects_ambiguous_directive_to_others():
+    """A directive with NO second-person signal is likely aimed at someone else."""
+    agent = _agent_module()
+    reject = [
+        "请更新文档",                  # group message to someone else
+        "记得明天前提交季度报告",       # no 你/您/@ — not clearly mine
+        "麻烦尽快处理这个工单",         # no second-person
+        "due today: finish the slides",  # bare deadline, no owner
+        "截止本周五交付",              # bare deadline
+    ]
+    for line in reject:
+        assert not agent._looks_like_screen_task(line), f"should reject: {line}"
+
+
+def test_screen_task_browser_todo_is_third_party_code():
+    """A TODO:/FIXME read in a browser is third-party code, not the user's task."""
+    agent = _agent_module()
+    line = "TODO: refactor this legacy parser"
+    # In an editor (own file) it's a real personal todo…
+    assert agent._looks_like_screen_task(line, is_browser=False)
+    # …but the same line seen on GitHub/Stack Overflow in a browser is not.
+    assert not agent._looks_like_screen_task(line, is_browser=True)
+
+
+def test_screen_task_directed_ask_accepted_in_browser():
+    """A chat message aimed at the user counts even in a browser (web chat)."""
+    agent = _agent_module()
+    assert agent._looks_like_screen_task(
+        "Can you please review the PR today?", is_browser=True
+    )
+
+
 # ── meeting action items now carry priority, key-anchored ─────────────────────
 
 def test_action_items_extract_priority():
-    agent = sys.modules.get("agent") or _load("agent", "agent.py")
+    agent = _agent_module()
     body = (
         "## Action Items\n"
         "- [ ] Ship fix | owner: Alice | due: 2026-06-12 | priority: high\n"

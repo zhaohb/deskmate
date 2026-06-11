@@ -15,12 +15,12 @@ import json
 import re
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
-from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from . import llm
 from .llm import http_get as _http_get
+from .. import paths
 
 OLLAMA_BASE, OLLAMA_MODEL, _OLLAMA_CHAT_TIMEOUT = llm.resolve_ollama_settings()
 MAX_ROUNDS = 8
@@ -41,7 +41,8 @@ _SUMMARY_LEAD_RE = re.compile(
     re.IGNORECASE,
 )
 
-SKILL_PATH = Path(__file__).resolve().parents[1].parent / "apps" / "SKILL.md"
+# SKILL.md is shared infrastructure shipped with the built-in apps.
+SKILL_PATH = paths.builtin_apps_dir() / "SKILL.md"
 
 ASK_TOOLS = [
     {
@@ -448,38 +449,108 @@ def _broaden_range(start: str, end: str, *, hours: float = 1.0) -> tuple[str, st
     return (s - pad).isoformat(), (e + pad).isoformat()
 
 
-def _slim_summary(result: dict[str, Any], *, max_snippets: int = 6) -> dict[str, Any]:
-    """Reduce activity-summary payload size for LLM context."""
+_QUESTION_STOPWORDS = frozenset({
+    "what", "when", "where", "who", "how", "did", "do", "i", "the", "a", "an",
+    "in", "on", "at", "to", "of", "and", "or", "my", "me", "was", "were", "is",
+    "are", "with", "for", "about", "show", "tell", "during", "between",
+    "什么", "怎么", "做", "了", "的", "我", "在", "和", "跟", "干", "啥",
+})
+
+
+def _question_terms(question: str) -> set[str]:
+    """Content tokens from the question used to score snippet relevance.
+
+    Latin words are lowercased and stopword-filtered; CJK runs of ≥2 chars are
+    kept whole (no word spaces) so an app/person/topic mentioned in the question
+    can be matched against snippet text.
+    """
+    if not question:
+        return set()
+    terms: set[str] = set()
+    for w in re.findall(r"[A-Za-z0-9_]+", question.lower()):
+        if len(w) >= 2 and w not in _QUESTION_STOPWORDS:
+            terms.add(w)
+    for run in re.findall(r"[一-鿿]{2,}", question):
+        if run not in _QUESTION_STOPWORDS:
+            terms.add(run)
+    return terms
+
+
+def _snippet_relevance(item: Any, terms: set[str]) -> int:
+    """Overlap score between question terms and a snippet's text/app/speaker."""
+    if not terms or not isinstance(item, dict):
+        return 0
+    blob = " ".join(
+        str(item.get(k, "") or "")
+        for k in ("text", "app_name", "window_name", "speaker", "speaker_name",
+                  "device", "transcription", "content")
+    ).lower()
+    if not blob:
+        return 0
+    return sum(1 for t in terms if t in blob)
+
+
+def _rerank_by_question(items: list[Any], terms: set[str]) -> list[Any]:
+    """Stable-sort items by descending question relevance (ties keep order).
+
+    Reranks BEFORE truncation so the kept top-N is the most relevant slice, not
+    an arbitrary one — e.g. "2-3pm with Alice in Slack" floats Slack/Alice
+    snippets above unrelated apps instead of wasting the small model's context.
+    """
+    if not terms or len(items) <= 1:
+        return items
+    return sorted(items, key=lambda it: _snippet_relevance(it, terms), reverse=True)
+
+
+def _slim_summary(
+    result: dict[str, Any], *, max_snippets: int = 6, question: str = "",
+) -> dict[str, Any]:
+    """Reduce activity-summary payload size for LLM context.
+
+    When ``question`` is given, snippets/key_texts/timeline are reranked by
+    relevance to the question before truncation, so the kept slice is the most
+    relevant one rather than whatever happened to come first.
+    """
     if not isinstance(result, dict):
         return result
     out = dict(result)
+    terms = _question_terms(question)
     snippets = out.get("snippets") or []
-    if len(snippets) > max_snippets:
-        out["snippets"] = snippets[:max_snippets]
-        out["snippets_truncated"] = True
+    if snippets:
+        ranked = _rerank_by_question(snippets, terms)
+        if len(ranked) > max_snippets:
+            out["snippets"] = ranked[:max_snippets]
+            out["snippets_truncated"] = True
+        else:
+            out["snippets"] = ranked
     key_texts = out.get("key_texts") or []
-    if len(key_texts) > 12:
-        out["key_texts"] = key_texts[:12]
-        out["key_texts_truncated"] = True
+    if key_texts:
+        ranked = _rerank_by_question(key_texts, terms)
+        if len(ranked) > 12:
+            out["key_texts"] = ranked[:12]
+            out["key_texts_truncated"] = True
+        else:
+            out["key_texts"] = ranked
     timeline = out.get("timeline") or []
     if len(timeline) > 15:
+        # Timeline stays chronological (it's a sequence); only truncate.
         out["timeline"] = timeline[:15]
         out["timeline_truncated"] = True
     return out
 
 
-def _json_for_llm(obj: Any, *, max_chars: int = 12000) -> str:
+def _json_for_llm(obj: Any, *, max_chars: int = 12000, question: str = "") -> str:
     text = json.dumps(obj, ensure_ascii=False)
     if len(text) <= max_chars:
         return text
     if isinstance(obj, dict) and "broadened" in obj:
         obj = dict(obj)
-        obj["broadened"] = _slim_summary(obj["broadened"], max_snippets=4)
+        obj["broadened"] = _slim_summary(obj["broadened"], max_snippets=4, question=question)
         text = json.dumps(obj, ensure_ascii=False)
     if len(text) <= max_chars:
         return text
     if isinstance(obj, dict):
-        obj = _slim_summary(obj, max_snippets=3)
+        obj = _slim_summary(obj, max_snippets=3, question=question)
         text = json.dumps(obj, ensure_ascii=False)
     if len(text) > max_chars:
         text = text[: max_chars - 20] + ',"truncated":true}'
@@ -577,17 +648,87 @@ def _gmail_range_query(start_time: str | None, end_time: str | None) -> str:
 def _infer_question_time_range(question: str, now: datetime) -> tuple[str, str] | None:
     q = question.lower()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # "N hours/minutes ago" (English + Chinese) → a window around that offset.
+    rel = _infer_relative_offset(question, q, now)
+    if rel is not None:
+        return rel
+
     if "昨天" in question or "yesterday" in q:
         start = today_start - timedelta(days=1)
         end = today_start
+    elif "前天" in question or "day before yesterday" in q:
+        start = today_start - timedelta(days=2)
+        end = today_start - timedelta(days=1)
     elif "今天" in question or "今日" in question or "today" in q:
         start = today_start
         end = now
-    elif any(token in question for token in ("刚才", "最近", "近期")) or "recent" in q:
+    elif "上午" in question or "morning" in q or "早上" in question or "今早" in question:
+        # Morning of today: 00:00–12:00.
+        start = today_start
+        end = today_start + timedelta(hours=12)
+    elif "下午" in question or "afternoon" in q:
+        start = today_start + timedelta(hours=12)
+        end = today_start + timedelta(hours=18)
+    elif "晚上" in question or "evening" in q or "tonight" in q or "今晚" in question:
+        start = today_start + timedelta(hours=18)
+        end = today_start + timedelta(hours=24)
+    elif "上周" in question or "上週" in question or "last week" in q:
+        # ISO week starting Monday; "last week" = the 7 days of the prior week.
+        this_week_start = today_start - timedelta(days=today_start.weekday())
+        start = this_week_start - timedelta(days=7)
+        end = this_week_start
+    elif "这周" in question or "这週" in question or "本周" in question or "本週" in question or "this week" in q:
+        this_week_start = today_start - timedelta(days=today_start.weekday())
+        start = this_week_start
+        end = now
+    elif "上个月" in question or "上個月" in question or "last month" in q:
+        first_this_month = today_start.replace(day=1)
+        last_month_end = first_this_month
+        prev = (first_this_month - timedelta(days=1)).replace(day=1)
+        start = prev
+        end = last_month_end
+    elif any(token in question for token in ("刚才", "剛才", "最近", "近期")) or "recent" in q or "just now" in q:
         start = now - timedelta(minutes=30)
         end = now
     else:
         return None
+    return start.isoformat(), end.isoformat()
+
+
+# "3 hours ago", "30 minutes ago", "2 天前", "5 小时前", "20 分钟前".
+_REL_OFFSET_RE = re.compile(
+    r"(\d+)\s*(hours?|hrs?|minutes?|mins?|days?|小时|小時|分钟|分鐘|天)\s*(?:ago|前|之前)",
+    re.IGNORECASE,
+)
+
+
+def _infer_relative_offset(question: str, q_lower: str, now: datetime) -> tuple[str, str] | None:
+    """Parse "N <unit> ago" / "N <单位>前" into a focused window around that time.
+
+    A relative offset names a point, not a span, so we return a ±30-minute
+    window around it (±2h for day-scale offsets) so the tool query stays
+    focused instead of scanning everything.
+    """
+    m = _REL_OFFSET_RE.search(question) or _REL_OFFSET_RE.search(q_lower)
+    if not m:
+        return None
+    try:
+        amount = int(m.group(1))
+    except ValueError:
+        return None
+    unit = m.group(2).lower()
+    if unit in ("天", "day", "days"):
+        center = now - timedelta(days=amount)
+        pad = timedelta(hours=2)
+    elif unit in ("小时", "小時", "hour", "hours", "hr", "hrs"):
+        center = now - timedelta(hours=amount)
+        pad = timedelta(minutes=30)
+    else:  # minutes
+        center = now - timedelta(minutes=amount)
+        pad = timedelta(minutes=15)
+    start = center - pad
+    end = min(now, center + pad)
     return start.isoformat(), end.isoformat()
 
 
@@ -1062,8 +1203,12 @@ def _execute_timeline(arguments: dict[str, Any], api_base: str) -> str:
     }, max_chars=24000)
 
 
-def _execute_tool(name: str, arguments: dict[str, Any], api_base: str) -> str:
-    """Execute a tool call against the local DeskMate API."""
+def _execute_tool(name: str, arguments: dict[str, Any], api_base: str, *, question: str = "") -> str:
+    """Execute a tool call against the local DeskMate API.
+
+    ``question`` (the user's original ask) is used to rerank activity-summary
+    snippets by relevance before truncation so the kept slice is on-topic.
+    """
     try:
         if name == "email_search":
             return _execute_email_search(arguments, api_base)
@@ -1112,7 +1257,7 @@ def _execute_tool(name: str, arguments: dict[str, Any], api_base: str) -> str:
                         "broadened": broad_result,
                     }
 
-            text = _json_for_llm(result)
+            text = _json_for_llm(result, question=question)
         elif name == "search":
             args = dict(arguments)
             if args.get("start_time"):
@@ -1151,12 +1296,20 @@ def _execute_tool(name: str, arguments: dict[str, Any], api_base: str) -> str:
                         "pagination": broad_result.get("pagination"),
                     }
 
-            text = _json_for_llm(result)
+            text = _json_for_llm(result, question=question)
         else:
             text = json.dumps({"error": f"unknown tool: {name}"})
     except Exception as exc:
         text = json.dumps({"error": str(exc)})
     return text
+
+
+# Per-round sampling temperature (optimization note 6.4). A small model run at a
+# single low temperature gets over-confident about its FIRST (possibly wrong)
+# tool choice and loops on it. Exploration rounds run a bit warmer to escape that
+# rut; the final answer runs cooler for stable, grounded prose.
+_EXPLORE_TEMPERATURE = 0.5
+_FINAL_TEMPERATURE = 0.2
 
 
 def _chat_ollama(
@@ -1165,6 +1318,7 @@ def _chat_ollama(
     *,
     model: str | None = None,
     num_predict: int = 4096,
+    temperature: float = _EXPLORE_TEMPERATURE,
 ) -> dict:
     return llm.chat_ollama(
         messages,
@@ -1172,6 +1326,7 @@ def _chat_ollama(
         base=OLLAMA_BASE,
         model=model or OLLAMA_MODEL,
         num_predict=num_predict,
+        temperature=temperature,
     )
 
 
@@ -1369,7 +1524,7 @@ def run_ask(
             ):
                 fn_args["start_time"], fn_args["end_time"] = inferred_email_range
 
-            tool_result = _execute_tool(fn_name, fn_args, api_base)
+            tool_result = _execute_tool(fn_name, fn_args, api_base, question=question)
             tool_log.append({
                 "tool": fn_name,
                 "args": fn_args,
@@ -1389,7 +1544,7 @@ def run_ask(
         "role": "user",
         "content": "Stop calling tools. Write your final answer now based on the data you have.",
     })
-    final = _chat_ollama(messages, tools=None, model=model)
+    final = _chat_ollama(messages, tools=None, model=model, temperature=_FINAL_TEMPERATURE)
     answer = _finalize_answer(final.get("content", ""))
     if answer:
         answer = _grounded_final_answer(

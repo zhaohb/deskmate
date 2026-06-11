@@ -80,6 +80,24 @@ def return_inserts_newline(*, shift_down: bool) -> bool:
     return shift_down
 
 
+def send_text_filter_reason(value: str) -> str | None:
+    """Reason to DROP a captured send-text value, or None to keep it.
+
+    Replaces the old ``len(value) < 5`` hard floor, which silently dropped short
+    commands ("help", "next") and CJK short sentences. We now keep anything with
+    real content and only drop genuine junk: empty / whitespace-only values and
+    values that are nothing but punctuation or symbols (e.g. a lone "."). CJK
+    ideographs and any alphanumeric content count as real, so short non-Latin
+    sends are preserved.
+    """
+    stripped = (value or "").strip()
+    if not stripped:
+        return "empty"
+    if not any(ch.isalnum() for ch in stripped):
+        return "punctuation_only"
+    return None
+
+
 class _KBDLLHOOKSTRUCT(ctypes.Structure):
     _fields_ = [
         ("vkCode", wt.DWORD),
@@ -432,7 +450,9 @@ class InputHooks:
                 logger.debug("focused-value read failed: %s", exc)
                 return
             value = (value or "").strip()
-            if len(value) < 5:
+            filter_reason = send_text_filter_reason(value)
+            if filter_reason:
+                logger.debug("dropping send-text capture (%s)", filter_reason)
                 return
             payload = {
                 "text": value,

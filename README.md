@@ -80,16 +80,96 @@ pip install -e ".[module1,module2]"      # install several (comma-separated, NO 
 | `speaker` | Speaker diarization | Tells "who said what" |
 | `redact-onnx` | PII redaction | Optional privacy-protection model |
 | `semantic` | Semantic (vector) search | Search by meaning, not just keywords |
-| `notify` | Windows desktop notifications | Used by reminder features |
 | `pipes` | Scheduled tasks (YAML) | Run reports automatically on a schedule |
 | `mcp` | MCP server | Integrate with AI agents / Claude, etc. |
 | `training` | Local LoRA fine-tuning | Fine-tune a small model on your own data, see [training docs](docs/16-learning-training.md) |
-| `full` | Most common extras at once | = tesseract + audio + vad + redact + semantic + notify + pipes. **Excludes** OpenVINO & training |
+| `full` | Most common extras at once | = tesseract + audio + vad + redact + semantic + pipes. **Excludes** OpenVINO & training |
 | `dev` | Dev tools (pytest, ruff) | Only needed to modify code / run tests |
 
 > Beginner tip: start with the default combo from Step 3. Add a module later when you
 > decide you want a feature (e.g. Chinese OCR, semantic search) — re-running
 > `pip install -e ".[...]"` is safe.
+
+### Install from a built wheel (instead of the source checkout)
+
+If you have the built `.whl` (see [Building a wheel](#-building-a-wheel-for-distribution) below)
+instead of the source tree, use the same `[extras]` syntax on the wheel file:
+
+```powershell
+:: core only
+pip install deskmate-0.1.0-py3-none-any.whl
+
+:: recommended combo (same as Step 3)
+pip install "deskmate-0.1.0-py3-none-any.whl[ocr-winrt,audio,vad,mcp]"
+```
+
+**Install (almost) everything in one go** — every optional feature at once. Note
+there is no single "all" extra, so list them explicitly. This pulls in the heavy
+deps (PyTorch, OpenVINO, ONNX Runtime, Whisper, RapidOCR…), so expect a large download:
+
+```powershell
+pip install "deskmate-0.1.0-py3-none-any.whl[ocr-tesseract,ocr-rapidocr,ocr-winrt,audio,audio-openvino,vad,speaker,redact-onnx,semantic,mcp,pipes]"
+```
+
+> This deliberately omits `training` (LoRA fine-tuning — only needed if you train
+> models; see [training docs](docs/16-learning-training.md)), `redact-onnx-dml` (the
+> DirectML build of `redact-onnx` — pick one, not both), and `dev` (test tooling).
+> The same works on the source checkout — just swap the wheel filename for `-e "."`,
+> e.g. `pip install -e ".[ocr-winrt,audio,vad,speaker,semantic,mcp,pipes]"`.
+>
+> ⚠️ Most extras pull Windows-only / GPU-specific wheels and large model runtimes.
+> Don't install everything unless you actually need it — the [recommended combo](#step-3--install-recommended-default-combo)
+> is enough for most users.
+
+### 📦 Building a wheel (for distribution)
+
+To produce a distributable wheel (e.g. to install on another machine):
+
+```powershell
+pip install build
+python -m build --wheel        :: output: dist\deskmate-0.1.0-py3-none-any.whl
+```
+
+The wheel bundles all of DeskMate's own code **and** the built-in apps
+(`deskmate/apps/`), but **not** third-party dependencies — those are recorded as
+requirements and fetched by `pip install` from PyPI. For an **offline** install,
+pre-download everything into a folder first:
+
+```powershell
+pip download "deskmate-0.1.0-py3-none-any.whl[ocr-winrt,audio,vad,mcp]" -d wheelhouse
+:: then on the offline machine:
+pip install --no-index --find-links wheelhouse "deskmate[ocr-winrt,audio,vad,mcp]"
+```
+
+### 🧠 Installing the `training` extra (LoRA fine-tuning)
+
+The `training` extra (`torch` + `unsloth` + `transformers` + `peft` + `accelerate`)
+is **deliberately left out** of the "everything" command above, because the right
+`torch` build depends on your accelerator. A pip `[extra]` can't pin a
+hardware-specific wheel (the Intel XPU `torch` lives on PyTorch's own index, not
+PyPI). Below, `WHL` = `deskmate-0.1.0-py3-none-any.whl`; on a source checkout use
+`-e "."` instead.
+
+**Intel Arc / Core-Ultra iGPU (XPU):** the XPU `torch` wheel **and** an
+oneAPI/Level-Zero/MSVC toolchain are required — there are several non-obvious
+gotchas, so this path is scripted. Install the extra, then run the setup script:
+```powershell
+pip install "WHL[training]"
+scripts\setup-intel-xpu.bat          :: pulls torch 2.10.0+xpu + Level-Zero SDK headers
+```
+Full walkthrough (oneAPI, MSVC, the toolchain gotchas) → [training docs](docs/16-learning-training.md).
+
+**CPU only** (no GPU — slow, for validating the pipeline on a tiny base like
+`Qwen/Qwen3-0.6B`, not real ≥1B runs):
+```powershell
+pip install "WHL[training]"          :: the default torch is already CPU-only
+```
+
+> Verify XPU is live after setup:
+> ```powershell
+> python -c "import torch; print(torch.__version__, getattr(torch, 'xpu', None) is not None and torch.xpu.is_available())"
+> :: expect:  2.10.0+xpu True
+> ```
 
 ---
 
@@ -213,8 +293,10 @@ deskmate serve --no-run-daemon
 ```
 
 ### LLM apps (My Apps)
-Apps live in `apps/`. Run them from the **My Apps** page or the CLI. Full list and
-examples in [apps/README.md](apps/README.md).
+Built-in apps live in `deskmate/apps/` (and ship inside the installed package);
+your own apps go in `~/.deskmate/apps/plugins/`. Run them from the **My Apps**
+page or the CLI. Full list, examples, and how to write your own in
+[deskmate/apps/README.md](deskmate/apps/README.md).
 
 | App | Purpose |
 |-----|---------|
@@ -252,7 +334,7 @@ C:\Users\<your-username>\.deskmate\
 ├── audio\           # audio chunks (when enabled)
 ├── videos\          # video chunks
 ├── checkpoints\     # LoRA training artifacts (when training)
-├── apps\            # output reports from LLM apps
+├── apps\            # LLM app output reports; apps\plugins\ for your own apps
 └── logs\            # logs
 ```
 **To wipe and start over**: stop DeskMate, then delete `data.db` and the folders above.

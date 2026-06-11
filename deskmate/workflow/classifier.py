@@ -31,6 +31,50 @@ _DEFAULT_RULES: dict[str, tuple[tuple[str, ...], ...]] = {
     ),
 }
 
+# Browser process names. When the foreground *app* is a browser, the workflow is
+# browsing regardless of what the page title says — a YouTube tutorial titled
+# "... Code ..." or a Slack web tab whose title contains "meet" must not be
+# reclassified as coding/meeting just because a keyword appears in the title.
+_BROWSER_APPS = (
+    "chrome", "msedge", "edge", "firefox", "safari", "brave", "vivaldi",
+    "opera", "arc",
+)
+
+
+def _classify_local(app_name: str, window_title: str) -> str:
+    """Heuristic classification: match the app name first, fall back to title.
+
+    Matching the *app* before the title avoids title-substring false positives
+    (e.g. a browser tab titled "...Code..." → coding). Browser apps get a
+    negative override: their workflow is always ``browsing``, since the page
+    title is not a reliable signal of what the user is actually doing.
+    """
+    app_l = (app_name or "").lower()
+    title_l = (window_title or "").lower()
+
+    # Pass 1: app-name match wins (most authoritative signal).
+    for workflow, keyword_groups in _DEFAULT_RULES.items():
+        for group in keyword_groups:
+            if any(k.lower() in app_l for k in group):
+                # Browser negative override: a browser app is browsing even when
+                # its own rule also matched (the "Chrome" → browsing case) and
+                # even if a later title check would have matched something else.
+                if any(b in app_l for b in _BROWSER_APPS):
+                    return "browsing"
+                return workflow
+
+    # Browser with no other app match (e.g. process name only in title rules).
+    if any(b in app_l for b in _BROWSER_APPS):
+        return "browsing"
+
+    # Pass 2: title fallback — only when the app name gave no signal at all, and
+    # never for browser apps (handled above).
+    for workflow, keyword_groups in _DEFAULT_RULES.items():
+        for group in keyword_groups:
+            if any(k.lower() in title_l for k in group):
+                return workflow
+    return "other"
+
 
 def classify_frame(app_name: str, window_title: str = "") -> str:
     endpoint = os.environ.get("WORKFLOW_CLASSIFIER")
@@ -45,13 +89,7 @@ def classify_frame(app_name: str, window_title: str = "") -> str:
         except Exception as exc:  # noqa: BLE001
             logger.debug("remote workflow classifier failed: %s", exc)
 
-    app_l = (app_name or "").lower()
-    title_l = (window_title or "").lower()
-    for workflow, keyword_groups in _DEFAULT_RULES.items():
-        for group in keyword_groups:
-            if any(k.lower() in app_l or k.lower() in title_l for k in group):
-                return workflow
-    return "other"
+    return _classify_local(app_name, window_title)
 
 
 class WorkflowClassifier:

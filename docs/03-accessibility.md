@@ -70,10 +70,14 @@ flowchart LR
 ## UIA tree extraction
 
 `uia_tree.py` walks the focused window's element tree to produce both flattened
-text and a structured JSON tree. It uses a **`CacheRequest`** to batch the
-properties it needs (name, control type, value, bounding rect) into a single
-cross-process round-trip per element, which is dramatically faster (~10×) than
-fetching properties one at a time over COM.
+text and a structured JSON tree. It uses a **`CacheRequest`** (subtree scope,
+raw-view filter) to prefetch every property it needs (name, control type, value,
+bounding rect, focus/enabled/offscreen flags, selection/expand state) for the
+**whole subtree in one `BuildUpdatedCache` round-trip**; each node's properties
+and children are then read from that cache, which is dramatically faster (~5-9×
+measured) than fetching properties one at a time over COM. The cached accessors
+live on the raw `comtypes` element, so if that surface is unavailable the walk
+falls back to live per-property reads (correct, just slower).
 
 `browser_url.py` is a specialized walk that finds the address-bar element of known
 browsers and reads its value — giving each frame a `browser_url`, which downstream

@@ -15,14 +15,12 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 from .app_schedules import EffectiveSchedule, daily_next_fire, discover_scheduled_apps
+from .. import paths
 from ..logger import get
 
 logger = get("engine.app_scheduler")
-
-_APPS_SRC = Path(__file__).resolve().parents[2] / "apps"
 
 # Apps whose CLI needs special args — scheduled runs only pass ``--hours`` where safe.
 _HOURS_ARG_APPS = frozenset({
@@ -64,7 +62,7 @@ class AppScheduler:
 
     def _init_schedule(self) -> None:
         now = time.time()
-        discovered = discover_scheduled_apps(_APPS_SRC)
+        discovered = discover_scheduled_apps()
         tracked: list[_TrackedApp] = []
         for name, spec in discovered:
             if spec.mode == "interval" and spec.interval_seconds:
@@ -135,8 +133,9 @@ class AppScheduler:
         return args
 
     def _fire(self, app_name: str, spec: EffectiveSchedule) -> None:
-        app_py = _APPS_SRC / app_name / "app.py"
-        if not app_py.is_file():
+        app_dir = paths.find_app_dir(app_name)
+        app_py = app_dir / "app.py" if app_dir else None
+        if app_py is None or not app_py.is_file():
             return
         cmd_args = self._build_cmd_args(app_name, spec)
         try:

@@ -14,12 +14,12 @@ from types import ModuleType
 
 import pytest
 
-_APPS_DIR = Path(__file__).resolve().parents[1] / "apps"
+_APPS_DIR = Path(__file__).resolve().parents[1] / "deskmate" / "apps"
 
 
 def _load_app(folder: str, mod_name: str) -> ModuleType:
-    if str(_APPS_DIR) not in sys.path:
-        sys.path.insert(0, str(_APPS_DIR))
+    # app.py uses absolute deskmate.apps.* imports, so it loads cleanly from
+    # file under any module name (the hyphenated folder isn't an importable pkg).
     sys.modules.pop(mod_name, None)
     spec = importlib.util.spec_from_file_location(mod_name, _APPS_DIR / folder / "app.py")
     assert spec and spec.loader

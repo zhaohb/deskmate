@@ -36,7 +36,7 @@ and output viewer — no API or frontend change needed (`_scan_apps` in
 
 ```mermaid
 flowchart TB
-    RUN["python apps/day-recap/app.py --hours 16"] --> ARGS["app.py: parse args"]
+    RUN["python deskmate/apps/day-recap/app.py --hours 16"] --> ARGS["app.py: parse args"]
     ARGS --> AG["agent.run_agent(pipe.md, window)"]
     AG --> CTX["build context header + SKILL.md + pipe body"]
     CTX --> LLM["Ollama /api/chat"]
@@ -60,14 +60,14 @@ flowchart TB
 
 ### Search behavior in apps
 
-`apps/agent.py` now mirrors `engine/ask.py`: app-driven `/search` requests default
+`deskmate/apps/agent.py` now mirrors `engine/ask.py`: app-driven `/search` requests default
 to `semantic=true`, which means apps **prefer hybrid retrieval** when they ask the
 API for context. This is mainly useful for recap/summary-style apps, where the
 prompt wording often differs from the exact captured text.
 
 ### The `timeline` tool in apps
 
-`apps/agent.py` also mirrors the Ask agent's `timeline` tool: a pipe (or the
+`deskmate/apps/agent.py` also mirrors the Ask agent's `timeline` tool: a pipe (or the
 pipe-generating LLM) can call `timeline` to read the unified `/timeline/unified`
 feed — a single, time-ordered, cross-source stream (screen / audio / input /
 clipboard / window) with provenance and a confidence score. It is the right tool
