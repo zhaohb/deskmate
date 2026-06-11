@@ -106,7 +106,7 @@ more samples arrive (`sample_count`). Deleting a chunk/transcription uses
 |-------|---------------|-------|
 | `meetings` | A detected meeting | `name`, `started_at`, `ended_at`, `metadata` |
 | `meeting_transcript_segments` | One spoken line within a meeting | links `meeting_id` + `transcription_id` + `speaker_id` |
-| `todos` | An extracted action item | `source` (email/meeting/manual), `priority`, `due`, `dedup_key` with a partial UNIQUE index for idempotent upserts |
+| `todos` | An extracted action item | `source` (email/meeting/screen/manual), `priority`, `due`, `dedup_key` with a partial UNIQUE index for idempotent upserts |
 | `tags` / `frame_tags` | Free-form labels on frames | many-to-many |
 | `memories` | Lightweight notes used by automations | `content`, optional `frame_id` |
 | `pipe_executions` | One run of a pipe/app | `pipe_name`, `status`, `output`, `started_at`/`ended_at` |

@@ -187,6 +187,57 @@ durations — use the per-app minutes and habit profiles instead.
 > the learning pipeline mines every app's markdown output into (instruction →
 > report) SFT pairs. See [16 — Learning & training](16-learning-training.md).
 
+## todo-list: extract a unified, structured todolist
+
+`todo-list` is unusual among the apps: besides writing a markdown report it
+**parses that report into structured rows** persisted to the `todos` table (via
+`db.upsert_todo`, falling back to `POST /todos`), so the Todos page can show and
+check them off. It draws on **three** evidence sources over the time window:
+
+| Source | Prefetch | Tag |
+|--------|----------|-----|
+| Email | `_todo_list_email_evidence` (reuses the email-digest per-tool prefetch; per-day blocks when the range spans days) | `source: email:<tool>` |
+| Meetings | `_do_meeting_todos_prefetch` (detected calls + their transcripts) | `source: meeting:<name>` |
+| Screen | `_do_screen_todos_prefetch` (explicit on-screen tasks from OCR / chat / notes) | `source: screen:<app>` |
+
+**Unified output format.** Every todo bullet uses pipe-delimited, key-anchored
+fields — `- [ ] <task> | from: … | due: … | source: … | priority: …`. The task
+is everything before the first `|`, so an em-dash *inside* a task is preserved
+(an earlier em-dash-delimited format silently sliced such tasks). `parse_todos`
+extracts each field by its `key:` label, so field order and missing fields never
+shift the others. The meeting-summary app (which also writes todos, via
+`_parse_action_items` / `_write_meeting_todos`) shares this pipe-delimited
+contract — both paths emit `owner`/`due`/`priority` the same way, and store the
+responsible person in `source_ref`.
+
+**Screen evidence is double-guarded against OCR false positives** — the whole
+point, since a page title or code being read can look task-ish:
+
+```mermaid
+flowchart TB
+    SEARCH["/search over the window"] --> LINES["per OCR/UI line"]
+    LINES --> SHAPE{"_looks_like_screen_task?<br/>(explicit task pattern<br/>AND not a noise pattern)"}
+    SHAPE -- no --> DROP["drop"]
+    SHAPE -- yes --> CAND["candidate line<br/>(≤25, deduped, app-tagged)"]
+    CAND --> LLM["LLM: confirm it's a real<br/>personal task, else DROP"]
+```
+
+1. **Python pre-filter** (`_looks_like_screen_task`): a line is a candidate only
+   if it matches an explicit task shape (`TODO:`/`FIXME:`, a checkbox, a directed
+   ask like "can you …" / "请你 …" / "麻烦 …" / "记得 …", or a deadline phrase) **and**
+   matches none of the noise patterns (code lines, `Stack Overflow`/`how to`
+   titles, menu bars, bare URLs, social counters, too short / too long).
+2. **LLM judgement**: the `screen_rule` tells the model to keep only lines that
+   are a real personal task the user owns and to DROP article text, page titles,
+   code being read, and UI labels.
+
+Other robustness details: `dedup_key` (a stable hash) makes re-runs **idempotent**
+— `upsert_todo` preserves the existing row's `id` and `status`, so re-extracting
+never re-opens a todo the user already completed. `list_todos` filters by the
+stored `evidence_start`/`evidence_end` window (falling back to `created_at` for
+legacy rows). The Todos page also offers a manual add (`source: manual`, no
+dedup key) straight through `POST /todos`.
+
 ## Why this shape
 
 - **`pipe.md` is the spec; `app.py` is just a runner.** Small local models (≈4B)
