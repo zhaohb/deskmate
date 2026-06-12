@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260611-sched1" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260612-models8" />
     <style>
       /* Scoped styles for the Capture & Unified Timeline view */
       #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
@@ -93,6 +93,55 @@
       #view-training .trn-pair .trn-tag.out { color: var(--online); }
       #view-training .trn-pair .trn-txt { flex: 1; font-size: 13px; line-height: 1.5; word-break: break-word; }
       #view-training .trn-pair .trn-foot { margin-top: 8px; }
+      /* Model Service view — matches the Training page's flat card idiom */
+      /* Make the view scroll vertically when its content exceeds the viewport
+         (defensive: also set in app.css's scrollable-view group). */
+      #view-models.active { overflow-y: auto; }
+      #view-models .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
+      #view-models .cap-card h3 { font-size: 14px; margin: 0 0 14px; color: var(--text); }
+      #view-models .cap-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      #view-models input[type="text"],
+      #view-models select { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); padding: 7px 9px; font-size: 13px; }
+      #view-models select { min-width: 240px; flex: 1; }
+      /* status row: pill + training-style stat boxes */
+      #view-models .ms-statusbar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+      #view-models .ms-banner-facts { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
+      #view-models .ms-banner-facts span { font-size: 12px; color: var(--muted); }
+      #view-models .ms-banner-facts b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+      #view-models .cap-pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; font-weight: 600; font-size: 13px; white-space: nowrap; }
+      #view-models .cap-pill.live { background: rgba(34,197,94,.15); color: var(--online); }
+      #view-models .cap-pill.paused { background: rgba(224,108,117,.18); color: #e06c75; }
+      /* card headers carry a muted step number (training badge palette, not an accent) */
+      #view-models .ms-step-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+      #view-models .ms-step-head h3 { margin: 0; }
+      #view-models .ms-step-num { flex: 0 0 auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: var(--radius);
+        background: var(--surface-3); color: var(--muted); font-size: 12px; font-weight: 700;
+        display: inline-flex; align-items: center; justify-content: center; }
+      #view-models .ms-step-help { margin: 0 0 14px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+      /* backend chips — mirrors training's .trn-src selectable chips */
+      #view-models .ms-segmented { display: flex; gap: 10px; flex-wrap: wrap; }
+      #view-models .ms-seg { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line);
+        border-radius: var(--radius); cursor: pointer; user-select: none; font-size: 13px; flex: 1; min-width: 220px; }
+      #view-models .ms-seg:has(input:checked) { border-color: var(--online); background: var(--surface-2); }
+      /* sub-steps inside the install card */
+      #view-models .ms-substep { padding: 14px 0; border-top: 1px solid var(--line); }
+      #view-models .ms-substep:first-of-type { border-top: none; padding-top: 0; }
+      #view-models .ms-substep-title { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+      #view-models .ms-substep-status { margin-top: 8px; font-size: 12px; color: var(--muted); }
+      #view-models .ms-field { display: flex; flex-direction: column; gap: 4px; }
+      #view-models .ms-field label { font-size: 12px; color: var(--muted); }
+      #view-models .ms-input-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      #view-models .ms-input-row input[type="text"] { flex: 1; min-width: 240px; }
+      /* readiness chips — training's .trn-badge palette */
+      #view-models .ms-chip { margin-left: auto; display: inline-block; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; font-weight: 600; background: var(--surface-3); color: var(--muted); white-space: nowrap; }
+      #view-models .ms-chip.ok { color: var(--online); }
+      /* installed-model tags — same badge idiom */
+      #view-models .ms-models { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+      #view-models .ms-models .ms-model { font-family: var(--mono); font-size: 12px; padding: 4px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); }
+      #view-models .trn-status { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; color: var(--muted); margin: 6px 0 0; max-height: 220px; overflow-y: auto; }
+      #view-models .ms-details > summary { cursor: pointer; font-size: 14px; font-weight: 600; color: var(--text); }
+      #view-models .ms-details[open] > summary { margin-bottom: 6px; }
+      #view-models progress { width: 100%; margin-top: 12px; height: 8px; }
       /* Reminders view */
       #view-reminders .rem-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
       #view-reminders .rem-card h3 { font-size: 15px; margin: 0 0 6px; color: var(--text); display: flex; align-items: center; gap: 8px; }
@@ -186,6 +235,7 @@
           <button class="nav-item" data-view="translate" type="button"><span data-i18n="nav.translate">Translate</span></button>
           <button class="nav-item" data-view="capture" type="button"><span data-i18n="nav.capture">Capture</span></button>
           <button class="nav-item" data-view="training" type="button"><span data-i18n="nav.training">Training</span></button>
+          <button class="nav-item" data-view="models" type="button"><span data-i18n="nav.models">Model Service</span></button>
           <button class="nav-item" data-view="reminders" type="button"><span data-i18n="nav.reminders">Reminders</span></button>
           <button class="nav-item nav-item--settings" data-view="settings" type="button">
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9 4a7 7 0 0 0-.1-1.1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.9-1.1L16.3 2h-4.6l-.4 2.7a7 7 0 0 0-1.9 1.1l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 3 12a7 7 0 0 0 .1 1.1l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.9 1.1l.4 2.8h4.6l.4-2.7a7 7 0 0 0 1.9-1.1l2.4 1 2-3.4-2-1.6c.06-.36.1-.73.1-1.1Z" fill="currentColor"/></svg>
@@ -748,6 +798,145 @@
           </div>
         </section>
 
+        <section id="view-models" class="view">
+          <!-- Status card: stays on its own row at the top -->
+          <div class="cap-card">
+            <h3 data-i18n="models.svc.title">Service status</h3>
+            <div class="ms-statusbar" id="msBanner">
+              <span id="msStatusPill" class="cap-pill paused" data-i18n="models.svc.stopped">Stopped</span>
+              <div class="ms-banner-facts" id="msStatusGrid"></div>
+            </div>
+            <div id="msModels" class="ms-models"></div>
+          </div>
+
+          <!-- Step 1 — Backend -->
+          <div class="cap-card ms-step">
+            <div class="ms-step-head"><span class="ms-step-num">1</span><h3 data-i18n="models.backend.title">Backend</h3></div>
+            <p class="muted ms-step-help" data-i18n="models.backend.help">Choose how DeskMate obtains the Ollama executable.</p>
+            <div class="ms-segmented" role="radiogroup">
+              <label class="ms-seg"><input type="radio" name="msBackend" value="openvino" /><span data-i18n="models.backend.openvino">OpenVINO build (provide ollama.exe)</span></label>
+              <label class="ms-seg"><input type="radio" name="msBackend" value="official" /><span data-i18n="models.backend.official">Official Ollama (auto-download)</span></label>
+            </div>
+          </div>
+
+          <!-- Step 2 — Install (OpenVINO) -->
+          <div class="cap-card ms-step" id="msOpenvinoCard">
+            <div class="ms-step-head"><span class="ms-step-num">2</span><h3 data-i18n="models.openvino.title">OpenVINO build</h3></div>
+            <p class="muted ms-step-help" data-i18n="models.openvino.help">Download ollama.exe and the OpenVINO GenAI runtime into a folder you choose, then click Start. DeskMate puts the runtime on PATH automatically — no setup step.</p>
+
+            <div class="ms-substep">
+              <div class="ms-field">
+                <label for="msDownloadDir" data-i18n="models.downloadDir.label">Download folder</label>
+                <div class="ms-input-row">
+                  <input id="msDownloadDir" type="text" data-i18n-attr="placeholder:models.downloadDir.ph" placeholder="~/.deskmate/bin/ollama-openvino" />
+                  <button id="msSaveDownloadDirBtn" type="button" data-i18n="models.downloadDir.save">Save folder</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="ms-substep">
+              <div class="ms-substep-title"><span data-i18n="models.exe.step">① ollama.exe</span><span id="msExeState" class="ms-chip"></span></div>
+              <div class="ms-field">
+                <label for="msExePath" data-i18n="models.exePath.label2">URL to download, or a local path to copy</label>
+                <div class="ms-input-row">
+                  <input id="msExePath" type="text" data-i18n-attr="placeholder:models.exePath.ph2" placeholder="https://… or C:\\...\\ollama.exe" />
+                  <button id="msDownloadExeBtn" type="button" data-i18n="models.exe.download">Get ollama.exe</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="ms-substep">
+              <div class="ms-substep-title"><span data-i18n="models.genai.step">② GenAI runtime</span><span id="msGenaiState" class="ms-chip"></span></div>
+              <div class="ms-field">
+                <label for="msGenaiUrl" data-i18n="models.genai.urlLabel">Download URL (blank = built-in default)</label>
+                <div class="ms-input-row">
+                  <input id="msGenaiUrl" type="text" data-i18n-attr="placeholder:models.genai.urlPh" placeholder="https://storage.openvinotoolkit.org/…/openvino_genai_windows_…_x86_64.zip" />
+                  <button id="msDownloadGenaiBtn" type="button" data-i18n="models.genai.download">Download GenAI runtime</button>
+                </div>
+              </div>
+              <div class="ms-field" id="msGenaiVersionRow" style="margin-top:10px; display:none">
+                <label for="msGenaiVersion" data-i18n="models.genai.version">Active version</label>
+                <div class="ms-input-row">
+                  <select id="msGenaiVersion"></select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 2 — Install (official) -->
+          <div class="cap-card ms-step" id="msOfficialCard">
+            <div class="ms-step-head"><span class="ms-step-num">2</span><h3 data-i18n="models.official.title">Official build</h3><span id="msOfficialState" class="ms-chip"></span></div>
+            <p class="muted ms-step-help" data-i18n="models.official.help">One click downloads and unpacks the official Ollama. Then start the service.</p>
+            <div class="cap-row">
+              <button id="msDownloadOfficialBtn" type="button" data-i18n="models.official.download">Download Ollama</button>
+            </div>
+          </div>
+
+          <!-- Step 3 — Start the service -->
+          <div class="cap-card ms-step">
+            <div class="ms-step-head"><span class="ms-step-num">3</span><h3 data-i18n="models.run.title">Start the service</h3></div>
+            <p class="muted ms-step-help" data-i18n="models.run.help">Launch Ollama in the background. It keeps running even after you close DeskMate.</p>
+            <div class="cap-row">
+              <button id="msStartBtn" type="button" data-i18n="models.svc.start">Start service</button>
+              <button id="msStopBtn" type="button" data-i18n="models.svc.stop">Stop service</button>
+            </div>
+          </div>
+
+          <!-- Step 4 — Model (the one Ask / apps use) -->
+          <div class="cap-card ms-step">
+            <div class="ms-step-head"><span class="ms-step-num">4</span><h3 data-i18n="models.model.title">Model</h3></div>
+            <p class="muted ms-step-help" data-i18n="models.model.help">Choose which installed model Ask and Apps use. Don't have one yet? Pull it below.</p>
+
+            <div class="ms-substep">
+              <div class="ms-substep-title"><span data-i18n="models.active.title">Active model</span></div>
+              <div class="ms-input-row">
+                <select id="msActiveModel"></select>
+              </div>
+              <div id="msActiveEmpty" class="muted ms-substep-status" data-i18n="models.active.empty" style="display:none">No models installed yet — pull one below.</div>
+            </div>
+
+            <div class="ms-substep">
+              <div class="ms-substep-title"><span data-i18n="models.pull.title">Pull a model</span></div>
+              <div class="ms-input-row">
+                <input id="msModel" type="text" data-i18n-attr="placeholder:models.pull.ph" placeholder="qwen3" />
+                <button id="msPullBtn" type="button" data-i18n="models.pull.btn">Pull</button>
+              </div>
+              <progress id="msPullProgress" value="0" max="100" style="display:none"></progress>
+              <div id="msPullStatus" class="muted ms-substep-status"></div>
+            </div>
+          </div>
+
+          <!-- Advanced (collapsed) -->
+          <details class="cap-card ms-details">
+            <summary data-i18n="models.advanced.title">Advanced</summary>
+            <div class="ms-field" style="margin-top:12px">
+              <label for="msRegistry" data-i18n="models.registry.title">Model source (registry)</label>
+              <p class="muted ms-step-help" data-i18n="models.registry.help">Custom OLLAMA_REGISTRY used when pulling models and launching the service. Leave blank for the default.</p>
+              <div class="ms-input-row">
+                <input id="msRegistry" type="text" data-i18n-attr="placeholder:models.registry.ph" placeholder="http://your-registry:port" />
+                <button id="msSaveRegistryBtn" type="button" data-i18n="models.registry.save">Save</button>
+              </div>
+            </div>
+          </details>
+
+          <!-- Service log: ollama serve's own stdout/stderr (model type, device,
+               inference, errors). Refreshes while this view is open. -->
+          <div class="cap-card">
+            <div class="ms-step-head" style="margin-bottom:8px">
+              <h3 data-i18n="models.svclog.title">Service log (Ollama)</h3>
+              <button id="msSvcLogRefresh" type="button" class="ms-chip" style="margin-left:auto; cursor:pointer; border:1px solid var(--line)" data-i18n="models.svclog.refresh">Refresh</button>
+            </div>
+            <p class="muted ms-step-help" data-i18n="models.svclog.help">The Ollama service's own output — what it logs while loading models and answering requests.</p>
+            <pre id="msSvcLog" class="trn-status" style="max-height:300px"></pre>
+          </div>
+
+          <!-- Activity log (collapsed; auto-opens on any action) -->
+          <details class="cap-card ms-details" id="msLogDetails">
+            <summary data-i18n="models.log.title">Activity log</summary>
+            <pre id="msLog" class="trn-status"></pre>
+          </details>
+        </section>
+
         <section id="view-reminders" class="view">
           <div class="rem-card">
             <h3><span data-i18n="reminders.title">Proactive reminders</span> <span id="remCount" class="rem-count" hidden></span></h3>
@@ -970,7 +1159,7 @@
       </article>
     </template>
 
-    <script src="/ui/assets/i18n.js?v=20260611-sched1" defer></script>
-    <script src="/ui/assets/app.js?v=20260611-sched1" defer></script>
+    <script src="/ui/assets/i18n.js?v=20260612-models8" defer></script>
+    <script src="/ui/assets/app.js?v=20260612-models8" defer></script>
   </body>
 </html>

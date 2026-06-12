@@ -174,6 +174,39 @@ class OllamaConfig(BaseModel):
     chat_timeout: int = 600
 
 
+class ModelServiceConfig(BaseModel):
+    """How DeskMate obtains and launches the local Ollama *service*.
+
+    Distinct from :class:`OllamaConfig`, which is the *connection* (where Ask /
+    apps talk). This section governs provisioning/lifecycle: which backend
+    binary to use, where a user-supplied OpenVINO ``ollama.exe`` lives, the
+    custom model pull source (``OLLAMA_REGISTRY``), and whether to start the
+    service automatically. The service is launched on the host:port parsed from
+    ``[ollama] base`` so both views agree on one endpoint.
+    """
+
+    # "official"  -> auto-download the official Ollama build (GitHub release).
+    # "openvino"  -> use a user-supplied OpenVINO ollama.exe (zhaohb/ollama_openvino).
+    backend: Literal["official", "openvino"] = "official"
+    # OpenVINO build: absolute path to the prebuilt ollama.exe the user obtained.
+    ollama_exe_path: str = ""
+    # Optional direct download URL for the OpenVINO ollama.exe (informational).
+    ollama_exe_url: str = ""
+    # Custom model pull source -> injected as OLLAMA_REGISTRY when launching.
+    registry: str = ""
+    # Selected GenAI runtime DLL dir put on PATH at launch (empty => newest found
+    # under the download dir's runtime/). Set when the user picks a version.
+    genai_runtime_dir: str = ""
+    # Download URL for the OpenVINO GenAI runtime zip. Empty => the built-in
+    # default (GENAI_RUNTIME_URL). The user can point at another version.
+    genai_url: str = ""
+    # Where OpenVINO downloads (ollama.exe + GenAI runtime) land. Empty =>
+    # ~/.deskmate/bin/ollama-openvino. The user can point this anywhere.
+    download_dir: str = ""
+    # Start the service automatically when the daemon boots (opt-in).
+    auto_start: bool = False
+
+
 class SearchConfig(BaseModel):
     """Semantic / hybrid search settings.
 
@@ -333,6 +366,7 @@ class Config(BaseSettings):
     redact: RedactConfig = Field(default_factory=RedactConfig)
     filters: FilterConfig = Field(default_factory=FilterConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
+    model_service: ModelServiceConfig = Field(default_factory=ModelServiceConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
     outlook: OutlookConfig = Field(default_factory=OutlookConfig)
@@ -410,14 +444,34 @@ def set_audio_languages(languages: list[str]) -> None:
 
 
 def _render_toml_value(value: object) -> str:
-    """Render a Python scalar/list as a TOML literal (bool/str/number/list)."""
+    """Render a Python scalar/list as a TOML literal (bool/str/number/list).
+
+    Strings become TOML *basic strings* with the characters TOML requires
+    escaped — critically the backslash, so Windows paths like
+    ``C:\\Users\\…\\ollama.exe`` round-trip instead of being misread as escape
+    sequences (``\\U`` → "Invalid hex value") that corrupt the file.
+    """
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
-        return f'"{value}"'
+        return _toml_basic_string(value)
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_render_toml_value(v) for v in value) + "]"
     return str(value)
+
+
+def _toml_basic_string(value: str) -> str:
+    """Quote ``value`` as a TOML basic string, escaping per the TOML spec."""
+    escaped = (
+        value.replace("\\", "\\\\")  # backslash first, so we don't double-escape
+        .replace('"', '\\"')
+        .replace("\b", "\\b")
+        .replace("\t", "\\t")
+        .replace("\n", "\\n")
+        .replace("\f", "\\f")
+        .replace("\r", "\\r")
+    )
+    return f'"{escaped}"'
 
 
 def set_config_value(section: str, key: str, value: object) -> None:
@@ -522,6 +576,16 @@ ignore_incognito = true
 base = "http://127.0.0.1:11434"
 model = "qwen3_8b_ov:v1"
 chat_timeout = 600
+
+[model_service]
+# How DeskMate downloads & launches the local Ollama service (Model Service page).
+backend = "official"          # official (auto-download) | openvino (user-supplied exe)
+ollama_exe_path = ""          # openvino: path to ollama.exe (downloaded or your own)
+registry = ""                 # custom model source -> OLLAMA_REGISTRY at launch
+genai_runtime_dir = ""        # openvino: selected GenAI runtime dir (blank = newest)
+genai_url = ""                # openvino: GenAI runtime zip URL (blank = built-in default)
+download_dir = ""             # openvino: where exe + runtime download (blank = default)
+auto_start = false            # start the service automatically when the daemon boots
 
 [server]
 host = "127.0.0.1"

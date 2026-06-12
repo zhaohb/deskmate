@@ -1312,6 +1312,48 @@ _EXPLORE_TEMPERATURE = 0.5
 _FINAL_TEMPERATURE = 0.2
 
 
+# Markers that mean "don't show this turn's text to the user": tool-call markup
+# (Qwen XML, JSON tool_call, Mistral) and the no-data-needed control tag. If the
+# streamed text starts with one of these we suppress it from the UI.
+_TOOLCALL_PREFIXES = ("<tool_call>", "<function", "[TOOL_CALLS]", _NO_LOOKUP_TAG)
+# How many leading chars to buffer before deciding prose vs suppressed markup.
+_GATE_BUFFER = 24
+
+
+def _prose_gate(on_token: Any):  # noqa: ANN201
+    """Wrap ``on_token`` so only free-text (prose) deltas reach the UI.
+
+    A tool-calling turn streams the same way as an answer, but its text is
+    tool-call markup (``<tool_call>{...}``) the user must not see. We buffer the
+    first few chars; once we can tell it's markup we stop forwarding, otherwise
+    we flush the buffer and stream normally. Returns a sink usable as
+    ``on_token``. The model's real return value (with parsed tool_calls) is
+    still produced by the stream; this only governs what is *shown*.
+    """
+    state = {"buf": "", "decided": False, "suppress": False}
+
+    def sink(delta: str) -> None:
+        if state["decided"]:
+            if not state["suppress"]:
+                on_token(delta)
+            return
+        state["buf"] += delta
+        stripped = state["buf"].lstrip()
+        # Not enough yet to decide, and what we have is still a possible prefix
+        # of a marker → keep buffering.
+        if len(stripped) < _GATE_BUFFER and any(
+            p.startswith(stripped) or stripped.startswith(p) for p in _TOOLCALL_PREFIXES
+        ) and not any(stripped.startswith(p) for p in _TOOLCALL_PREFIXES):
+            return
+        state["decided"] = True
+        state["suppress"] = any(stripped.startswith(p) for p in _TOOLCALL_PREFIXES)
+        if not state["suppress"]:
+            on_token(state["buf"])
+        state["buf"] = ""
+
+    return sink
+
+
 def _chat_ollama(
     messages: list[dict],
     tools: list[dict] | None = None,
@@ -1319,7 +1361,22 @@ def _chat_ollama(
     model: str | None = None,
     num_predict: int = 4096,
     temperature: float = _EXPLORE_TEMPERATURE,
+    on_token: Any = None,
 ) -> dict:
+    # When a token sink is provided, stream so the UI shows text as it is
+    # produced. This applies to tool-calling rounds too (the model often writes
+    # its answer in an exploration round instead of a separate final turn) — the
+    # prose gate hides any tool-call markup so only real answer text is shown.
+    if on_token is not None:
+        return llm.chat_ollama_stream(
+            messages,
+            tools,
+            base=OLLAMA_BASE,
+            model=model or OLLAMA_MODEL,
+            on_token=_prose_gate(on_token),
+            num_predict=num_predict,
+            temperature=temperature,
+        )
     return llm.chat_ollama(
         messages,
         tools,
@@ -1362,10 +1419,20 @@ def run_ask(
     *,
     api_base: str = "http://127.0.0.1:3030",
     model: str | None = None,
+    on_token: Any = None,
+    on_reset: Any = None,
 ) -> dict[str, Any]:
     """Run the Ask agent: question → tool calls → evidence-based answer.
 
     Returns {"answer": str, "tool_calls": [...], "error": str|None}.
+
+    When ``on_token`` is given, the model's answer text is streamed through it
+    token-by-token (across tool-calling rounds too) so a caller can surface text
+    live; tool-call markup is gated out. ``on_reset()`` (optional) is called when
+    a partial answer must be discarded (e.g. the model rambled before using a
+    tool and we retry), so the caller can clear the live preview. The returned
+    ``answer`` is still the post-processed, grounding-gated text and is
+    authoritative; treat streamed tokens as a live preview.
     """
     skill_text = ""
     if SKILL_PATH.exists():
@@ -1470,7 +1537,10 @@ def run_ask(
     tool_log: list[dict[str, Any]] = []
 
     for round_idx in range(MAX_ROUNDS):
-        response = _chat_ollama(messages, tools=ASK_TOOLS, model=model)
+        # Stream this round's prose (gated against tool-call markup) so the UI
+        # shows the answer as it is written — the model frequently writes its
+        # answer in an exploration round rather than a separate final turn.
+        response = _chat_ollama(messages, tools=ASK_TOOLS, model=model, on_token=on_token)
         messages.append(response)
 
         tool_calls = llm.extract_tool_calls(response)
@@ -1490,6 +1560,13 @@ def run_ask(
             # the first round we nudge it to use its tools and retry (whether or not
             # it emitted prose); an ungrounded answer would just be dropped anyway.
             if not tool_log and round_idx == 0:
+                # We're discarding this round's prose and asking again — clear any
+                # streamed preview so the user doesn't see the abandoned blurb.
+                if on_reset is not None:
+                    try:
+                        on_reset()
+                    except Exception:  # noqa: BLE001
+                        pass
                 messages.append({
                     "role": "user",
                     "content": (
@@ -1505,6 +1582,14 @@ def run_ask(
                 return {"answer": answer, "tool_calls": tool_log, "error": None}
             empty = _no_data_answer(tool_log, api_base=api_base, question=question)
             return {"answer": empty, "tool_calls": tool_log, "error": None}
+
+        # This round called tools; any prose it also streamed is not the answer.
+        # Clear the live preview so the upcoming grounded answer starts clean.
+        if on_reset is not None:
+            try:
+                on_reset()
+            except Exception:  # noqa: BLE001
+                pass
 
         for tc in tool_calls:
             fn = tc.get("function", {})
@@ -1544,7 +1629,10 @@ def run_ask(
         "role": "user",
         "content": "Stop calling tools. Write your final answer now based on the data you have.",
     })
-    final = _chat_ollama(messages, tools=None, model=model, temperature=_FINAL_TEMPERATURE)
+    final = _chat_ollama(
+        messages, tools=None, model=model,
+        temperature=_FINAL_TEMPERATURE, on_token=on_token,
+    )
     answer = _finalize_answer(final.get("content", ""))
     if answer:
         answer = _grounded_final_answer(

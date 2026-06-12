@@ -59,6 +59,7 @@ const titles = {
   settings: ["Settings", "Current config and monitor list"],
   capture: ["Capture", "Pause / forget / per-source toggles and the unified cross-source timeline"],
   training: ["Training", "Mine local SFT data and run on-device LoRA fine-tuning"],
+  models: ["Model Service", "Download, configure, and run the local Ollama service"],
   reminders: ["Reminders", "Proactive nudges from your habits — give feedback and view your routine"],
 };
 
@@ -411,6 +412,11 @@ function setView(name) {
   }
   if (name === "training") {
     refreshTrainingView();
+  }
+  if (name === "models") {
+    refreshModelServiceView();
+  } else {
+    stopModelServicePoll();
   }
   if (name === "reminders") {
     refreshRemindersView();
@@ -1004,6 +1010,393 @@ async function startTraining() {
     if (meta) meta.textContent = "";
   } finally {
     trainingUi.running = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ─── Model Service view (local Ollama: download / pull / run) ────────────
+const modelSvcUi = { poll: null, busy: false };
+
+// Generic NDJSON streaming consumer: POSTs to `path`, parses each newline-
+// delimited JSON object from the chunked response and hands it to `onItem`.
+// The repo had no streaming-fetch helper — `api()` buffers the whole body —
+// so the long download/pull jobs use this instead.
+async function streamNdjson(path, body, onItem) {
+  const resp = await fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!resp.ok || !resp.body) {
+    const text = await resp.text().catch(() => resp.statusText);
+    throw new Error(text || `HTTP ${resp.status}`);
+  }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      try { onItem(JSON.parse(line)); } catch (_) { /* ignore partial */ }
+    }
+  }
+  const tail = buf.trim();
+  if (tail) { try { onItem(JSON.parse(tail)); } catch (_) {} }
+}
+
+function msLog(line) {
+  const el = $("#msLog");
+  if (!el) return;
+  // Auto-expand the (collapsed) Activity log so feedback is actually visible —
+  // a fast local copy or an error would otherwise look like "nothing happened".
+  const det = $("#msLogDetails");
+  if (det && !det.open) det.open = true;
+  el.textContent += (el.textContent ? "\n" : "") + line;
+  el.scrollTop = el.scrollHeight;
+}
+
+function fmtBytes(n) {
+  if (!n || n < 0) return "?";
+  const u = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(i ? 1 : 0)} ${u[i]}`;
+}
+
+async function refreshModelServiceView() {
+  if (!state.config?.model_service) {
+    try { state.config = await api("/config"); } catch (_) { /* leave blank */ }
+  }
+  const ms = state.config?.model_service || {};
+  for (const r of document.querySelectorAll('input[name="msBackend"]')) {
+    r.checked = r.value === (ms.backend || "official");
+  }
+  if ($("#msExePath")) $("#msExePath").value = ms.ollama_exe_path || "";
+  if ($("#msDownloadDir")) $("#msDownloadDir").value = ms.download_dir || "";
+  if ($("#msGenaiUrl")) $("#msGenaiUrl").value = ms.genai_url || "";
+  if ($("#msRegistry")) $("#msRegistry").value = ms.registry || "";
+  await loadModelStatus().catch((e) => console.error("[models]", e));
+  loadServiceLog().catch((e) => console.error("[models]", e));
+  startModelServicePoll();
+}
+
+function startModelServicePoll() {
+  if (modelSvcUi.poll) return;
+  modelSvcUi.poll = setInterval(() => {
+    if (document.hidden) return;
+    loadModelStatus().catch((e) => console.error("[models]", e));
+    loadServiceLog().catch((e) => console.error("[models]", e));
+  }, 4000);
+}
+
+function stopModelServicePoll() {
+  if (modelSvcUi.poll) { clearInterval(modelSvcUi.poll); modelSvcUi.poll = null; }
+}
+
+async function loadModelStatus() {
+  const s = await api("/models/status");
+  renderModelStatus(s);
+}
+
+// Show the Ollama service's own log (its stdout/stderr) in the UI. Keeps the
+// view pinned to the bottom unless the user has scrolled up to read history.
+async function loadServiceLog() {
+  const el = $("#msSvcLog");
+  if (!el) return;
+  const { log } = await api("/models/log");
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+  el.textContent = log || T("models.svclog.empty");
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
+// Set a readiness chip's text + ok/neutral colour in one call.
+function setMsChip(sel, ok, okKey, neutralKey) {
+  const el = $(sel);
+  if (!el) return;
+  el.textContent = ok ? T(okKey) : T(neutralKey);
+  el.classList.toggle("ok", !!ok);
+}
+
+function renderModelStatus(s) {
+  const pill = $("#msStatusPill");
+  if (pill) {
+    const running = !!s.running;
+    pill.className = "cap-pill " + (running ? "live" : "paused");
+    pill.textContent = running
+      ? (s.external ? T("models.svc.external") : T("models.svc.running"))
+      : T("models.svc.stopped");
+  }
+  // Compact inline facts for the sticky status strip (only the meaningful ones).
+  const grid = $("#msStatusGrid");
+  if (grid) {
+    const facts = [];
+    if (s.version) facts.push([T("models.svc.version"), s.version]);
+    facts.push([T("models.svc.models"), String((s.models || []).length)]);
+    if (s.exe) facts.push([T("models.svc.exe"), s.exe]);
+    grid.innerHTML = facts.map(([l, n]) =>
+      `<span>${capEscape(l)}: <b>${capEscape(String(n))}</b></span>`).join("");
+  }
+  const models = $("#msModels");
+  if (models) {
+    models.innerHTML = (s.models || []).map((m) =>
+      `<span class="ms-model">${capEscape(m)}</span>`).join("");
+  }
+  // Toggle backend cards by configured backend.
+  const isOv = s.backend === "openvino";
+  if ($("#msOfficialCard")) $("#msOfficialCard").style.display = isOv ? "none" : "";
+  if ($("#msOpenvinoCard")) $("#msOpenvinoCard").style.display = isOv ? "" : "none";
+  setMsChip("#msOfficialState", s.official_installed,
+    "models.official.installed", "models.official.notInstalled");
+  setMsChip("#msExeState", s.openvino_exe_ready,
+    "models.exe.ready", "models.exe.notReady");
+  setMsChip("#msGenaiState", s.genai_runtime_installed,
+    "models.genai.installed", "models.genai.notInstalled");
+  renderGenaiVersions(s);
+  renderActiveModel(s);
+  // Stop only makes sense for a service WE manage; never kill an external one.
+  if ($("#msStopBtn")) $("#msStopBtn").disabled = !s.managed_by_deskmate;
+  if ($("#msStartBtn")) $("#msStartBtn").disabled = !!s.running;
+}
+
+async function saveModelConfig(patch) {
+  const res = await api("/models/config", { method: "POST", body: JSON.stringify(patch) });
+  if (res.errors && Object.keys(res.errors).length) {
+    const detail = Object.entries(res.errors).map(([k, v]) => `${k}: ${v}`).join("; ");
+    throw new Error(detail);
+  }
+  if (state.config) state.config.model_service = { ...(state.config.model_service || {}), ...patch };
+  if (res.status) renderModelStatus(res.status);
+  return res;
+}
+
+async function saveBackend() {
+  const sel = document.querySelector('input[name="msBackend"]:checked');
+  if (!sel) return;
+  await saveModelConfig({ backend: sel.value });
+  await loadModelStatus();
+}
+
+async function saveRegistry() {
+  const v = $("#msRegistry")?.value.trim();
+  await saveModelConfig({ registry: v || "" });
+  msLog(T("models.registry.saved"));
+}
+
+async function downloadOfficial() {
+  const btn = $("#msDownloadOfficialBtn");
+  if (modelSvcUi.busy) return;
+  modelSvcUi.busy = true;
+  if (btn) btn.disabled = true;
+  try {
+    await streamNdjson("/models/download-ollama", null, (m) => {
+      if (m.phase === "download") {
+        msLog(T("models.dl.downloading", { done: fmtBytes(m.downloaded), total: fmtBytes(m.total) }));
+      } else if (m.phase === "extract") {
+        msLog(T("models.dl.extracting"));
+      } else if (m.phase === "done") {
+        msLog(T("models.dl.done") + " " + (m.result || ""));
+      } else if (m.phase === "error") {
+        msLog(T("models.dl.failed") + " " + (m.error || ""));
+      }
+    });
+    await loadModelStatus();
+  } finally {
+    modelSvcUi.busy = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function saveDownloadDir() {
+  const v = $("#msDownloadDir")?.value.trim();
+  await saveModelConfig({ download_dir: v || "" });
+  msLog(T("models.downloadDir.saved"));
+}
+
+// Stream a download into the log, refreshing status when done. Shared by the
+// exe download (URL or local copy) and the GenAI runtime download. `workingKey`
+// is logged immediately so a click always produces visible feedback, even when
+// the work is instant (a local copy) or fails. Errors are surfaced in the log
+// rather than the Home health panel.
+async function streamDownloadToLog(path, body, doneKey, btn, workingKey) {
+  if (modelSvcUi.busy) return;
+  modelSvcUi.busy = true;
+  if (btn) btn.disabled = true;
+  if (workingKey) msLog(T(workingKey));
+  try {
+    let failed = "";
+    await streamNdjson(path, body, (m) => {
+      if (m.phase === "download") {
+        msLog(T("models.dl.downloading", { done: fmtBytes(m.downloaded), total: fmtBytes(m.total) }));
+      } else if (m.phase === "extract") {
+        msLog(T("models.dl.extracting"));
+      } else if (m.phase === "done") {
+        msLog(T(doneKey) + " " + (m.result || ""));
+        if (m.status) renderModelStatus(m.status);
+      } else if (m.phase === "error") {
+        failed = m.error || "";
+        msLog(T("models.dl.failed") + " " + failed);
+      }
+    });
+    await loadModelStatus();
+  } catch (err) {
+    // e.g. a 400 (bad path) — keep the message on THIS page, not the Home panel.
+    msLog(T("models.dl.failed") + " " + (err.message || String(err)));
+  } finally {
+    modelSvcUi.busy = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Get the OpenVINO ollama.exe — value may be an http(s) URL (downloaded) or a
+// local path (copied into the download folder).
+async function downloadOpenvinoExe() {
+  const exe = $("#msExePath")?.value.trim();
+  if (!exe) { msLog(T("models.exe.need")); return; }
+  const isUrl = /^https?:\/\//i.test(exe);
+  await streamDownloadToLog("/models/download-openvino-exe", { exe },
+    "models.exe.got", $("#msDownloadExeBtn"),
+    isUrl ? "models.exe.working" : "models.exe.copying");
+}
+
+async function downloadGenai() {
+  const url = $("#msGenaiUrl")?.value.trim();
+  await streamDownloadToLog("/models/download-genai", url ? { url } : null,
+    "models.genai.got", $("#msDownloadGenaiBtn"), "models.genai.working");
+}
+
+// Render the installed-version picker; only shown when >1 version exists.
+function renderGenaiVersions(s) {
+  const row = $("#msGenaiVersionRow");
+  const sel = $("#msGenaiVersion");
+  const versions = s.genai_versions || [];
+  if (!row || !sel) return;
+  if (versions.length <= 1) { row.style.display = "none"; sel.innerHTML = ""; return; }
+  row.style.display = "";
+  sel.innerHTML = versions.map((v) =>
+    `<option value="${capEscape(v.bin)}"${v.bin === s.genai_selected ? " selected" : ""}>${capEscape(v.name)}</option>`
+  ).join("");
+}
+
+async function selectGenaiVersion() {
+  const bin = $("#msGenaiVersion")?.value;
+  if (!bin) return;
+  await saveModelConfig({ genai_runtime_dir: bin });
+  msLog(T("models.genai.versionSet"));
+}
+
+// Active-model selector: the installed model Ask / apps use ([ollama] model).
+function renderActiveModel(s) {
+  const sel = $("#msActiveModel");
+  const empty = $("#msActiveEmpty");
+  if (!sel) return;
+  const models = s.models || [];
+  const active = s.active_model || "";
+  // Include the configured active model even if the service is stopped (so we
+  // don't lose the current selection while not running).
+  const opts = [...models];
+  if (active && !opts.includes(active)) opts.unshift(active);
+  if (!opts.length) {
+    sel.style.display = "none";
+    if (empty) empty.style.display = "";
+    sel.innerHTML = "";
+    return;
+  }
+  sel.style.display = "";
+  if (empty) empty.style.display = "none";
+  sel.innerHTML = opts.map((m) =>
+    `<option value="${capEscape(m)}"${m === active ? " selected" : ""}>${capEscape(m)}</option>`
+  ).join("");
+}
+
+async function setActiveModel() {
+  const model = $("#msActiveModel")?.value;
+  if (!model) return;
+  const s = await api("/models/active", { method: "POST", body: JSON.stringify({ model }) });
+  if (s.status) renderModelStatus(s.status);
+  if (state.config?.ollama) state.config.ollama.model = model;
+  msLog(T("models.active.set", { model }));
+}
+
+async function pullModel() {
+  const model = $("#msModel")?.value.trim();
+  const btn = $("#msPullBtn");
+  const bar = $("#msPullProgress");
+  const stat = $("#msPullStatus");
+  if (!model) { if (stat) stat.textContent = T("models.pull.needName"); return; }
+  if (modelSvcUi.busy) return;
+  modelSvcUi.busy = true;
+  if (btn) btn.disabled = true;
+  if (bar) { bar.style.display = ""; bar.value = 0; }
+  try {
+    await streamNdjson("/models/pull", { model }, (m) => {
+      if (m.error) {
+        if (stat) stat.textContent = T("models.pull.failed") + " " + m.error;
+        return;
+      }
+      if (typeof m.total === "number" && typeof m.completed === "number" && m.total > 0) {
+        if (bar) bar.value = Math.round((m.completed / m.total) * 100);
+      }
+      if (stat) stat.textContent = (m.status || "") +
+        (m.total ? ` (${fmtBytes(m.completed || 0)} / ${fmtBytes(m.total)})` : "");
+    });
+    const ok = stat && !/error|failed/i.test(stat.textContent);
+    if (ok) {
+      if (stat) stat.textContent = T("models.pull.done");
+      // A freshly pulled model becomes the active one if nothing is set yet,
+      // so the user can use it immediately without a second step.
+      if (!state.config?.ollama?.model) {
+        try {
+          await api("/models/active", { method: "POST", body: JSON.stringify({ model }) });
+          if (state.config?.ollama) state.config.ollama.model = model;
+        } catch (_) { /* non-fatal */ }
+      }
+    }
+    await loadModelStatus();
+  } finally {
+    modelSvcUi.busy = false;
+    if (btn) btn.disabled = false;
+    if (bar) bar.style.display = "none";
+  }
+}
+
+async function startService() {
+  const btn = $("#msStartBtn");
+  if (btn) btn.disabled = true;
+  // Immediate feedback — starting probes for up to ~12s, so without this the
+  // click looks like nothing happened.
+  msLog(T("models.svc.starting"));
+  try {
+    const s = await api("/models/start", { method: "POST" });
+    renderModelStatus(s);
+    if (s.running) {
+      msLog(T("models.svc.startedOk"));
+    } else {
+      // Surface the backend's reason (exit code + log tail) when available.
+      msLog(T("models.svc.startFailed") + " " + (s.start_error || T("models.svc.startPending")));
+      if (btn) btn.disabled = false;
+    }
+  } catch (err) {
+    msLog(T("models.svc.startFailed") + " " + (err.message || err));
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function stopService() {
+  const btn = $("#msStopBtn");
+  if (btn) btn.disabled = true;
+  msLog(T("models.svc.stopping"));
+  try {
+    const s = await api("/models/stop", { method: "POST" });
+    renderModelStatus(s);
+    msLog(T("models.svc.stoppedOk"));
+  } catch (err) {
+    msLog(T("models.svc.stopFailed") + " " + (err.message || err));
     if (btn) btn.disabled = false;
   }
 }
@@ -3191,10 +3584,43 @@ async function runSearch(event) {
   if (stats) stats.textContent = T("ask.searching");
 
   try {
-    const result = await api("/ask", {
-      method: "POST",
-      body: JSON.stringify({ question: q }),
+    // Stream the answer: tokens render live as the model writes them, then the
+    // authoritative (grounding-gated) result replaces the live text on "done".
+    let streamed = "";
+    let result = null;
+    let started = false;
+    await streamNdjson("/ask/stream", { question: q }, (m) => {
+      if (m.type === "token") {
+        if (!started) { started = true; if (stats) stats.textContent = T("ask.answering"); }
+        streamed += m.text;
+        if (answer) {
+          answer.innerHTML = markdownToHtml(streamed);
+          answer.classList.remove("hidden");
+        }
+      } else if (m.type === "reset") {
+        // The model rambled before calling a tool (or we retried); the streamed
+        // partial is abandoned. Clear the live preview so the user doesn't see
+        // the discarded text linger until the grounded answer arrives.
+        streamed = "";
+        started = false;
+        if (answer) {
+          answer.innerHTML = `<div class="ask-loading"><span class="ask-spinner"></span>${T("ask.thinkingSearching")}</div>`;
+        }
+        if (stats) stats.textContent = T("ask.searching");
+      } else if (m.type === "done") {
+        result = m;
+      } else if (m.type === "error") {
+        result = { error: m.error };
+      }
     });
+
+    if (!result) result = { answer: streamed };
+
+    if (result.error) {
+      if (stats) stats.textContent = "Error";
+      if (answer) { answer.innerHTML = `<div class="ask-error">Ask failed: ${escHtml(result.error)}</div>`; answer.classList.remove("hidden"); }
+      return;
+    }
 
     if (stats) {
       const n = (result.tool_calls || []).length;
@@ -3202,7 +3628,8 @@ async function runSearch(event) {
     }
 
     if (answer) {
-      answer.innerHTML = markdownToHtml(result.answer || "(No matching data found)");
+      // Authoritative grounded answer (may differ from streamed preview).
+      answer.innerHTML = markdownToHtml(result.answer || streamed || "(No matching data found)");
       answer.classList.remove("hidden");
     }
 
@@ -3804,6 +4231,22 @@ function wireEvents() {
   $("#trnRefreshBtn")?.addEventListener("click", () => loadTrainingData().catch(showError));
   $("#trnStartBtn")?.addEventListener("click", () => startTraining());
 
+  // ─── Model Service ────────────────────────────────────────────────────
+  $("#msDownloadOfficialBtn")?.addEventListener("click", () => downloadOfficial().catch(showError));
+  $("#msSaveDownloadDirBtn")?.addEventListener("click", () => saveDownloadDir().catch(showError));
+  $("#msDownloadExeBtn")?.addEventListener("click", () => downloadOpenvinoExe().catch(showError));
+  $("#msDownloadGenaiBtn")?.addEventListener("click", () => downloadGenai().catch(showError));
+  $("#msGenaiVersion")?.addEventListener("change", () => selectGenaiVersion().catch(showError));
+  $("#msActiveModel")?.addEventListener("change", () => setActiveModel().catch(showError));
+  $("#msSaveRegistryBtn")?.addEventListener("click", () => saveRegistry().catch(showError));
+  $("#msSvcLogRefresh")?.addEventListener("click", () => loadServiceLog().catch(showError));
+  $("#msPullBtn")?.addEventListener("click", () => pullModel().catch(showError));
+  $("#msStartBtn")?.addEventListener("click", () => startService().catch(showError));
+  $("#msStopBtn")?.addEventListener("click", () => stopService().catch(showError));
+  for (const r of document.querySelectorAll('input[name="msBackend"]')) {
+    r.addEventListener("change", () => saveBackend().catch(showError));
+  }
+
   // ─── Reminders ────────────────────────────────────────────────────────
   $("#remRefreshBtn")?.addEventListener("click", () => refreshRemindersView());
   $("#remGlobalToggle")?.addEventListener("change", (e) =>
@@ -3854,6 +4297,7 @@ if (window.I18N) {
     const id = active ? active.id : "";
     if (id === "view-training") refreshTrainingView();
     else if (id === "view-reminders") refreshRemindersView();
+    else if (id === "view-models") loadModelStatus().catch((e) => console.error("[models]", e));
     else if (id === "view-settings") renderSettingsForm();
     // Apps rows (Run/History/Schedule buttons, schedule labels) are JS-built — re-render.
     renderApps();

@@ -19,6 +19,7 @@ import json
 import os
 import re
 import socket
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import ParseResult, urlparse
 
@@ -420,3 +421,107 @@ def chat_ollama(
         body["tools"] = tools
     result = http_post(f"{base}/api/chat", body, timeout=timeout)
     return normalize_assistant_message(result.get("message", {}))
+
+
+def chat_ollama_stream(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    *,
+    base: str,
+    model: str,
+    on_token: Callable[[str], None],
+    num_predict: int = 4096,
+    temperature: float = 0.3,
+    timeout: int | None = None,
+    keep_alive: str | int | None = _KEEP_ALIVE,
+) -> dict:
+    """Stream Ollama ``/api/chat`` (``stream:true``), calling ``on_token`` per chunk.
+
+    Same request shape as :func:`chat_ollama` but reads the NDJSON token stream
+    so callers can surface text as it is produced (the OpenVINO build emits one
+    JSON object per token). ``on_token(text)`` is invoked for each non-empty
+    content delta; the accumulated, normalized assistant message is returned at
+    the end (so existing post-processing — including tool-call extraction — still
+    works). ``tools`` may be passed so a tool-calling turn can also stream: any
+    structured ``tool_calls`` deltas are accumulated and returned in the final
+    message (callers gate what they actually show the user — see ask.py).
+
+    Uses a raw proxy-bypassing ``http.client`` connection (like
+    :func:`raw_request`) read line-by-line; transport errors raise the same
+    :class:`FriendlyError` subtypes as the non-streaming path.
+    """
+    if timeout is None:
+        timeout = _CHAT_TIMEOUT
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "think": False,
+        "options": {"temperature": temperature, "num_predict": num_predict},
+    }
+    if tools:
+        body["tools"] = tools
+    if keep_alive is not None:
+        body["keep_alive"] = keep_alive
+
+    parsed = urlparse(base)
+    endpoint, service, fix = _describe_endpoint(parsed)
+    conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=timeout)
+    pieces: list[str] = []
+    stream_tool_calls: list[dict] = []
+    try:
+        conn.request(
+            "POST", "/api/chat",
+            body=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        if resp.status >= 400:
+            snippet = resp.read().decode("utf-8", "replace")[:500].strip()
+            cause, http_fix = _http_failure_hint(resp.status, snippet, parsed, service, fix)
+            raise FriendlyHTTPError(
+                f"{service} returned HTTP {resp.status} for /api/chat.",
+                cause=cause, fix=http_fix,
+            )
+        for raw_line in resp:
+            line = raw_line.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            message = obj.get("message") or {}
+            delta = message.get("content") or ""
+            if delta:
+                pieces.append(delta)
+                try:
+                    on_token(delta)
+                except Exception:  # noqa: BLE001  (a UI sink must never kill the stream)
+                    pass
+            # Some builds emit structured tool_calls as their own delta object.
+            tcs = message.get("tool_calls")
+            if tcs:
+                stream_tool_calls.extend(tcs)
+            if obj.get("done"):
+                break
+    except TimeoutError as exc:
+        conn.close()
+        raise FriendlyTimeoutError(
+            f"Timed out after {timeout}s waiting for {service} at {endpoint}.",
+            cause="the model did not finish generating in time.",
+            fix="retry, raise the timeout, or use a smaller/faster model.",
+        ) from exc
+    except ConnectionRefusedError as exc:
+        conn.close()
+        raise FriendlyConnectionError(
+            f"Cannot reach {service} at {endpoint} (connection refused).",
+            cause=f"{service} is not running, or not listening on {endpoint}.",
+            fix=fix,
+        ) from exc
+    finally:
+        conn.close()
+    msg: dict[str, Any] = {"role": "assistant", "content": "".join(pieces)}
+    if stream_tool_calls:
+        msg["tool_calls"] = stream_tool_calls
+    return normalize_assistant_message(msg)

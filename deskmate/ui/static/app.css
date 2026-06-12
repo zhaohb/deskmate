@@ -425,6 +425,7 @@ a:hover {
 #view-settings.active,
 #view-training.active,
 #view-reminders.active,
+#view-models.active,
 #view-capture.active {
   overflow: auto;
   padding: 1.25rem 1.5rem;

@@ -69,7 +69,9 @@ URL and model on each call, so there's no hidden session state. It wraps failure
 in `FriendlyError` subtypes (`FriendlyConnectionError`, `FriendlyTimeoutError`, …)
 that translate low-level errors into actionable messages ("Ollama isn't running",
 "model not pulled", "timed out"). The same helpers are reused by `apps/agent.py`,
-keeping the request shape symmetric.
+keeping the request shape symmetric. Provisioning and *running* that Ollama
+service (download / pull / start-stop) is owned by `modelsvc/` —
+see [20 — Model Service](20-model-service.md).
 
 ## Activity summary
 

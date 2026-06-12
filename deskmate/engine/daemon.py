@@ -278,6 +278,17 @@ class Daemon:
         # runtime via set_translation without restarting the daemon).
         if self.translator is not None:
             self._ensure_translate_worker()
+        # Opt-in: launch the local Ollama service on boot. Detached + persistent,
+        # so there is intentionally NO matching teardown in stop() — the service
+        # is stopped only from the Model Service page's Stop button.
+        ms = getattr(self.cfg, "model_service", None)
+        if ms is not None and getattr(ms, "auto_start", False):
+            try:
+                from .. import modelsvc  # noqa: PLC0415
+
+                modelsvc.start_service(self.cfg)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("model service auto-start failed: %s", exc)
         logger.info("daemon started (event_driven=%s)", self.cfg.capture.event_driven)
 
     def stop(self) -> None:

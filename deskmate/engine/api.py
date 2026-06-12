@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import platform
+import queue
 import re
 import shutil
 import subprocess
@@ -1741,6 +1742,82 @@ def create_app(
             logger.debug("ask_history logging skipped", exc_info=True)
         return result
 
+    @app.post("/ask/stream")
+    async def ask_question_stream(request: Request) -> StreamingResponse:
+        """Like ``/ask`` but streams the final answer live as NDJSON.
+
+        Emits one JSON object per line:
+          ``{"type":"token","text":...}``  — a chunk of the final answer
+          ``{"type":"done","answer":...,"tool_calls":[...],"ask_id":...}`` — the
+          authoritative grounded result (use this, not the concatenated tokens)
+          ``{"type":"error","error":...}`` — failure
+        Tool-call rounds run first (no token output); tokens flow once the model
+        writes its final answer, so the user sees text instead of a long wait.
+        """
+        body = await request.json()
+        question = (body.get("question") or body.get("q") or "").strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="question is required")
+
+        from ..engine.ask import run_ask  # noqa: PLC0415
+
+        api_base = f"http://{cfg.server.host}:{cfg.server.port}"
+        q: queue.Queue = queue.Queue(maxsize=512)
+        _DONE = object()
+
+        def _on_token(text: str) -> None:
+            try:
+                q.put_nowait({"type": "token", "text": text})
+            except queue.Full:
+                pass
+
+        def _on_reset() -> None:
+            # A streamed partial was abandoned (model rambled then used a tool /
+            # retried) — tell the UI to clear the live preview.
+            try:
+                q.put_nowait({"type": "reset"})
+            except queue.Full:
+                pass
+
+        def _worker() -> None:
+            try:
+                result = run_ask(
+                    question, api_base=api_base, on_token=_on_token, on_reset=_on_reset
+                )
+                if isinstance(result, dict):
+                    for entry in result.get("tool_calls") or []:
+                        if isinstance(entry, dict):
+                            entry.pop("result", None)
+                    try:
+                        answer = result.get("answer") or ""
+                        if answer and not result.get("error"):
+                            ask_id = _ask_store().record(
+                                question=question, answer=answer,
+                                tool_count=len(result.get("tool_calls") or []),
+                            )
+                            if ask_id is not None:
+                                result["ask_id"] = ask_id
+                    except Exception:  # noqa: BLE001
+                        logger.debug("ask_history logging skipped", exc_info=True)
+                q.put({"type": "done", **(result or {})})
+            except Exception as exc:  # noqa: BLE001
+                q.put({"type": "error", "error": str(exc)})
+            finally:
+                q.put(_DONE)
+
+        async def _gen() -> AsyncIterator[str]:
+            worker = asyncio.create_task(asyncio.to_thread(_worker))
+            try:
+                while True:
+                    item = await asyncio.to_thread(q.get)
+                    if item is _DONE:
+                        break
+                    yield json.dumps(item, ensure_ascii=False) + "\n"
+            finally:
+                await worker
+
+        return StreamingResponse(_gen(), media_type="application/x-ndjson")
+
     @app.post("/ask/{ask_id}/feedback")
     async def ask_feedback(ask_id: int, request: Request) -> dict[str, Any]:
         body = await _safe_json(request)
@@ -2367,6 +2444,240 @@ def create_app(
 
         summary["sources"] = src
         return summary
+
+    # ── Model Service (local Ollama: download / pull / run) ──────────────────
+    def _ndjson_install(install_fn, on_done=None) -> StreamingResponse:  # noqa: ANN001
+        """Stream a blocking download/extract job as NDJSON progress lines.
+
+        ``install_fn(progress)`` runs in a worker thread; its ``progress(done,
+        total)`` callback feeds a queue that the async generator drains off the
+        event loop (same off-loop technique as ``/events/stream``). Emits
+        ``{phase: download|extract|done|error, ...}`` objects, one per line.
+        ``on_done(result)`` runs in the worker after success (e.g. to persist
+        config) and may return a dict merged into the ``done`` line.
+        """
+        q: queue.Queue = queue.Queue(maxsize=256)
+        _DONE = object()
+
+        def _progress(done: int, total: int) -> None:
+            # Drop intermediate ticks if the consumer falls behind; never block
+            # the download thread on a full queue.
+            try:
+                q.put_nowait({"phase": "download", "downloaded": done, "total": total})
+            except queue.Full:
+                pass
+
+        def _worker() -> None:
+            try:
+                result = install_fn(_progress)
+                q.put({"phase": "extract"})
+                extra = on_done(result) if on_done else None
+                done_line = {"phase": "done", "result": str(result)}
+                if isinstance(extra, dict):
+                    done_line.update(extra)
+                q.put(done_line)
+            except Exception as exc:  # noqa: BLE001
+                q.put({"phase": "error", "error": str(exc)})
+            finally:
+                q.put(_DONE)
+
+        async def _gen() -> AsyncIterator[str]:
+            worker = asyncio.create_task(asyncio.to_thread(_worker))
+            try:
+                while True:
+                    item = await asyncio.to_thread(q.get)
+                    if item is _DONE:
+                        break
+                    yield json.dumps(item, ensure_ascii=False) + "\n"
+            finally:
+                await worker
+
+        return StreamingResponse(_gen(), media_type="application/x-ndjson")
+
+    @app.get("/models/status")
+    def models_status() -> dict[str, Any]:
+        from .. import modelsvc  # noqa: PLC0415
+
+        return modelsvc.status(cfg)
+
+    @app.post("/models/config")
+    async def models_config(request: Request) -> dict[str, Any]:
+        from .. import modelsvc  # noqa: PLC0415
+        from ..config import set_config_value  # noqa: PLC0415
+
+        body = await _safe_json(request)
+        allowed = {"backend", "ollama_exe_path", "ollama_exe_url",
+                   "registry", "genai_runtime_dir", "genai_url",
+                   "download_dir", "auto_start"}
+        saved: list[str] = []
+        errors: dict[str, str] = {}
+        for key, raw in body.items():
+            if key not in allowed:
+                errors[key] = "unknown setting"
+                continue
+            try:
+                if key == "backend":
+                    value: Any = str(raw)
+                    if value not in (modelsvc.BACKEND_OFFICIAL, modelsvc.BACKEND_OPENVINO):
+                        raise ValueError("backend must be 'official' or 'openvino'")
+                elif key == "auto_start":
+                    value = bool(raw)
+                elif key == "ollama_exe_path" and str(raw).strip():
+                    # Validate a user-supplied exe; store the resolved path.
+                    value = str(modelsvc.validate_exe_path(str(raw)))
+                else:
+                    value = str(raw)
+            except ValueError as exc:
+                errors[key] = str(exc)
+                continue
+            set_config_value("model_service", key, value)
+            setattr(cfg.model_service, key, value)
+            saved.append(key)
+        return {"saved": saved, "errors": errors, "status": modelsvc.status(cfg)}
+
+    @app.post("/models/download-ollama")
+    def models_download_ollama() -> StreamingResponse:
+        from .. import modelsvc  # noqa: PLC0415
+
+        return _ndjson_install(modelsvc.install_official)
+
+    def _persist_ms(updates: dict) -> dict:
+        """Write each ``[model_service]`` key to disk + live cfg; return status."""
+        from .. import modelsvc  # noqa: PLC0415
+        from ..config import set_config_value  # noqa: PLC0415
+
+        for k, v in updates.items():
+            set_config_value("model_service", k, v)
+            setattr(cfg.model_service, k, v)
+        return {"status": modelsvc.status(cfg)}
+
+    @app.post("/models/download-openvino-exe")
+    async def models_download_openvino_exe(request: Request) -> StreamingResponse:
+        """Obtain the OpenVINO ``ollama.exe`` (download a URL or copy a local path).
+
+        Body ``{exe: <url-or-path>}``. Streams progress; on success persists
+        ``backend=openvino`` + the resolved exe path. The GenAI runtime is a
+        separate download (``/models/download-genai``).
+        """
+        from .. import modelsvc  # noqa: PLC0415
+
+        body = await _safe_json(request)
+        exe_src = str(body.get("exe") or cfg.model_service.ollama_exe_path or "").strip()
+        if not exe_src:
+            raise HTTPException(status_code=400, detail="ollama.exe path or URL required")
+        # A local path can be validated up front (a URL is checked on download).
+        if not exe_src.lower().startswith(("http://", "https://")):
+            try:
+                modelsvc.validate_exe_path(exe_src)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        dl_dir = modelsvc.resolve_download_dir(cfg)
+        return _ndjson_install(
+            lambda progress: modelsvc.obtain_openvino_exe(exe_src, dl_dir, progress=progress),
+            on_done=lambda result: _persist_ms({
+                "backend": modelsvc.BACKEND_OPENVINO,
+                "ollama_exe_path": str(result),
+            }),
+        )
+
+    @app.post("/models/download-genai")
+    async def models_download_genai(request: Request) -> StreamingResponse:
+        """Download + extract the OpenVINO GenAI runtime into the download dir.
+
+        Body ``{url?}`` overrides the default GenAI URL so the user can fetch a
+        specific version. On success the persisted ``genai_runtime_dir`` points
+        at the just-installed version (and the URL is remembered).
+        """
+        from .. import modelsvc  # noqa: PLC0415
+
+        body = await _safe_json(request)
+        url = str(body.get("url") or "").strip() or None
+        if url and not url.lower().startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="url must be http(s)")
+        dl_dir = modelsvc.resolve_download_dir(cfg)
+
+        def _on_done(result) -> dict:  # noqa: ANN001
+            updates = {"genai_runtime_dir": str(result)}
+            if url:
+                updates["genai_url"] = url
+            return _persist_ms(updates)
+
+        return _ndjson_install(
+            lambda progress: modelsvc.download_genai(dl_dir, progress=progress, url=url),
+            on_done=_on_done,
+        )
+
+    @app.get("/models/genai-versions")
+    def models_genai_versions() -> dict[str, Any]:
+        """List installed GenAI runtime versions + which one is selected for PATH."""
+        from .. import modelsvc  # noqa: PLC0415
+
+        return {
+            "versions": modelsvc.list_genai_versions(cfg),
+            "selected": cfg.model_service.genai_runtime_dir or "",
+        }
+
+    @app.post("/models/pull")
+    async def models_pull(request: Request) -> StreamingResponse:
+        from .. import modelsvc  # noqa: PLC0415
+
+        body = await _safe_json(request)
+        model = str(body.get("model") or cfg.ollama.model or "").strip()
+        if not model:
+            raise HTTPException(status_code=400, detail="model name required")
+
+        async def _gen() -> AsyncIterator[str]:
+            gen = modelsvc.pull_model_stream(cfg, model)
+            while True:
+                item = await asyncio.to_thread(next, gen, None)
+                if item is None:
+                    break
+                yield json.dumps(item, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(_gen(), media_type="application/x-ndjson")
+
+    @app.post("/models/active")
+    async def models_active(request: Request) -> dict[str, Any]:
+        """Set the active model — the ``[ollama] model`` Ask / apps use.
+
+        Body ``{model}``. Persisted to ``[ollama] model`` (not ``[model_service]``)
+        so the selection the user makes here is the one every other surface
+        reads. Returns the refreshed model-service status.
+        """
+        from .. import modelsvc  # noqa: PLC0415
+        from ..config import set_config_value  # noqa: PLC0415
+
+        body = await _safe_json(request)
+        model = str(body.get("model") or "").strip()
+        if not model:
+            raise HTTPException(status_code=400, detail="model name required")
+        set_config_value("ollama", "model", model)
+        cfg.ollama.model = model
+        return {"active_model": model, "status": modelsvc.status(cfg)}
+
+    @app.post("/models/start")
+    async def models_start() -> dict[str, Any]:
+        from .. import modelsvc  # noqa: PLC0415
+
+        try:
+            return await run_in_threadpool(modelsvc.start_service, cfg)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/models/stop")
+    async def models_stop() -> dict[str, Any]:
+        from .. import modelsvc  # noqa: PLC0415
+
+        return await run_in_threadpool(modelsvc.stop_service, cfg)
+
+    @app.get("/models/log")
+    def models_log(lines: int = 400) -> dict[str, Any]:
+        """Return the tail of the Ollama service's own stdout/stderr log."""
+        from .. import modelsvc  # noqa: PLC0415
+
+        n = max(1, min(int(lines), 2000))
+        return {"log": modelsvc.read_service_log(max_lines=n)}
 
     @app.exception_handler(Exception)
     async def _eh(_request, exc):  # noqa: ANN001

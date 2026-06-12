@@ -120,6 +120,47 @@ def ov_cache_dir() -> Path:
     return root() / "ov_cache"
 
 
+# ─── model service (managed Ollama executable + runtime) ─────────────────────
+def bin_dir() -> Path:
+    """Directory holding executables DeskMate downloads/manages (``~/.deskmate/bin``).
+
+    Lives under the data dir so it survives upgrades and is already covered by
+    the ``.deskmate/`` gitignore rule — downloaded binaries never land in git.
+    """
+    return root() / "bin"
+
+
+def ollama_official_dir() -> Path:
+    """Where the auto-downloaded official Ollama build is extracted."""
+    return bin_dir() / "ollama-official"
+
+
+def genai_runtime_dir() -> Path:
+    """Where the OpenVINO GenAI runtime (DLLs) is extracted for the OV build."""
+    return bin_dir() / "openvino_genai"
+
+
+def ollama_openvino_dir() -> Path:
+    """Self-contained OpenVINO bundle: the user's ollama.exe + the GenAI runtime.
+
+    The "one-click prepare" flow copies the user-supplied ``ollama.exe`` here and
+    extracts the GenAI runtime alongside it, so the executable and its DLLs live
+    together in one portable folder and the service runs without a separate
+    setup step.
+    """
+    return bin_dir() / "ollama-openvino"
+
+
+def modelsvc_pid_file() -> Path:
+    """PID/metadata file for a DeskMate-launched Ollama service (JSON)."""
+    return root() / "modelsvc.pid"
+
+
+def modelsvc_log_file() -> Path:
+    """Combined stdout/stderr log of the DeskMate-launched Ollama service."""
+    return logs_dir() / "ollama-service.log"
+
+
 def paused_flag() -> Path:
     return root() / ".paused"
 
@@ -133,5 +174,5 @@ def restart_marker_path() -> Path:
 
 
 def ensure_dirs() -> None:
-    for p in (root(), frames_dir(), videos_dir(), audio_dir(), logs_dir(), pipes_dir(), user_apps_dir()):
+    for p in (root(), frames_dir(), videos_dir(), audio_dir(), logs_dir(), pipes_dir(), user_apps_dir(), bin_dir()):
         p.mkdir(parents=True, exist_ok=True)

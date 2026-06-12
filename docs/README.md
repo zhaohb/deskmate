@@ -102,6 +102,8 @@ and the web `ui` all talk to.
 | 16 | [Learning & LoRA](16-learning-training.md) | `learning/` — opt-in LoRA training from local data |
 | 17 | [User profile](17-user-profile.md) | `profile` training source — synthesized "who is this user" identity pairs |
 | 18 | [Live translation](18-live-translation.md) | Low-latency speech translation — endpoint chunking + per-utterance Ollama translation |
+| 19 | [Habits & reminders](19-habits-reminders.md) | `habits/` — routine mining + proactive nudges (three-tier reminders, presence, bilingual) |
+| 20 | [Model Service](20-model-service.md) | `modelsvc/` — download / pull / run the local Ollama service from the UI |
 
 ## Conventions used in these docs
 
