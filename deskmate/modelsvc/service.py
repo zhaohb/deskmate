@@ -58,10 +58,15 @@ OFFICIAL_URL = (
 )
 
 # OpenVINO GenAI runtime (DLLs) the OV build needs to launch. Direct download.
+# Pinned to dev20260530: the earlier dev20260516 nightly has an output-degradation
+# bug on the Intel GPU plugin under long context (garbage tokens / repetition loops /
+# the runner hanging), which surfaced as "garbled" Ask answers — its long system
+# prompt reliably tripped it. dev20260530 fixes it. Bump this (not below 20260530)
+# when adopting a newer runtime, and re-verify long-context generation on GPU.
 GENAI_RUNTIME_URL = (
     "https://storage.openvinotoolkit.org/repositories/openvino_genai/packages/"
-    "nightly/2026.3.0.0.dev20260516/"
-    "openvino_genai_windows_2026.3.0.0.dev20260516_x86_64.zip"
+    "nightly/2026.3.0.0.dev20260530/"
+    "openvino_genai_windows_2026.3.0.0.dev20260530_x86_64.zip"
 )
 
 DEFAULT_BASE = "http://127.0.0.1:11434"

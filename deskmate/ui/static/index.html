@@ -872,19 +872,10 @@
             </div>
           </div>
 
-          <!-- Step 3 — Start the service -->
+          <!-- Step 3 — Model (the one Ask / apps use). Chosen before starting the
+               service so the right model is active when Ollama launches. -->
           <div class="cap-card ms-step">
-            <div class="ms-step-head"><span class="ms-step-num">3</span><h3 data-i18n="models.run.title">Start the service</h3></div>
-            <p class="muted ms-step-help" data-i18n="models.run.help">Launch Ollama in the background. It keeps running even after you close DeskMate.</p>
-            <div class="cap-row">
-              <button id="msStartBtn" type="button" data-i18n="models.svc.start">Start service</button>
-              <button id="msStopBtn" type="button" data-i18n="models.svc.stop">Stop service</button>
-            </div>
-          </div>
-
-          <!-- Step 4 — Model (the one Ask / apps use) -->
-          <div class="cap-card ms-step">
-            <div class="ms-step-head"><span class="ms-step-num">4</span><h3 data-i18n="models.model.title">Model</h3></div>
+            <div class="ms-step-head"><span class="ms-step-num">3</span><h3 data-i18n="models.model.title">Model</h3></div>
             <p class="muted ms-step-help" data-i18n="models.model.help">Choose which installed model Ask and Apps use. Don't have one yet? Pull it below.</p>
 
             <div class="ms-substep">
@@ -906,6 +897,28 @@
             </div>
           </div>
 
+          <!-- Step 4 — Start the service (with the Ollama service log inline, so the
+               start/stop controls and the service's own output live in one place) -->
+          <div class="cap-card ms-step">
+            <div class="ms-step-head"><span class="ms-step-num">4</span><h3 data-i18n="models.run.title">Start the service</h3></div>
+            <p class="muted ms-step-help" data-i18n="models.run.help">Launch Ollama in the background. It keeps running even after you close DeskMate.</p>
+            <div class="cap-row">
+              <button id="msStartBtn" type="button" data-i18n="models.svc.start">Start service</button>
+              <button id="msStopBtn" type="button" data-i18n="models.svc.stop">Stop service</button>
+            </div>
+
+            <!-- Service log: ollama serve's own stdout/stderr (model type, device,
+                 inference, errors). Refreshes while this view is open. -->
+            <div class="ms-substep" style="margin-top:14px">
+              <div class="ms-step-head" style="margin-bottom:8px">
+                <h3 data-i18n="models.svclog.title">Service log (Ollama)</h3>
+                <button id="msSvcLogRefresh" type="button" class="ms-chip" style="margin-left:auto; cursor:pointer; border:1px solid var(--line)" data-i18n="models.svclog.refresh">Refresh</button>
+              </div>
+              <p class="muted ms-step-help" data-i18n="models.svclog.help">The Ollama service's own output — what it logs while loading models and answering requests.</p>
+              <pre id="msSvcLog" class="trn-status" style="max-height:300px"></pre>
+            </div>
+          </div>
+
           <!-- Advanced (collapsed) -->
           <details class="cap-card ms-details">
             <summary data-i18n="models.advanced.title">Advanced</summary>
@@ -918,17 +931,6 @@
               </div>
             </div>
           </details>
-
-          <!-- Service log: ollama serve's own stdout/stderr (model type, device,
-               inference, errors). Refreshes while this view is open. -->
-          <div class="cap-card">
-            <div class="ms-step-head" style="margin-bottom:8px">
-              <h3 data-i18n="models.svclog.title">Service log (Ollama)</h3>
-              <button id="msSvcLogRefresh" type="button" class="ms-chip" style="margin-left:auto; cursor:pointer; border:1px solid var(--line)" data-i18n="models.svclog.refresh">Refresh</button>
-            </div>
-            <p class="muted ms-step-help" data-i18n="models.svclog.help">The Ollama service's own output — what it logs while loading models and answering requests.</p>
-            <pre id="msSvcLog" class="trn-status" style="max-height:300px"></pre>
-          </div>
 
           <!-- Activity log (collapsed; auto-opens on any action) -->
           <details class="cap-card ms-details" id="msLogDetails">
