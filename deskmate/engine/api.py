@@ -2508,7 +2508,7 @@ def create_app(
         body = await _safe_json(request)
         allowed = {"backend", "ollama_exe_path", "ollama_exe_url",
                    "registry", "genai_runtime_dir", "genai_url",
-                   "download_dir", "auto_start"}
+                   "download_dir", "auto_start", "pull_insecure"}
         saved: list[str] = []
         errors: dict[str, str] = {}
         for key, raw in body.items():
@@ -2520,7 +2520,7 @@ def create_app(
                     value: Any = str(raw)
                     if value not in (modelsvc.BACKEND_OFFICIAL, modelsvc.BACKEND_OPENVINO):
                         raise ValueError("backend must be 'official' or 'openvino'")
-                elif key == "auto_start":
+                elif key in ("auto_start", "pull_insecure"):
                     value = bool(raw)
                 elif key == "ollama_exe_path" and str(raw).strip():
                     # Validate a user-supplied exe; store the resolved path.
@@ -2657,8 +2657,21 @@ def create_app(
         return {"active_model": model, "status": modelsvc.status(cfg)}
 
     @app.post("/models/start")
-    async def models_start() -> dict[str, Any]:
+    async def models_start(request: Request) -> dict[str, Any]:
         from .. import modelsvc  # noqa: PLC0415
+        from ..config import set_config_value  # noqa: PLC0415
+
+        # Optional {backend}: a panel's Start button names the backend it wants.
+        # We make it the active backend before launching, so "start the OpenVINO
+        # panel" launches OpenVINO regardless of the previously selected backend.
+        body = await _safe_json(request)
+        backend = str(body.get("backend") or "").strip()
+        if backend in (modelsvc.BACKEND_OFFICIAL, modelsvc.BACKEND_OPENVINO):
+            if backend != cfg.model_service.backend:
+                set_config_value("model_service", "backend", backend)
+                cfg.model_service.backend = backend
+        elif backend:
+            raise HTTPException(status_code=400, detail="backend must be 'official' or 'openvino'")
 
         try:
             return await run_in_threadpool(modelsvc.start_service, cfg)
@@ -2672,12 +2685,17 @@ def create_app(
         return await run_in_threadpool(modelsvc.stop_service, cfg)
 
     @app.get("/models/log")
-    def models_log(lines: int = 400) -> dict[str, Any]:
-        """Return the tail of the Ollama service's own stdout/stderr log."""
+    def models_log(lines: int = 400, backend: str = "") -> dict[str, Any]:
+        """Return the tail of a backend's Ollama service stdout/stderr log.
+
+        ``backend`` ("openvino"/"official") selects that backend's log file;
+        omitted returns the legacy combined log.
+        """
         from .. import modelsvc  # noqa: PLC0415
 
         n = max(1, min(int(lines), 2000))
-        return {"log": modelsvc.read_service_log(max_lines=n)}
+        be = backend if backend in (modelsvc.BACKEND_OFFICIAL, modelsvc.BACKEND_OPENVINO) else None
+        return {"log": modelsvc.read_service_log(max_lines=n, backend=be), "backend": be or ""}
 
     @app.exception_handler(Exception)
     async def _eh(_request, exc):  # noqa: ANN001

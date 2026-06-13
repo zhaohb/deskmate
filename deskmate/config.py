@@ -194,6 +194,10 @@ class ModelServiceConfig(BaseModel):
     ollama_exe_url: str = ""
     # Custom model pull source -> injected as OLLAMA_REGISTRY when launching.
     registry: str = ""
+    # Allow pulling from an HTTP (non-TLS) registry. Self-hosted registries are
+    # commonly plain HTTP, so this defaults to True; Ollama otherwise assumes
+    # HTTPS for /api/pull and silently fails against an http:// registry.
+    pull_insecure: bool = True
     # Selected GenAI runtime DLL dir put on PATH at launch (empty => newest found
     # under the download dir's runtime/). Set when the user picks a version.
     genai_runtime_dir: str = ""

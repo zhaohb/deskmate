@@ -1074,13 +1074,12 @@ async function refreshModelServiceView() {
     try { state.config = await api("/config"); } catch (_) { /* leave blank */ }
   }
   const ms = state.config?.model_service || {};
-  for (const r of document.querySelectorAll('input[name="msBackend"]')) {
-    r.checked = r.value === (ms.backend || "official");
-  }
   if ($("#msExePath")) $("#msExePath").value = ms.ollama_exe_path || "";
   if ($("#msDownloadDir")) $("#msDownloadDir").value = ms.download_dir || "";
   if ($("#msGenaiUrl")) $("#msGenaiUrl").value = ms.genai_url || "";
   if ($("#msRegistry")) $("#msRegistry").value = ms.registry || "";
+  // pull_insecure defaults to true server-side; mirror that when unset.
+  if ($("#msPullInsecure")) $("#msPullInsecure").checked = ms.pull_insecure !== false;
   await loadModelStatus().catch((e) => console.error("[models]", e));
   loadServiceLog().catch((e) => console.error("[models]", e));
   startModelServicePoll();
@@ -1104,15 +1103,28 @@ async function loadModelStatus() {
   renderModelStatus(s);
 }
 
-// Show the Ollama service's own log (its stdout/stderr) in the UI. Keeps the
-// view pinned to the bottom unless the user has scrolled up to read history.
+// Only the currently RUNNING backend's panel shows a service log; the other
+// panel is blank (its service isn't running). Which one is running is decided
+// by the server-detected running backend cached on the last status render.
 async function loadServiceLog() {
-  const el = $("#msSvcLog");
+  const owner = modelSvcUi.runningBackend || "";
+  const ovEl = $("#msOvSvcLog");
+  const offEl = $("#msOffSvcLog");
+  if (ovEl && owner !== "openvino") ovEl.textContent = T("models.svclog.empty");
+  if (offEl && owner !== "official") offEl.textContent = T("models.svclog.empty");
+  if (owner === "openvino") await loadBackendLog("openvino", "#msOvSvcLog");
+  else if (owner === "official") await loadBackendLog("official", "#msOffSvcLog");
+}
+
+async function loadBackendLog(backend, sel) {
+  const el = $(sel);
   if (!el) return;
-  const { log } = await api("/models/log");
-  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
-  el.textContent = log || T("models.svclog.empty");
-  if (atBottom) el.scrollTop = el.scrollHeight;
+  try {
+    const { log } = await api("/models/log?backend=" + backend);
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+    el.textContent = log || T("models.svclog.empty");
+    if (atBottom) el.scrollTop = el.scrollHeight;
+  } catch (_) { /* leave previous content */ }
 }
 
 // Set a readiness chip's text + ok/neutral colour in one call.
@@ -1124,33 +1136,51 @@ function setMsChip(sel, ok, okKey, neutralKey) {
 }
 
 function renderModelStatus(s) {
-  const pill = $("#msStatusPill");
-  if (pill) {
-    const running = !!s.running;
-    pill.className = "cap-pill " + (running ? "live" : "paused");
-    pill.textContent = running
+  // Remember which backend is running + the configured one so the log loader
+  // and Start/Stop wiring can route to the right panel.
+  modelSvcUi.runningBackend = s.running_backend || "";
+  modelSvcUi.backend = s.backend || "";
+
+  const running = !!s.running;
+  // The running service belongs to exactly one panel, identified by the backend
+  // of the actual running process (server-detected). We do NOT fall back to the
+  // configured backend — that misattributes an OpenVINO process to "official".
+  const owner = running ? (s.running_backend || "") : "";
+  const ovRunning = owner === "openvino";
+  const offRunning = owner === "official";
+
+  // Per-panel status pill.
+  const setPill = (sel, isRunning) => {
+    const pill = $(sel);
+    if (!pill) return;
+    pill.className = "cap-pill " + (isRunning ? "live" : "paused");
+    pill.textContent = isRunning
       ? (s.external ? T("models.svc.external") : T("models.svc.running"))
       : T("models.svc.stopped");
-  }
-  // Compact inline facts for the sticky status strip (only the meaningful ones).
-  const grid = $("#msStatusGrid");
-  if (grid) {
+  };
+  setPill("#msOvPill", ovRunning);
+  setPill("#msOffPill", offRunning);
+
+  // Per-panel facts (version / model count / exe) shown only on the running one.
+  const factsHtml = () => {
     const facts = [];
     if (s.version) facts.push([T("models.svc.version"), s.version]);
     facts.push([T("models.svc.models"), String((s.models || []).length)]);
     if (s.exe) facts.push([T("models.svc.exe"), s.exe]);
-    grid.innerHTML = facts.map(([l, n]) =>
+    return facts.map(([l, n]) =>
       `<span>${capEscape(l)}: <b>${capEscape(String(n))}</b></span>`).join("");
-  }
+  };
+  if ($("#msOvFacts")) $("#msOvFacts").innerHTML = ovRunning ? factsHtml() : "";
+  if ($("#msOffFacts")) $("#msOffFacts").innerHTML = offRunning ? factsHtml() : "";
+
+  // Installed models (from the running service's /api/tags) under the Model card.
   const models = $("#msModels");
   if (models) {
     models.innerHTML = (s.models || []).map((m) =>
       `<span class="ms-model">${capEscape(m)}</span>`).join("");
   }
-  // Toggle backend cards by configured backend.
-  const isOv = s.backend === "openvino";
-  if ($("#msOfficialCard")) $("#msOfficialCard").style.display = isOv ? "none" : "";
-  if ($("#msOpenvinoCard")) $("#msOpenvinoCard").style.display = isOv ? "" : "none";
+
+  // Install-readiness chips (independent of running state).
   setMsChip("#msOfficialState", s.official_installed,
     "models.official.installed", "models.official.notInstalled");
   setMsChip("#msExeState", s.openvino_exe_ready,
@@ -1159,9 +1189,14 @@ function renderModelStatus(s) {
     "models.genai.installed", "models.genai.notInstalled");
   renderGenaiVersions(s);
   renderActiveModel(s);
-  // Stop only makes sense for a service WE manage; never kill an external one.
-  if ($("#msStopBtn")) $("#msStopBtn").disabled = !s.managed_by_deskmate;
-  if ($("#msStartBtn")) $("#msStartBtn").disabled = !!s.running;
+
+  // Per-panel Start/Stop. Stop only for a service WE manage. A panel's Start is
+  // disabled while ANY service runs (starting it would stop the other / no-op).
+  const anyRunning = running;
+  if ($("#msOvStopBtn")) $("#msOvStopBtn").disabled = !(s.managed_by_deskmate && ovRunning);
+  if ($("#msOffStopBtn")) $("#msOffStopBtn").disabled = !(s.managed_by_deskmate && offRunning);
+  if ($("#msOvStartBtn")) $("#msOvStartBtn").disabled = anyRunning;
+  if ($("#msOffStartBtn")) $("#msOffStartBtn").disabled = anyRunning;
 }
 
 async function saveModelConfig(patch) {
@@ -1175,17 +1210,15 @@ async function saveModelConfig(patch) {
   return res;
 }
 
-async function saveBackend() {
-  const sel = document.querySelector('input[name="msBackend"]:checked');
-  if (!sel) return;
-  await saveModelConfig({ backend: sel.value });
-  await loadModelStatus();
-}
-
 async function saveRegistry() {
   const v = $("#msRegistry")?.value.trim();
   await saveModelConfig({ registry: v || "" });
   msLog(T("models.registry.saved"));
+}
+
+async function savePullInsecure(enabled) {
+  await saveModelConfig({ pull_insecure: !!enabled });
+  msLog(T(enabled ? "models.insecure.on" : "models.insecure.off"));
 }
 
 async function downloadOfficial() {
@@ -1365,31 +1398,29 @@ async function pullModel() {
   }
 }
 
-async function startService() {
-  const btn = $("#msStartBtn");
-  if (btn) btn.disabled = true;
-  // Immediate feedback — starting probes for up to ~12s, so without this the
-  // click looks like nothing happened.
+// Start a specific backend. The server makes it the active backend, then
+// launches it (which replaces any other running backend on the shared port).
+async function startService(backend) {
+  // Immediate feedback — starting probes for up to ~12s.
   msLog(T("models.svc.starting"));
   try {
-    const s = await api("/models/start", { method: "POST" });
+    const s = await api("/models/start", {
+      method: "POST",
+      body: JSON.stringify({ backend }),
+    });
     renderModelStatus(s);
     if (s.running) {
       msLog(T("models.svc.startedOk"));
     } else {
-      // Surface the backend's reason (exit code + log tail) when available.
       msLog(T("models.svc.startFailed") + " " + (s.start_error || T("models.svc.startPending")));
-      if (btn) btn.disabled = false;
     }
   } catch (err) {
     msLog(T("models.svc.startFailed") + " " + (err.message || err));
-    if (btn) btn.disabled = false;
   }
+  await loadServiceLog().catch(() => {});
 }
 
 async function stopService() {
-  const btn = $("#msStopBtn");
-  if (btn) btn.disabled = true;
   msLog(T("models.svc.stopping"));
   try {
     const s = await api("/models/stop", { method: "POST" });
@@ -1397,8 +1428,8 @@ async function stopService() {
     msLog(T("models.svc.stoppedOk"));
   } catch (err) {
     msLog(T("models.svc.stopFailed") + " " + (err.message || err));
-    if (btn) btn.disabled = false;
   }
+  await loadServiceLog().catch(() => {});
 }
 
 // ─── Reminders / proactive nudges view ──────────────────────────────────
@@ -4239,13 +4270,15 @@ function wireEvents() {
   $("#msGenaiVersion")?.addEventListener("change", () => selectGenaiVersion().catch(showError));
   $("#msActiveModel")?.addEventListener("change", () => setActiveModel().catch(showError));
   $("#msSaveRegistryBtn")?.addEventListener("click", () => saveRegistry().catch(showError));
-  $("#msSvcLogRefresh")?.addEventListener("click", () => loadServiceLog().catch(showError));
+  $("#msPullInsecure")?.addEventListener("change", (e) => savePullInsecure(e.target.checked).catch(showError));
   $("#msPullBtn")?.addEventListener("click", () => pullModel().catch(showError));
-  $("#msStartBtn")?.addEventListener("click", () => startService().catch(showError));
-  $("#msStopBtn")?.addEventListener("click", () => stopService().catch(showError));
-  for (const r of document.querySelectorAll('input[name="msBackend"]')) {
-    r.addEventListener("change", () => saveBackend().catch(showError));
-  }
+  // Per-backend start/stop + log refresh.
+  $("#msOvStartBtn")?.addEventListener("click", () => startService("openvino").catch(showError));
+  $("#msOvStopBtn")?.addEventListener("click", () => stopService().catch(showError));
+  $("#msOvSvcLogRefresh")?.addEventListener("click", () => loadBackendLog("openvino", "#msOvSvcLog").catch(showError));
+  $("#msOffStartBtn")?.addEventListener("click", () => startService("official").catch(showError));
+  $("#msOffStopBtn")?.addEventListener("click", () => stopService().catch(showError));
+  $("#msOffSvcLogRefresh")?.addEventListener("click", () => loadBackendLog("official", "#msOffSvcLog").catch(showError));
 
   // ─── Reminders ────────────────────────────────────────────────────────
   $("#remRefreshBtn")?.addEventListener("click", () => refreshRemindersView());

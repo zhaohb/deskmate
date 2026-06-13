@@ -156,8 +156,15 @@ def modelsvc_pid_file() -> Path:
     return root() / "modelsvc.pid"
 
 
-def modelsvc_log_file() -> Path:
-    """Combined stdout/stderr log of the DeskMate-launched Ollama service."""
+def modelsvc_log_file(backend: str | None = None) -> Path:
+    """Combined stdout/stderr log of the DeskMate-launched Ollama service.
+
+    Each backend ("openvino" / "official") keeps its own log file so switching
+    backends preserves each one's history. Without a backend (legacy callers)
+    the original combined path is returned.
+    """
+    if backend in ("openvino", "official"):
+        return logs_dir() / f"ollama-service-{backend}.log"
     return logs_dir() / "ollama-service.log"
 
 

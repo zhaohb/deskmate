@@ -799,30 +799,16 @@
         </section>
 
         <section id="view-models" class="view">
-          <!-- Status card: stays on its own row at the top -->
-          <div class="cap-card">
-            <h3 data-i18n="models.svc.title">Service status</h3>
-            <div class="ms-statusbar" id="msBanner">
-              <span id="msStatusPill" class="cap-pill paused" data-i18n="models.svc.stopped">Stopped</span>
-              <div class="ms-banner-facts" id="msStatusGrid"></div>
-            </div>
-            <div id="msModels" class="ms-models"></div>
-          </div>
+          <p class="muted ms-step-help" data-i18n="models.intro" style="margin-top:0">DeskMate supports two Ollama backends. Only one runs at a time — starting one stops the other (both use the same port).</p>
 
-          <!-- Step 1 — Backend -->
-          <div class="cap-card ms-step">
-            <div class="ms-step-head"><span class="ms-step-num">1</span><h3 data-i18n="models.backend.title">Backend</h3></div>
-            <p class="muted ms-step-help" data-i18n="models.backend.help">Choose how DeskMate obtains the Ollama executable.</p>
-            <div class="ms-segmented" role="radiogroup">
-              <label class="ms-seg"><input type="radio" name="msBackend" value="openvino" /><span data-i18n="models.backend.openvino">OpenVINO build (provide ollama.exe)</span></label>
-              <label class="ms-seg"><input type="radio" name="msBackend" value="official" /><span data-i18n="models.backend.official">Official Ollama (auto-download)</span></label>
+          <!-- ───────────── OpenVINO backend panel ───────────── -->
+          <div class="cap-card ms-step" id="msOvPanel">
+            <div class="ms-step-head">
+              <h3 data-i18n="models.openvino.title">OpenVINO build</h3>
+              <span id="msOvPill" class="cap-pill paused" data-i18n="models.svc.stopped" style="margin-left:auto">Stopped</span>
             </div>
-          </div>
-
-          <!-- Step 2 — Install (OpenVINO) -->
-          <div class="cap-card ms-step" id="msOpenvinoCard">
-            <div class="ms-step-head"><span class="ms-step-num">2</span><h3 data-i18n="models.openvino.title">OpenVINO build</h3></div>
-            <p class="muted ms-step-help" data-i18n="models.openvino.help">Download ollama.exe and the OpenVINO GenAI runtime into a folder you choose, then click Start. DeskMate puts the runtime on PATH automatically — no setup step.</p>
+            <p class="muted ms-step-help" data-i18n="models.openvino.help">Download ollama.exe and the OpenVINO GenAI runtime into a folder you choose, then click Start. DeskMate puts the runtime on PATH automatically.</p>
+            <div class="ms-banner-facts" id="msOvFacts"></div>
 
             <div class="ms-substep">
               <div class="ms-field">
@@ -861,21 +847,52 @@
                 </div>
               </div>
             </div>
-          </div>
 
-          <!-- Step 2 — Install (official) -->
-          <div class="cap-card ms-step" id="msOfficialCard">
-            <div class="ms-step-head"><span class="ms-step-num">2</span><h3 data-i18n="models.official.title">Official build</h3><span id="msOfficialState" class="ms-chip"></span></div>
-            <p class="muted ms-step-help" data-i18n="models.official.help">One click downloads and unpacks the official Ollama. Then start the service.</p>
-            <div class="cap-row">
-              <button id="msDownloadOfficialBtn" type="button" data-i18n="models.official.download">Download Ollama</button>
+            <div class="ms-substep" style="margin-top:14px">
+              <div class="cap-row">
+                <button id="msOvStartBtn" type="button" data-i18n="models.svc.start">Start service</button>
+                <button id="msOvStopBtn" type="button" data-i18n="models.svc.stop">Stop service</button>
+              </div>
+              <div class="ms-step-head" style="margin:14px 0 8px">
+                <h3 data-i18n="models.svclog.title">Service log (Ollama)</h3>
+                <button id="msOvSvcLogRefresh" type="button" class="ms-chip" style="margin-left:auto; cursor:pointer; border:1px solid var(--line)" data-i18n="models.svclog.refresh">Refresh</button>
+              </div>
+              <pre id="msOvSvcLog" class="trn-status" style="max-height:280px"></pre>
             </div>
           </div>
 
-          <!-- Step 3 — Model (the one Ask / apps use). Chosen before starting the
-               service so the right model is active when Ollama launches. -->
+          <!-- ───────────── Official ollama backend panel ───────────── -->
+          <div class="cap-card ms-step" id="msOffPanel">
+            <div class="ms-step-head">
+              <h3 data-i18n="models.official.title">Official build</h3>
+              <span id="msOffPill" class="cap-pill paused" data-i18n="models.svc.stopped" style="margin-left:auto">Stopped</span>
+            </div>
+            <p class="muted ms-step-help" data-i18n="models.official.help">One click downloads and unpacks the official Ollama. Then start the service.</p>
+            <div class="ms-banner-facts" id="msOffFacts"></div>
+
+            <div class="ms-substep">
+              <div class="ms-substep-title"><span data-i18n="models.official.step">① Ollama</span><span id="msOfficialState" class="ms-chip"></span></div>
+              <div class="cap-row">
+                <button id="msDownloadOfficialBtn" type="button" data-i18n="models.official.download">Download Ollama</button>
+              </div>
+            </div>
+
+            <div class="ms-substep" style="margin-top:14px">
+              <div class="cap-row">
+                <button id="msOffStartBtn" type="button" data-i18n="models.svc.start">Start service</button>
+                <button id="msOffStopBtn" type="button" data-i18n="models.svc.stop">Stop service</button>
+              </div>
+              <div class="ms-step-head" style="margin:14px 0 8px">
+                <h3 data-i18n="models.svclog.title">Service log (Ollama)</h3>
+                <button id="msOffSvcLogRefresh" type="button" class="ms-chip" style="margin-left:auto; cursor:pointer; border:1px solid var(--line)" data-i18n="models.svclog.refresh">Refresh</button>
+              </div>
+              <pre id="msOffSvcLog" class="trn-status" style="max-height:280px"></pre>
+            </div>
+          </div>
+
+          <!-- Model (the one Ask / apps use) — applies to whichever backend is running. -->
           <div class="cap-card ms-step">
-            <div class="ms-step-head"><span class="ms-step-num">3</span><h3 data-i18n="models.model.title">Model</h3></div>
+            <div class="ms-step-head"><h3 data-i18n="models.model.title">Model</h3></div>
             <p class="muted ms-step-help" data-i18n="models.model.help">Choose which installed model Ask and Apps use. Don't have one yet? Pull it below.</p>
 
             <div class="ms-substep">
@@ -894,28 +911,7 @@
               </div>
               <progress id="msPullProgress" value="0" max="100" style="display:none"></progress>
               <div id="msPullStatus" class="muted ms-substep-status"></div>
-            </div>
-          </div>
-
-          <!-- Step 4 — Start the service (with the Ollama service log inline, so the
-               start/stop controls and the service's own output live in one place) -->
-          <div class="cap-card ms-step">
-            <div class="ms-step-head"><span class="ms-step-num">4</span><h3 data-i18n="models.run.title">Start the service</h3></div>
-            <p class="muted ms-step-help" data-i18n="models.run.help">Launch Ollama in the background. It keeps running even after you close DeskMate.</p>
-            <div class="cap-row">
-              <button id="msStartBtn" type="button" data-i18n="models.svc.start">Start service</button>
-              <button id="msStopBtn" type="button" data-i18n="models.svc.stop">Stop service</button>
-            </div>
-
-            <!-- Service log: ollama serve's own stdout/stderr (model type, device,
-                 inference, errors). Refreshes while this view is open. -->
-            <div class="ms-substep" style="margin-top:14px">
-              <div class="ms-step-head" style="margin-bottom:8px">
-                <h3 data-i18n="models.svclog.title">Service log (Ollama)</h3>
-                <button id="msSvcLogRefresh" type="button" class="ms-chip" style="margin-left:auto; cursor:pointer; border:1px solid var(--line)" data-i18n="models.svclog.refresh">Refresh</button>
-              </div>
-              <p class="muted ms-step-help" data-i18n="models.svclog.help">The Ollama service's own output — what it logs while loading models and answering requests.</p>
-              <pre id="msSvcLog" class="trn-status" style="max-height:300px"></pre>
+              <div id="msModels" class="ms-models" style="margin-top:10px"></div>
             </div>
           </div>
 
@@ -929,6 +925,13 @@
                 <input id="msRegistry" type="text" data-i18n-attr="placeholder:models.registry.ph" placeholder="http://your-registry:port" />
                 <button id="msSaveRegistryBtn" type="button" data-i18n="models.registry.save">Save</button>
               </div>
+            </div>
+            <div class="ms-field" style="margin-top:16px">
+              <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
+                <input id="msPullInsecure" type="checkbox" />
+                <span data-i18n="models.insecure.title">Allow insecure (HTTP) registry pulls</span>
+              </label>
+              <p class="muted ms-step-help" data-i18n="models.insecure.help">Enable when pulling from a self-hosted HTTP (non-TLS) registry. Turn off if your registry uses HTTPS.</p>
             </div>
           </details>
 

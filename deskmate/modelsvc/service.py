@@ -643,6 +643,108 @@ def _probe_version(base: str, timeout: int = 2) -> str:
         return ""
 
 
+def _classify_ollama_process(proc: Any, cfg: Any = None) -> str:
+    """Classify a running ollama process as "openvino" / "official" / "".
+
+    Identifies the OpenVINO build (which can live at any user-chosen path) by
+    several signals, strongest first:
+      1. Exe path is the configured OpenVINO exe, or under DeskMate's OpenVINO
+         bundle dir, or the path/name contains "openvino".
+      2. Exe path is under DeskMate's official bundle dir.
+      3. The process environment carries OpenVINO markers
+         (INTEL_OPENVINO_DIR / OPENVINO_LIB_PATHS) — the OV build always loads
+         the GenAI runtime, so these are present; the official build has none.
+      4. A loaded module named like the OpenVINO GenAI runtime.
+    Anything that answers /api/tags but shows no OV markers is treated as the
+    official build.
+    """
+    try:
+        exe = (proc.exe() or "")
+    except Exception:  # noqa: BLE001
+        exe = ""
+    low = exe.replace("\\", "/").lower()
+
+    # 1. Explicit OpenVINO signals on the path.
+    if "openvino" in low:
+        return BACKEND_OPENVINO
+    try:
+        ovp = Path(exe).resolve()
+        if cfg is not None and cfg.model_service.ollama_exe_path:
+            if ovp == Path(cfg.model_service.ollama_exe_path).resolve():
+                return BACKEND_OPENVINO
+        ov_dir = paths.ollama_openvino_dir().resolve()
+        if ov_dir in ovp.parents or ovp == ov_dir / "ollama.exe":
+            return BACKEND_OPENVINO
+    except OSError:
+        pass
+
+    # 2. DeskMate's official bundle dir.
+    try:
+        off_dir = paths.ollama_official_dir().resolve()
+        op = Path(exe).resolve()
+        if off_dir in op.parents or op == off_dir / "ollama.exe":
+            return BACKEND_OFFICIAL
+    except OSError:
+        pass
+
+    # 3. OpenVINO environment markers on the process.
+    try:
+        env = proc.environ() or {}
+        if any(k in env for k in ("INTEL_OPENVINO_DIR", "OPENVINO_LIB_PATHS", "OpenVINO_DIR")):
+            return BACKEND_OPENVINO
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 4. Loaded OpenVINO GenAI runtime DLL (best effort).
+    try:
+        for m in proc.memory_maps():
+            mpath = (getattr(m, "path", "") or "").lower()
+            if "openvino_genai" in mpath or "openvino" in mpath:
+                return BACKEND_OPENVINO
+    except Exception:  # noqa: BLE001
+        pass
+
+    # An ollama process with no OpenVINO signal is the official build.
+    return BACKEND_OFFICIAL
+
+
+def detect_running_backend(base: str, pid: int | None = None, cfg: Any = None) -> str:
+    """Best-effort identify which backend's process is actually serving.
+
+    Strategy, in order:
+      1. If we have the launched PID, classify that process.
+      2. Otherwise classify whoever is listening on the ollama port. This
+         catches services we didn't start (no PID file) and OpenVINO exes at
+         arbitrary user paths.
+
+    Returns "openvino" / "official" / "" (no process found / psutil missing).
+    """
+    try:
+        import psutil  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return ""
+
+    # 1. Known PID → classify it.
+    if pid:
+        try:
+            return _classify_ollama_process(psutil.Process(int(pid)), cfg)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 2. Whoever is listening on the port.
+    port = urlparse(base or DEFAULT_BASE).port or 11434
+    try:
+        for c in psutil.net_connections(kind="inet"):
+            if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port and c.pid:
+                try:
+                    return _classify_ollama_process(psutil.Process(c.pid), cfg)
+                except Exception:  # noqa: BLE001
+                    continue
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
 def status(cfg: Any) -> dict[str, Any]:
     """Combined service status: HTTP probe + PID file + install state."""
     base = cfg.ollama.base or DEFAULT_BASE
@@ -659,6 +761,16 @@ def status(cfg: Any) -> dict[str, Any]:
     # Running but not started/owned by us => an external Ollama (don't kill it).
     external = running and not managed
 
+    # Which backend is the *currently running* service? Identify it from the
+    # actual process on disk (its exe path), not the configured backend — that's
+    # the only reliable signal and works even for a service we didn't start.
+    # Fall back to the PID file's recorded backend if process inspection fails.
+    running_backend = ""
+    if running:
+        running_backend = detect_running_backend(base, pid, cfg)
+        if not running_backend and managed and pid_info:
+            running_backend = str(pid_info.get("backend") or "")
+
     backend, exe = resolve_exe(cfg)
     dl_dir = resolve_download_dir(cfg)
     ov_exe_ready = (dl_dir / "ollama.exe").is_file() or bool(
@@ -669,6 +781,10 @@ def status(cfg: Any) -> dict[str, Any]:
     return {
         "running": running,
         "backend": cfg.model_service.backend,
+        # The backend of the service currently running under DeskMate's PID
+        # ("openvino" | "official" | ""). The UI uses this to mark which panel
+        # owns the running service and its log.
+        "running_backend": running_backend,
         "exe": str(exe) if exe else "",
         "base": base,
         "pid": pid,
@@ -734,7 +850,9 @@ def start_service(cfg: Any) -> dict[str, Any]:
 
     env = build_launch_env(cfg, backend, exe)
     paths.logs_dir().mkdir(parents=True, exist_ok=True)
-    log_fh = open(paths.modelsvc_log_file(), "a", encoding="utf-8")  # noqa: SIM115
+    # Truncate (mode "w") so each launch shows a fresh log for this backend,
+    # written to that backend's own file.
+    log_fh = open(paths.modelsvc_log_file(backend), "w", encoding="utf-8")  # noqa: SIM115
     try:
         if sys.platform == "win32":
             flags = (
@@ -836,16 +954,19 @@ def stop_service(cfg: Any) -> dict[str, Any]:
 
 
 # ── Service log ──────────────────────────────────────────────────────────────
-def read_service_log(max_lines: int = 400, max_bytes: int = 200_000) -> str:
-    """Return the tail of the launched Ollama service's stdout/stderr log.
+def read_service_log(
+    max_lines: int = 400, max_bytes: int = 200_000, backend: str | None = None
+) -> str:
+    """Return the tail of a launched Ollama service's stdout/stderr log.
 
     This is ``ollama serve``'s own output (model type, inference device, request
     handling, errors) — the file we redirect the detached process into — so the
-    UI can surface what the service is actually doing. Reads only the last
-    ``max_bytes`` and keeps the last ``max_lines`` to stay cheap on a long log.
-    Returns ``""`` when there is no log yet.
+    UI can surface what the service is actually doing. Each backend has its own
+    log; pass ``backend`` ("openvino"/"official") to read that one. Reads only
+    the last ``max_bytes`` and keeps the last ``max_lines`` to stay cheap on a
+    long log. Returns ``""`` when there is no log yet.
     """
-    log = paths.modelsvc_log_file()
+    log = paths.modelsvc_log_file(backend)
     if not log.is_file():
         return ""
     try:
@@ -874,7 +995,17 @@ def pull_model_stream(cfg: Any, model: str) -> Iterator[dict[str, Any]]:
     """
     base = cfg.ollama.base or DEFAULT_BASE
     parsed = urlparse(base)
-    body = json.dumps({"model": model, "stream": True}).encode("utf-8")
+    # Self-hosted registries are usually plain HTTP; without insecure=true Ollama
+    # assumes HTTPS for /api/pull and the pull fails (often silently) against an
+    # http:// registry. Default on via [model_service] pull_insecure.
+    insecure = True
+    try:
+        insecure = bool(cfg.model_service.pull_insecure)
+    except Exception:
+        insecure = True
+    body = json.dumps(
+        {"model": model, "stream": True, "insecure": insecure}
+    ).encode("utf-8")
     conn = http.client.HTTPConnection(
         parsed.hostname or "127.0.0.1", parsed.port or 11434, timeout=600
     )
