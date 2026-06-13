@@ -132,6 +132,13 @@
       #view-models .ms-field label { font-size: 12px; color: var(--muted); }
       #view-models .ms-input-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
       #view-models .ms-input-row input[type="text"] { flex: 1; min-width: 240px; }
+      /* full-width toggle row: checkbox pinned left, label fills the rest so the
+         row spans the card width and lines up with the inputs above it */
+      #view-models .ms-toggle { display: flex; align-items: flex-start; gap: 10px; width: 100%; cursor: pointer; }
+      #view-models .ms-toggle input[type="checkbox"] { flex: 0 0 auto; width: 16px; height: 16px; margin: 2px 0 0; cursor: pointer; }
+      #view-models .ms-toggle .ms-toggle-text { flex: 1; min-width: 0; }
+      #view-models .ms-toggle .ms-toggle-title { display: block; font-size: 13px; color: var(--text); font-weight: 500; }
+      #view-models .ms-toggle .ms-toggle-help { display: block; margin-top: 3px; font-size: 12px; color: var(--muted); line-height: 1.5; }
       /* readiness chips — training's .trn-badge palette */
       #view-models .ms-chip { margin-left: auto; display: inline-block; padding: 2px 8px; border-radius: var(--radius); font-size: 11px; font-weight: 600; background: var(--surface-3); color: var(--muted); white-space: nowrap; }
       #view-models .ms-chip.ok { color: var(--online); }
@@ -142,6 +149,20 @@
       #view-models .ms-details > summary { cursor: pointer; font-size: 14px; font-weight: 600; color: var(--text); }
       #view-models .ms-details[open] > summary { margin-bottom: 6px; }
       #view-models progress { width: 100%; margin-top: 12px; height: 8px; }
+      /* Diagnostics view */
+      #view-doctor .cap-pill { display: inline-flex; align-items: center; padding: 6px 12px; border-radius: 999px; font-weight: 600; font-size: 13px; }
+      #view-doctor .ms-banner-facts { display: flex; gap: 16px; margin: 10px 0 16px; font-size: 13px; color: var(--muted); }
+      #view-doctor .doc-results { display: flex; flex-direction: column; gap: 8px; }
+      #view-doctor .doc-row { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); }
+      #view-doctor .doc-icon { font-weight: 700; font-size: 16px; line-height: 1.4; flex: 0 0 auto; }
+      #view-doctor .doc-ok .doc-icon { color: #2faa5b; }
+      #view-doctor .doc-warn .doc-icon { color: #d6a01a; }
+      #view-doctor .doc-fail .doc-icon { color: #d6453a; }
+      #view-doctor .doc-warn { border-color: #e6cf8a; }
+      #view-doctor .doc-fail { border-color: #e6a39c; }
+      #view-doctor .doc-name { font-weight: 600; font-size: 14px; }
+      #view-doctor .doc-msg { font-size: 13px; color: var(--muted); margin-top: 2px; }
+      #view-doctor .doc-fix { font-size: 12px; color: var(--text); margin-top: 6px; padding: 6px 10px; background: var(--surface); border-radius: var(--radius); border: 1px dashed var(--line); }
       /* Reminders view */
       #view-reminders .rem-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
       #view-reminders .rem-card h3 { font-size: 15px; margin: 0 0 6px; color: var(--text); display: flex; align-items: center; gap: 8px; }
@@ -236,6 +257,7 @@
           <button class="nav-item" data-view="capture" type="button"><span data-i18n="nav.capture">Capture</span></button>
           <button class="nav-item" data-view="training" type="button"><span data-i18n="nav.training">Training</span></button>
           <button class="nav-item" data-view="models" type="button"><span data-i18n="nav.models">Model Service</span></button>
+          <button class="nav-item" data-view="doctor" type="button"><span data-i18n="nav.doctor">Diagnostics</span></button>
           <button class="nav-item" data-view="reminders" type="button"><span data-i18n="nav.reminders">Reminders</span></button>
           <button class="nav-item nav-item--settings" data-view="settings" type="button">
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9 4a7 7 0 0 0-.1-1.1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.9-1.1L16.3 2h-4.6l-.4 2.7a7 7 0 0 0-1.9 1.1l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 3 12a7 7 0 0 0 .1 1.1l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.9 1.1l.4 2.8h4.6l.4-2.7a7 7 0 0 0 1.9-1.1l2.4 1 2-3.4-2-1.6c.06-.36.1-.73.1-1.1Z" fill="currentColor"/></svg>
@@ -926,13 +948,20 @@
                 <button id="msSaveRegistryBtn" type="button" data-i18n="models.registry.save">Save</button>
               </div>
             </div>
-            <div class="ms-field" style="margin-top:16px">
-              <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
-                <input id="msPullInsecure" type="checkbox" />
-                <span data-i18n="models.insecure.title">Allow insecure (HTTP) registry pulls</span>
-              </label>
-              <p class="muted ms-step-help" data-i18n="models.insecure.help">Enable when pulling from a self-hosted HTTP (non-TLS) registry. Turn off if your registry uses HTTPS.</p>
-            </div>
+            <label class="ms-toggle" style="margin-top:18px">
+              <input id="msPullInsecure" type="checkbox" />
+              <span class="ms-toggle-text">
+                <span class="ms-toggle-title" data-i18n="models.insecure.title">Allow insecure (HTTP) registry pulls</span>
+                <span class="ms-toggle-help" data-i18n="models.insecure.help">Enable when pulling from a self-hosted HTTP (non-TLS) registry. Turn off if your registry uses HTTPS.</span>
+              </span>
+            </label>
+            <label class="ms-toggle" style="margin-top:16px">
+              <input id="msStopOnExit" type="checkbox" />
+              <span class="ms-toggle-text">
+                <span class="ms-toggle-title" data-i18n="models.stopOnExit.title">Stop Ollama when DeskMate exits</span>
+                <span class="ms-toggle-help" data-i18n="models.stopOnExit.help">When on, an Ollama service DeskMate started is shut down on exit. Turn off to keep it running in the background after closing DeskMate.</span>
+              </span>
+            </label>
           </details>
 
           <!-- Activity log (collapsed; auto-opens on any action) -->
@@ -940,6 +969,19 @@
             <summary data-i18n="models.log.title">Activity log</summary>
             <pre id="msLog" class="trn-status"></pre>
           </details>
+        </section>
+
+        <section id="view-doctor" class="view">
+          <div class="cap-card">
+            <div class="ms-step-head">
+              <h3 data-i18n="doctor.title">Diagnostics</h3>
+              <span id="docOverall" class="cap-pill paused" style="margin-left:auto"></span>
+              <button id="docRefreshBtn" type="button" class="ms-chip" style="margin-left:10px; cursor:pointer; border:1px solid var(--line)" data-i18n="doctor.refresh">Run checks</button>
+            </div>
+            <p class="muted ms-step-help" data-i18n="doctor.help">Self-checks for the environment issues DeskMate commonly hits — Ollama backend &amp; runtime, active model, notifications, proxy, recording and database.</p>
+            <div id="docSummary" class="ms-banner-facts"></div>
+            <div id="docResults" class="doc-results"></div>
+          </div>
         </section>
 
         <section id="view-reminders" class="view">

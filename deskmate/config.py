@@ -209,6 +209,11 @@ class ModelServiceConfig(BaseModel):
     download_dir: str = ""
     # Start the service automatically when the daemon boots (opt-in).
     auto_start: bool = False
+    # Stop a DeskMate-launched Ollama service when DeskMate exits. Default on, so
+    # the service's lifetime is tied to DeskMate. Turn off to keep Ollama running
+    # in the background after DeskMate closes. Only affects a service DeskMate
+    # started (a PID file we own); an external Ollama is never touched.
+    stop_on_exit: bool = True
 
 
 class SearchConfig(BaseModel):

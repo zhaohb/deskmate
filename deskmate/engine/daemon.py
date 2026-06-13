@@ -314,8 +314,27 @@ class Daemon:
         shutdown_gate()
         for t in self._threads:
             t.join(timeout=3.0)
+        self._maybe_stop_ollama()
         self.db.close()
         logger.info("daemon stopped")
+
+    def _maybe_stop_ollama(self) -> None:
+        """When [model_service] stop_on_exit is set, stop a DeskMate-launched
+        Ollama service so its lifetime is tied to DeskMate. Only touches a
+        service we started (stop_service reads our PID file and never kills an
+        external Ollama). Failures must not block shutdown."""
+        try:
+            if not getattr(self.cfg.model_service, "stop_on_exit", True):
+                return
+            from ..modelsvc import service as modelsvc  # noqa: PLC0415
+
+            pid_info = modelsvc.read_pid_file()
+            if not pid_info:
+                return  # nothing DeskMate started
+            modelsvc.stop_service(self.cfg)
+            logger.info("stopped DeskMate-launched Ollama on exit")
+        except Exception:  # noqa: BLE001
+            logger.debug("stop_on_exit: could not stop Ollama", exc_info=True)
 
     def run_forever(self) -> None:
         self.start()

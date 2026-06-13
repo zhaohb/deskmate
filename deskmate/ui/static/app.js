@@ -60,6 +60,7 @@ const titles = {
   capture: ["Capture", "Pause / forget / per-source toggles and the unified cross-source timeline"],
   training: ["Training", "Mine local SFT data and run on-device LoRA fine-tuning"],
   models: ["Model Service", "Download, configure, and run the local Ollama service"],
+  doctor: ["Diagnostics", "Self-checks for common environment and backend issues"],
   reminders: ["Reminders", "Proactive nudges from your habits — give feedback and view your routine"],
 };
 
@@ -417,6 +418,9 @@ function setView(name) {
     refreshModelServiceView();
   } else {
     stopModelServicePoll();
+  }
+  if (name === "doctor") {
+    runDoctor().catch(showError);
   }
   if (name === "reminders") {
     refreshRemindersView();
@@ -1069,6 +1073,50 @@ function fmtBytes(n) {
   return `${n.toFixed(i ? 1 : 0)} ${u[i]}`;
 }
 
+// ─── Diagnostics (doctor) view ──────────────────────────────────────────────
+const DOC_ICON = { ok: "✓", warn: "!", fail: "✗" };
+const DOC_PILL = { ok: "live", warn: "paused", fail: "paused" };
+
+async function runDoctor() {
+  const overall = $("#docOverall");
+  const summary = $("#docSummary");
+  const results = $("#docResults");
+  if (results) results.innerHTML = `<div class="muted">${T("doctor.running")}</div>`;
+  if (overall) { overall.className = "cap-pill paused"; overall.textContent = T("doctor.running"); }
+  let rep;
+  try {
+    rep = await api("/health/doctor");
+  } catch (err) {
+    if (results) results.innerHTML = `<div class="ask-error">${escHtml(err.message || String(err))}</div>`;
+    return;
+  }
+  if (overall) {
+    overall.className = "cap-pill " + (DOC_PILL[rep.overall] || "paused");
+    overall.textContent = T("doctor.overall." + rep.overall);
+  }
+  if (summary) {
+    const s = rep.summary || {};
+    summary.innerHTML =
+      `<span>${T("doctor.ok")}: <b>${s.ok || 0}</b></span>` +
+      `<span>${T("doctor.warn")}: <b>${s.warn || 0}</b></span>` +
+      `<span>${T("doctor.fail")}: <b>${s.fail || 0}</b></span>`;
+  }
+  if (results) {
+    results.innerHTML = (rep.checks || []).map((c) => {
+      const icon = DOC_ICON[c.status] || "?";
+      const fix = c.fix ? `<div class="doc-fix">${escHtml(c.fix)}</div>` : "";
+      return `<div class="doc-row doc-${c.status}">
+        <span class="doc-icon">${icon}</span>
+        <div class="doc-body">
+          <div class="doc-name">${escHtml(c.name)}</div>
+          <div class="doc-msg">${escHtml(c.message)}</div>
+          ${fix}
+        </div>
+      </div>`;
+    }).join("");
+  }
+}
+
 async function refreshModelServiceView() {
   if (!state.config?.model_service) {
     try { state.config = await api("/config"); } catch (_) { /* leave blank */ }
@@ -1080,6 +1128,8 @@ async function refreshModelServiceView() {
   if ($("#msRegistry")) $("#msRegistry").value = ms.registry || "";
   // pull_insecure defaults to true server-side; mirror that when unset.
   if ($("#msPullInsecure")) $("#msPullInsecure").checked = ms.pull_insecure !== false;
+  // stop_on_exit defaults to true server-side; mirror that when unset.
+  if ($("#msStopOnExit")) $("#msStopOnExit").checked = ms.stop_on_exit !== false;
   await loadModelStatus().catch((e) => console.error("[models]", e));
   loadServiceLog().catch((e) => console.error("[models]", e));
   startModelServicePoll();
@@ -1219,6 +1269,11 @@ async function saveRegistry() {
 async function savePullInsecure(enabled) {
   await saveModelConfig({ pull_insecure: !!enabled });
   msLog(T(enabled ? "models.insecure.on" : "models.insecure.off"));
+}
+
+async function saveStopOnExit(enabled) {
+  await saveModelConfig({ stop_on_exit: !!enabled });
+  msLog(T(enabled ? "models.stopOnExit.on" : "models.stopOnExit.off"));
 }
 
 async function downloadOfficial() {
@@ -4271,6 +4326,7 @@ function wireEvents() {
   $("#msActiveModel")?.addEventListener("change", () => setActiveModel().catch(showError));
   $("#msSaveRegistryBtn")?.addEventListener("click", () => saveRegistry().catch(showError));
   $("#msPullInsecure")?.addEventListener("change", (e) => savePullInsecure(e.target.checked).catch(showError));
+  $("#msStopOnExit")?.addEventListener("change", (e) => saveStopOnExit(e.target.checked).catch(showError));
   $("#msPullBtn")?.addEventListener("click", () => pullModel().catch(showError));
   // Per-backend start/stop + log refresh.
   $("#msOvStartBtn")?.addEventListener("click", () => startService("openvino").catch(showError));
@@ -4279,6 +4335,8 @@ function wireEvents() {
   $("#msOffStartBtn")?.addEventListener("click", () => startService("official").catch(showError));
   $("#msOffStopBtn")?.addEventListener("click", () => stopService().catch(showError));
   $("#msOffSvcLogRefresh")?.addEventListener("click", () => loadBackendLog("official", "#msOffSvcLog").catch(showError));
+  // ─── Diagnostics ──────────────────────────────────────────────────────
+  $("#docRefreshBtn")?.addEventListener("click", () => runDoctor().catch(showError));
 
   // ─── Reminders ────────────────────────────────────────────────────────
   $("#remRefreshBtn")?.addEventListener("click", () => refreshRemindersView());

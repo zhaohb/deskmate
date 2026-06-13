@@ -745,6 +745,47 @@ def detect_running_backend(base: str, pid: int | None = None, cfg: Any = None) -
     return ""
 
 
+def _proc_openvino_dir(proc: Any) -> str:
+    """Read a running process's INTEL_OPENVINO_DIR (its actually-loaded GenAI
+    runtime). Empty if not OpenVINO or unreadable."""
+    try:
+        env = proc.environ() or {}
+    except Exception:  # noqa: BLE001
+        return ""
+    return env.get("INTEL_OPENVINO_DIR") or env.get("OPENVINO_LIB_PATHS") or ""
+
+
+def running_openvino_runtime_dir(base: str, pid: int | None = None) -> str:
+    """The OpenVINO runtime dir the *running* ollama process actually loaded.
+
+    Read from the live process environment (INTEL_OPENVINO_DIR), so it reflects
+    what's truly in use — not what config selected on disk, which can differ.
+    Returns "" when no process is found, it isn't OpenVINO, or psutil is absent.
+    """
+    try:
+        import psutil  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return ""
+    if pid:
+        try:
+            d = _proc_openvino_dir(psutil.Process(int(pid)))
+            if d:
+                return d
+        except Exception:  # noqa: BLE001
+            pass
+    port = urlparse(base or DEFAULT_BASE).port or 11434
+    try:
+        for c in psutil.net_connections(kind="inet"):
+            if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port and c.pid:
+                try:
+                    return _proc_openvino_dir(psutil.Process(c.pid))
+                except Exception:  # noqa: BLE001
+                    continue
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
 def status(cfg: Any) -> dict[str, Any]:
     """Combined service status: HTTP probe + PID file + install state."""
     base = cfg.ollama.base or DEFAULT_BASE

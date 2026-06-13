@@ -547,6 +547,18 @@ def create_app(
             },
         }
 
+    @app.get("/health/doctor")
+    def health_doctor() -> dict[str, Any]:
+        """Run DeskMate self-diagnostics and return a structured report.
+
+        Surfaces the environment issues users actually hit (Ollama backend +
+        GenAI runtime version, active model, winrt, proxy hijacking localhost,
+        DB/recording state). Each check is {name, status, message, fix}.
+        """
+        from . import doctor  # noqa: PLC0415
+
+        return doctor.report(cfg, db)
+
     def _outlook_error(exc: OutlookError) -> JSONResponse:
         body: dict[str, Any] = {"error": str(exc)}
         if exc.upstream_status is not None:
@@ -2508,7 +2520,7 @@ def create_app(
         body = await _safe_json(request)
         allowed = {"backend", "ollama_exe_path", "ollama_exe_url",
                    "registry", "genai_runtime_dir", "genai_url",
-                   "download_dir", "auto_start", "pull_insecure"}
+                   "download_dir", "auto_start", "pull_insecure", "stop_on_exit"}
         saved: list[str] = []
         errors: dict[str, str] = {}
         for key, raw in body.items():
@@ -2520,7 +2532,7 @@ def create_app(
                     value: Any = str(raw)
                     if value not in (modelsvc.BACKEND_OFFICIAL, modelsvc.BACKEND_OPENVINO):
                         raise ValueError("backend must be 'official' or 'openvino'")
-                elif key in ("auto_start", "pull_insecure"):
+                elif key in ("auto_start", "pull_insecure", "stop_on_exit"):
                     value = bool(raw)
                 elif key == "ollama_exe_path" and str(raw).strip():
                     # Validate a user-supplied exe; store the resolved path.
