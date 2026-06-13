@@ -368,4 +368,8 @@ GET  /todos         POST /todos             PATCH /todos/{id}
 
 ## License
 
-MIT
+**PolyForm Noncommercial License 1.0.0** — see [LICENSE](LICENSE).
+
+DeskMate is free to use, copy, modify, and share **for any noncommercial
+purpose**. Commercial use is **not** permitted under this license; for a
+commercial license, contact the author.
