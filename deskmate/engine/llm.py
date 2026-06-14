@@ -142,6 +142,28 @@ def _resolve_keep_alive() -> str | int:
 
 _KEEP_ALIVE: str | int = _resolve_keep_alive()
 
+
+def _resolve_think() -> bool:
+    """Whether to ask Ollama to run the model's thinking/reasoning pass.
+
+    Resolved fresh on each call (not cached) so the Settings-page toggle takes
+    effect without restarting the daemon. Priority: the ``DESKMATE_OLLAMA_THINK``
+    env var (``0``/``false``/``no``/``off`` = off) overrides everything; else the
+    ``[ollama] think`` config value; else ``True`` (reason before answering,
+    which improves answer and tool-call quality — the reasoning comes back in a
+    separate field so it never leaks into the answer).
+    """
+    raw = os.environ.get("DESKMATE_OLLAMA_THINK")
+    if raw is not None:
+        return raw.strip().lower() not in ("0", "false", "no", "off", "")
+    try:
+        from ..config import load as load_config
+
+        return bool(load_config().ollama.think)
+    except Exception:
+        return True
+
+
 THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL | re.IGNORECASE)
 _FUNCTION_BLOCK_RE = re.compile(
@@ -412,8 +434,17 @@ def chat_ollama(
         "model": model,
         "messages": messages,
         "stream": False,
-        "think": False,
-        "options": {"temperature": temperature, "num_predict": num_predict},
+        "think": _resolve_think(),
+        # Fixed generation params (DeskMate default): temperature/top_p/
+        # repeat_penalty pinned to 1.0 so behavior matches the model's intended
+        # defaults regardless of any temperature a caller passes. num_predict
+        # stays caller-controlled (it's a length cap, not a sampling knob).
+        "options": {
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "repeat_penalty": 1.0,
+            "num_predict": num_predict,
+        },
     }
     if keep_alive is not None:
         body["keep_alive"] = keep_alive
@@ -430,6 +461,7 @@ def chat_ollama_stream(
     base: str,
     model: str,
     on_token: Callable[[str], None],
+    on_thinking: Callable[[str], None] | None = None,
     num_predict: int = 4096,
     temperature: float = 0.3,
     timeout: int | None = None,
@@ -456,8 +488,17 @@ def chat_ollama_stream(
         "model": model,
         "messages": messages,
         "stream": True,
-        "think": False,
-        "options": {"temperature": temperature, "num_predict": num_predict},
+        "think": _resolve_think(),
+        # Fixed generation params (DeskMate default): temperature/top_p/
+        # repeat_penalty pinned to 1.0 so behavior matches the model's intended
+        # defaults regardless of any temperature a caller passes. num_predict
+        # stays caller-controlled (it's a length cap, not a sampling knob).
+        "options": {
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "repeat_penalty": 1.0,
+            "num_predict": num_predict,
+        },
     }
     if tools:
         body["tools"] = tools
@@ -468,6 +509,7 @@ def chat_ollama_stream(
     endpoint, service, fix = _describe_endpoint(parsed)
     conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=timeout)
     pieces: list[str] = []
+    think_pieces: list[str] = []
     stream_tool_calls: list[dict] = []
     try:
         conn.request(
@@ -492,6 +534,17 @@ def chat_ollama_stream(
             except json.JSONDecodeError:
                 continue
             message = obj.get("message") or {}
+            # Thinking/reasoning arrives in its own field (OpenVINO build splits
+            # it out); stream it separately so the UI can show the reasoning
+            # without it polluting the answer content.
+            think_delta = message.get("thinking") or ""
+            if think_delta:
+                think_pieces.append(think_delta)
+                if on_thinking is not None:
+                    try:
+                        on_thinking(think_delta)
+                    except Exception:  # noqa: BLE001
+                        pass
             delta = message.get("content") or ""
             if delta:
                 pieces.append(delta)
@@ -524,4 +577,7 @@ def chat_ollama_stream(
     msg: dict[str, Any] = {"role": "assistant", "content": "".join(pieces)}
     if stream_tool_calls:
         msg["tool_calls"] = stream_tool_calls
-    return normalize_assistant_message(msg)
+    out = normalize_assistant_message(msg)
+    if think_pieces:
+        out["thinking"] = "".join(think_pieces)
+    return out

@@ -1362,6 +1362,7 @@ def _chat_ollama(
     num_predict: int = 4096,
     temperature: float = _EXPLORE_TEMPERATURE,
     on_token: Any = None,
+    on_thinking: Any = None,
 ) -> dict:
     # When a token sink is provided, stream so the UI shows text as it is
     # produced. This applies to tool-calling rounds too (the model often writes
@@ -1374,6 +1375,7 @@ def _chat_ollama(
             base=OLLAMA_BASE,
             model=model or OLLAMA_MODEL,
             on_token=_prose_gate(on_token),
+            on_thinking=on_thinking,
             num_predict=num_predict,
             temperature=temperature,
         )
@@ -1421,6 +1423,7 @@ def run_ask(
     model: str | None = None,
     on_token: Any = None,
     on_reset: Any = None,
+    on_thinking: Any = None,
 ) -> dict[str, Any]:
     """Run the Ask agent: question → tool calls → evidence-based answer.
 
@@ -1540,7 +1543,8 @@ def run_ask(
         # Stream this round's prose (gated against tool-call markup) so the UI
         # shows the answer as it is written — the model frequently writes its
         # answer in an exploration round rather than a separate final turn.
-        response = _chat_ollama(messages, tools=ASK_TOOLS, model=model, on_token=on_token)
+        response = _chat_ollama(messages, tools=ASK_TOOLS, model=model,
+                                on_token=on_token, on_thinking=on_thinking)
         messages.append(response)
 
         tool_calls = llm.extract_tool_calls(response)
@@ -1631,7 +1635,7 @@ def run_ask(
     })
     final = _chat_ollama(
         messages, tools=None, model=model,
-        temperature=_FINAL_TEMPERATURE, on_token=on_token,
+        temperature=_FINAL_TEMPERATURE, on_token=on_token, on_thinking=on_thinking,
     )
     answer = _finalize_answer(final.get("content", ""))
     if answer:

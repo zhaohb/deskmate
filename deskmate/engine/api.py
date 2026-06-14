@@ -124,6 +124,9 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
             {"section": "ollama", "key": "chat_timeout", "type": "int", "restart": True,
              "label": "请求超时 (秒)", "min": 30, "max": 1800,
              "help": "等待模型响应的上限。模型慢/首次加载久时可调大。"},
+            {"section": "ollama", "key": "think", "type": "bool", "restart": False,
+             "label": "思考模式 (thinking)",
+             "help": "让模型先推理再回答/调用工具,质量更好;会增加延迟与耗时,慢硬件可关闭。"},
         ],
     },
     {
@@ -1791,10 +1794,19 @@ def create_app(
             except queue.Full:
                 pass
 
+        def _on_thinking(text: str) -> None:
+            # The model's reasoning pass (when thinking is enabled). Streamed
+            # separately so the UI can show it in its own collapsible area.
+            try:
+                q.put_nowait({"type": "thinking", "text": text})
+            except queue.Full:
+                pass
+
         def _worker() -> None:
             try:
                 result = run_ask(
-                    question, api_base=api_base, on_token=_on_token, on_reset=_on_reset
+                    question, api_base=api_base, on_token=_on_token,
+                    on_reset=_on_reset, on_thinking=_on_thinking,
                 )
                 if isinstance(result, dict):
                     for entry in result.get("tool_calls") or []:

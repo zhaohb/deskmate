@@ -1647,6 +1647,27 @@ a:hover {
   font-size: 0.75rem;
   margin-bottom: 0.3rem;
 }
+
+/* Ask thinking/reasoning area: collapsible, grey small text with a left rule */
+.home-ask-thinking { margin-bottom: 0.75rem; }
+.home-ask-thinking.hidden { display: none; }
+.home-ask-thinking > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.75rem;
+  margin-bottom: 0.4rem;
+  user-select: none;
+}
+.home-ask-thinking-body {
+  border-left: 2px solid var(--line, #d0d0d0);
+  padding-left: 0.7rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  max-height: 260px;
+  overflow-y: auto;
+}
 .tool-call-list {
   display: flex;
   flex-direction: column;

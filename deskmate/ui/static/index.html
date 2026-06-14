@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260612-models8" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260614-think" />
     <style>
       /* Scoped styles for the Capture & Unified Timeline view */
       #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
@@ -354,6 +354,10 @@
               </div>
               <div id="homeAskFeed" class="home-bottom-feed home-ask-feed">
                 <div id="homeAskToolLog" class="home-ask-tool-log hidden"></div>
+                <details id="homeAskThinking" class="home-ask-thinking hidden" open>
+                  <summary data-i18n="ask.thinking.title">Thinking</summary>
+                  <div id="homeAskThinkingBody" class="home-ask-thinking-body"></div>
+                </details>
                 <div id="homeAskAnswer" class="home-ask-answer hidden"></div>
                 <div id="homeAskFeedback" class="home-ask-feedback hidden"></div>
               </div>
@@ -1206,7 +1210,7 @@
       </article>
     </template>
 
-    <script src="/ui/assets/i18n.js?v=20260612-models8" defer></script>
-    <script src="/ui/assets/app.js?v=20260612-models8" defer></script>
+    <script src="/ui/assets/i18n.js?v=20260614-think" defer></script>
+    <script src="/ui/assets/app.js?v=20260614-think" defer></script>
   </body>
 </html>

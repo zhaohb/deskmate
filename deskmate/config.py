@@ -172,6 +172,11 @@ class OllamaConfig(BaseModel):
     base: str = "http://127.0.0.1:11434"
     model: str = "qwen3_8b_ov:v1"
     chat_timeout: int = 600
+    # Ask the model to run its thinking/reasoning pass before answering and
+    # before choosing tools. Improves quality; the reasoning is returned in a
+    # separate field so it doesn't leak into the answer. Costs extra latency and
+    # tokens — turn off on slow hardware.
+    think: bool = True
 
 
 class ModelServiceConfig(BaseModel):

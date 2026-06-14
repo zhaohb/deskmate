@@ -3663,20 +3663,34 @@ async function runSearch(event) {
   const toolLog = $("#homeAskToolLog");
   const stats = $("#homeAskStats");
   const feedback = $("#homeAskFeedback");
+  const thinking = $("#homeAskThinking");
+  const thinkingBody = $("#homeAskThinkingBody");
 
   if (answer) { answer.innerHTML = `<div class="ask-loading"><span class="ask-spinner"></span>${T("ask.thinkingSearching")}</div>`; answer.classList.remove("hidden"); }
   if (toolLog) { toolLog.innerHTML = ""; toolLog.classList.add("hidden"); }
   if (feedback) { feedback.innerHTML = ""; feedback.classList.add("hidden"); }
+  if (thinking) { thinking.classList.add("hidden"); }
+  if (thinkingBody) { thinkingBody.textContent = ""; }
   if (stats) stats.textContent = T("ask.searching");
 
   try {
     // Stream the answer: tokens render live as the model writes them, then the
     // authoritative (grounding-gated) result replaces the live text on "done".
     let streamed = "";
+    let thought = "";
     let result = null;
     let started = false;
     await streamNdjson("/ask/stream", { question: q }, (m) => {
-      if (m.type === "token") {
+      if (m.type === "thinking") {
+        // The model's reasoning pass — show it live in its own collapsible area.
+        thought += m.text;
+        if (thinking && thinkingBody) {
+          thinking.classList.remove("hidden");
+          thinkingBody.textContent = thought;
+          // keep the thinking view pinned to the latest line as it streams
+          thinkingBody.scrollTop = thinkingBody.scrollHeight;
+        }
+      } else if (m.type === "token") {
         if (!started) { started = true; if (stats) stats.textContent = T("ask.answering"); }
         streamed += m.text;
         if (answer) {
