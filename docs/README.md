@@ -104,6 +104,7 @@ and the web `ui` all talk to.
 | 18 | [Live translation](18-live-translation.md) | Low-latency speech translation — endpoint chunking + per-utterance Ollama translation |
 | 19 | [Habits & reminders](19-habits-reminders.md) | `habits/` — routine mining + proactive nudges (three-tier reminders, presence, bilingual) |
 | 20 | [Model Service](20-model-service.md) | `modelsvc/` — download / pull / run the local Ollama service from the UI |
+| 21 | [Diagnostics](21-diagnostics.md) | `engine/doctor` — bilingual self-checks: backend/runtime/model, background workers & watchers, managed process, OCR, capture freshness, disk, DB |
 
 ## Conventions used in these docs
 
