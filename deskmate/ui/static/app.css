@@ -426,6 +426,7 @@ a:hover {
 #view-training.active,
 #view-reminders.active,
 #view-models.active,
+#view-doctor.active,
 #view-capture.active {
   overflow: auto;
   padding: 1.25rem 1.5rem;
@@ -2536,25 +2537,23 @@ a:hover {
 /* "需重启 / 即时生效" — minimal muted text, no background pill */
 .set-flag { color: var(--faint); font-size: 0.7rem; font-weight: 500; white-space: nowrap; }
 
-.set-groups { display: flex; flex-direction: column; gap: 1rem; max-width: 860px; }
+.set-groups { display: flex; flex-direction: column; gap: 18px; max-width: 860px; }
 
-/* groups reuse the app's panel + mono uppercase title idiom */
+/* Cards match the shared .cap-card look used by every other view:
+   surface bg, 1px line border, radius, 18px padding. */
 .set-group {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
-  padding: 1rem 1.25rem 0.5rem;
+  padding: 18px 18px 8px;
 }
+/* Group title matches .cap-card h3 (14px, normal case, text colour) instead of
+   the old mono/uppercase/grey idiom, so settings reads like the other pages. */
 .set-group-title {
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 0.68rem;
+  color: var(--text);
+  font-size: 14px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding-bottom: 0.5rem;
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 0.25rem;
+  margin: 0 0 6px;
 }
 .set-group-desc { color: var(--faint); font-size: 0.76rem; margin: 0.5rem 0 0.25rem; }
 

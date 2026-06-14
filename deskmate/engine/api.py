@@ -551,16 +551,18 @@ def create_app(
         }
 
     @app.get("/health/doctor")
-    def health_doctor() -> dict[str, Any]:
+    def health_doctor(lang: str = "en") -> dict[str, Any]:
         """Run DeskMate self-diagnostics and return a structured report.
 
         Surfaces the environment issues users actually hit (Ollama backend +
         GenAI runtime version, active model, winrt, proxy hijacking localhost,
-        DB/recording state). Each check is {name, status, message, fix}.
+        background workers/watchers/process, OCR, DB/recording state). Each
+        check is {name, status, message, fix}. ``lang`` ("en"|"zh") localizes
+        all text; the UI passes its current language.
         """
         from . import doctor  # noqa: PLC0415
 
-        return doctor.report(cfg, db)
+        return doctor.report(cfg, db, app.state.daemon, lang=lang)
 
     def _outlook_error(exc: OutlookError) -> JSONResponse:
         body: dict[str, Any] = {"error": str(exc)}

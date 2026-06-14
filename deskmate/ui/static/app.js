@@ -1085,7 +1085,9 @@ async function runDoctor() {
   if (overall) { overall.className = "cap-pill paused"; overall.textContent = T("doctor.running"); }
   let rep;
   try {
-    rep = await api("/health/doctor");
+    // Pass the UI language so the backend localizes every name/message/fix.
+    const lang = (window.I18N && I18N.lang) || "en";
+    rep = await api("/health/doctor?lang=" + encodeURIComponent(lang));
   } catch (err) {
     if (results) results.innerHTML = `<div class="ask-error">${escHtml(err.message || String(err))}</div>`;
     return;
@@ -4404,6 +4406,8 @@ if (window.I18N) {
     else if (id === "view-reminders") refreshRemindersView();
     else if (id === "view-models") loadModelStatus().catch((e) => console.error("[models]", e));
     else if (id === "view-settings") renderSettingsForm();
+    // Doctor results are backend-localized; re-fetch in the new language.
+    else if (id === "view-doctor") runDoctor().catch((e) => console.error("[doctor]", e));
     // Apps rows (Run/History/Schedule buttons, schedule labels) are JS-built — re-render.
     renderApps();
     refreshAppScheduleModalTexts();
