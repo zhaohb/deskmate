@@ -62,6 +62,7 @@ const titles = {
   models: ["Model Service", "Download, configure, and run the local Ollama service"],
   doctor: ["Diagnostics", "Self-checks for common environment and backend issues"],
   reminders: ["Reminders", "Proactive nudges from your habits — give feedback and view your routine"],
+  power: ["Battery Saver", "On battery, push background AI onto efficient cores — and pick apps to throttle"],
 };
 
 const appsUi = {
@@ -418,6 +419,11 @@ function setView(name) {
     refreshModelServiceView();
   } else {
     stopModelServicePoll();
+  }
+  if (name === "power") {
+    refreshPowerView();
+  } else {
+    stopPowerPoll();
   }
   if (name === "doctor") {
     runDoctor().catch(showError);
@@ -4205,10 +4211,194 @@ async function summarizeMeeting(id) {
   }
 }
 
+// ── 续航管家 view (battery saver) ────────────────────────────────────────────
+// SPA view mirroring Model Service: refreshPowerView() on entry starts a poll,
+// stopPowerPoll() on leave. Renders battery capsule, per-worker core assignment,
+// honestly-labeled savings, and the user-driven app throttle list.
+const powerUi = { poll: null };
+
+const PW_WORKER_LABELS = {
+  "daemon-semantic-index": "语义索引",
+  "RedactReconciler": "脱敏扫描",
+  "event-driven-capture": "屏幕捕获 / OCR",
+  "daemon-heartbeat": "屏幕捕获（心跳）",
+  "daemon-retention": "数据清理",
+};
+
+function renderPowerStatus(s) {
+  const ecoPill = $("#pwEcoPill");
+  const fill = $("#pwBattFill");
+  const pct = s.percent;
+  if (pct != null && fill) {
+    fill.style.width = Math.max(6, Math.min(100, pct)) + "%";
+    fill.style.background = pct <= 20 ? "var(--pw-warn)" : "var(--pw-eco)";
+  }
+  const main = $("#pwCapMain");
+  const sub = $("#pwCapSub");
+  if (!s.available) {
+    main.textContent = "本机不支持";
+    sub.textContent = "未检测到 Intel 平台的线程级功耗调度能力。";
+  } else if (s.source === "ac") {
+    main.textContent = pct != null ? `电量 ${pct}%` : "已接电源";
+    sub.textContent = "接电中 · 后台任务全速运行（不省电）";
+  } else if (s.source === "battery") {
+    main.textContent = pct != null ? `电量 ${pct}%` : "使用电池";
+    sub.textContent = s.eco_active ? "使用电池 · 省电中" : "使用电池";
+  } else {
+    main.textContent = "—";
+    sub.textContent = "无法读取电源状态";
+  }
+
+  if (s.eco_active) {
+    ecoPill.textContent = `🌿 省电中 · ${s.eco_thread_count} 个后台任务在 E 核`;
+    ecoPill.className = "pw-pill eco";
+  } else if (s.source === "ac") {
+    ecoPill.textContent = "性能模式";
+    ecoPill.className = "pw-pill ac";
+  } else {
+    ecoPill.textContent = "未省电";
+    ecoPill.className = "pw-pill";
+  }
+
+  const box = $("#pwWorkers");
+  const eco = s.eco_active;
+  box.innerHTML = (s.eco_targets || []).map((name) => {
+    const label = PW_WORKER_LABELS[name] || name;
+    const tag = eco ? `<span class="pw-tag e">E 核 · 省电</span>` : `<span class="pw-tag idle">系统默认</span>`;
+    return `<div class="pw-row"><span>${capEscape(label)}</span>${tag}</div>`;
+  }).join("") || '<div class="muted">无可省电的后台任务</div>';
+  box.innerHTML += `<div class="pw-row"><span>Ask 对话</span><span class="pw-tag p">P 核 · 性能</span></div>`;
+
+  const sav = $("#pwSavings");
+  const est = $("#pwEstNote");
+  const rt = s.runtime_seconds;
+  if (eco && rt != null) {
+    // Two-step model with sourced factors (not measured on THIS machine):
+    //   P = share of whole-system power drawn by background workers (~8%,
+    //       conservative estimate for the active case; no public figure).
+    //   S = fraction of that the EcoQoS tag saves. Microsoft's official EcoQoS
+    //       figure is "<50% CPU energy for the same work"; we take a conservative
+    //       0.45. (devblogs.microsoft.com/sustainable-software/introducing-ecoqos)
+    // Whole-system saving ≈ P × S ≈ 0.08 × 0.45 ≈ 3.6%.
+    const P = 0.08, S = 0.45;
+    const FACTOR = P * S;
+    const extra = Math.round(rt * FACTOR / 60);
+    sav.textContent = `约 +${extra} 分钟（预估）`;
+    est.innerHTML = "";
+  } else if (eco) {
+    sav.textContent = "省电生效中";
+    est.innerHTML = "";
+  } else {
+    sav.textContent = "—";
+    est.innerHTML = "";
+  }
+}
+
+function renderPowerApps(data) {
+  const box = $("#pwAppsList");
+  if (!box) return;
+  if (!data.available) { box.innerHTML = '<p class="muted">本机不支持应用功耗控制。</p>'; return; }
+  const apps = data.apps || [];
+  if (!apps.length) { box.innerHTML = '<p class="muted">没有检测到可控制的应用窗口。</p>'; return; }
+  box.innerHTML = apps.map((a) => {
+    const fg = a.is_foreground ? '<span class="pw-fg-badge">正在用</span>' : "";
+    const right = a.can_throttle
+      ? `<label class="pw-sw"><input type="checkbox" data-pid="${a.pid}" ${a.eco ? "checked" : ""} /><span class="pw-track"></span></label>`
+      : '<span class="pw-no-perm">无法控制（需管理员）</span>';
+    const ecoTag = a.eco ? '<span class="pw-eco-badge">E 核</span>' : "";
+    return `<div class="pw-app-row"><div class="pw-app-meta"><span class="pw-app-name">${capEscape(a.name)}</span>${fg} ${ecoTag}<div class="pw-app-title">${capEscape(a.title)}</div></div>${right}</div>`;
+  }).join("");
+
+  box.querySelectorAll("input[type=checkbox]").forEach((cb) => {
+    cb.addEventListener("change", async () => {
+      const pid = Number(cb.dataset.pid);
+      cb.disabled = true;
+      try {
+        if (cb.checked) {
+          try {
+            await api("/power/apps/eco", { method: "POST", body: JSON.stringify({ pid }) });
+          } catch (e) { cb.checked = false; alert("无法压制该应用（可能需要管理员权限）"); }
+        } else {
+          await api("/power/apps/restore", { method: "POST", body: JSON.stringify({ pid }) });
+        }
+      } finally {
+        cb.disabled = false;
+        loadPowerApps().catch((e) => console.error("[power]", e));
+      }
+    });
+  });
+}
+
+async function loadPowerStatus() { renderPowerStatus(await api("/power/status")); }
+async function loadPowerApps() { renderPowerApps(await api("/power/apps")); }
+
+function refreshPowerView() {
+  loadPowerStatus().catch((e) => console.error("[power]", e));
+  loadPowerApps().catch((e) => console.error("[power]", e));
+  startPowerPoll();
+}
+function startPowerPoll() {
+  if (powerUi.poll) return;
+  powerUi.poll = setInterval(() => {
+    if (document.hidden) return;
+    loadPowerStatus().catch((e) => console.error("[power]", e));
+    loadPowerApps().catch((e) => console.error("[power]", e));
+  }, 5000);
+}
+function stopPowerPoll() {
+  if (powerUi.poll) { clearInterval(powerUi.poll); powerUi.poll = null; }
+}
+
+// ── Power capsule (battery saver) ──────────────────────────────────────────
+// Polls /power/status and renders a compact battery pill in the topbar that
+// shows battery % and turns green while background AI is eco-
+// throttled. Clicking it opens the full 续航管家 page. Hidden on desktops with
+// no battery and on platforms where thread QoS is unavailable.
+function fmtRuntimeShort(sec) {
+  if (sec == null) return "";
+  const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+  return h > 0 ? `${h}h${m}m` : `${m}m`;
+}
+function renderPowerCapsule(s) {
+  const cap = $("#powerCapsule");
+  if (!cap) return;
+  // Hide entirely when the feature can't apply (no battery / unsupported).
+  if (!s || !s.available || !s.has_battery) { cap.style.display = "none"; return; }
+  cap.style.display = "inline-flex";
+
+  const fill = $("#pcFill");
+  const text = $("#pcText");
+  if (s.percent != null && fill) fill.style.width = Math.max(8, Math.min(100, s.percent)) + "%";
+
+  if (s.source === "battery") {
+    const p = s.percent != null ? `${s.percent}%` : "电池";
+    text.textContent = s.eco_active ? `🌿 ${p}` : `🔋 ${p}`;
+  } else {
+    text.textContent = s.percent != null ? `🔌 ${s.percent}%` : "🔌 接电";
+  }
+  cap.classList.toggle("eco", !!s.eco_active);
+}
+async function pollPowerCapsule() {
+  try {
+    const s = await api("/power/status");
+    renderPowerCapsule(s);
+  } catch (e) {
+    // Older daemon without the endpoint, or no server: just hide the capsule.
+    const cap = $("#powerCapsule");
+    if (cap) cap.style.display = "none";
+  }
+}
+
 function wireEvents() {
   for (const button of document.querySelectorAll(".nav-item[data-view]")) {
     button.addEventListener("click", () => setView(button.dataset.view));
   }
+  $("#powerCapsule")?.addEventListener("click", () => setView("power"));
+  $("#pwAppsRefresh")?.addEventListener("click", () => loadPowerApps().catch((e) => console.error("[power]", e)));
+  $("#pwAppsRestoreAll")?.addEventListener("click", async () => {
+    try { await api("/power/apps/restore", { method: "POST", body: "{}" }); }
+    finally { loadPowerApps().catch((e) => console.error("[power]", e)); }
+  });
   for (const btn of document.querySelectorAll("#refreshButton, #topbarRefreshButton, #pipesRefreshButton")) {
     btn?.addEventListener("click", () => refreshAll().catch(showError));
   }
@@ -4405,6 +4595,7 @@ if (window.I18N) {
     if (id === "view-training") refreshTrainingView();
     else if (id === "view-reminders") refreshRemindersView();
     else if (id === "view-models") loadModelStatus().catch((e) => console.error("[models]", e));
+    else if (id === "view-power") refreshPowerView();
     else if (id === "view-settings") renderSettingsForm();
     // Doctor results are backend-localized; re-fetch in the new language.
     else if (id === "view-doctor") runDoctor().catch((e) => console.error("[doctor]", e));
@@ -4417,6 +4608,10 @@ if (window.I18N) {
 wireEvents();
 setView("overview");
 refreshAll().catch(showError);
+
+// Power capsule: poll independently of the main refresh (cheap OS read).
+pollPowerCapsule();
+setInterval(pollPowerCapsule, 15000);
 
 // Push-driven updates: subscribe to the server event stream instead of polling.
 // Pause the stream while the tab is hidden; on return, do one catch-up load.

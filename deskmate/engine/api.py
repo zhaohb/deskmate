@@ -2283,6 +2283,95 @@ def create_app(
     def capture_ui():  # noqa: ANN201
         return FileResponse(static_dir() / "capture.html", media_type="text/html")
 
+    # ─── battery saver (additive Intel power feature) ────────────────────────
+    @app.get("/power/status")
+    def power_status_api() -> dict[str, Any]:
+        """Live battery-saver state for the power capsule UI. Fail-open: if the
+        daemon/PowerManager isn't present, read the OS power status directly so
+        the capsule still shows battery % and runtime."""
+        pm = getattr(app.state.daemon, "power_manager", None) if app.state.daemon else None
+        if pm is not None:
+            return pm.status()
+        # No daemon in this process: degrade to a raw OS reading.
+        from ..platform.battery import power_status as _ps  # noqa: PLC0415
+        from ..platform.qos import qos_available as _qa  # noqa: PLC0415
+
+        st = _ps()
+        return {
+            "available": _qa(),
+            "enabled": getattr(getattr(cfg, "power", None), "enabled", False),
+            "source": st.source.value,
+            "percent": st.percent,
+            "has_battery": st.has_battery,
+            "runtime_seconds": st.runtime_seconds,
+            "eco_active": False,
+            "eco_thread_count": 0,
+            "eco_targets": [],
+        }
+
+    @app.get("/power/ui")
+    def power_ui():  # noqa: ANN201
+        # 续航管家 is now a view inside the main SPA; keep this path working for
+        # any old bookmark by redirecting into the app.
+        return RedirectResponse(url="/ui", status_code=307)
+
+    # ─── user-driven app power control (push picked apps to E-core) ──────────
+    def _app_power():  # noqa: ANN202
+        ctrl = getattr(app.state, "app_power", None)
+        if ctrl is None:
+            from ..platform import AppPowerController  # noqa: PLC0415
+
+            ctrl = AppPowerController()
+            app.state.app_power = ctrl
+        return ctrl
+
+    @app.get("/power/cores")
+    def power_cores() -> dict[str, Any]:
+        """Per-core load grouped by P-core vs E-core (Intel hybrid topology)."""
+        from ..platform import core_load  # noqa: PLC0415
+
+        c = core_load()
+        return {
+            "available": c.available,
+            "p_core_count": c.p_core_count,
+            "e_core_count": c.e_core_count,
+            "p_core_load": c.p_core_load,
+            "e_core_load": c.e_core_load,
+            "per_core": c.per_core,
+        }
+
+    @app.get("/power/apps")
+    def power_apps() -> dict[str, Any]:
+        """List user-facing apps with throttle-ability + current eco state."""
+        ctrl = _app_power()
+        return {"available": ctrl.available(), "apps": ctrl.list_with_state()}
+
+    @app.post("/power/apps/eco")
+    async def power_apps_eco(request: Request) -> dict[str, Any]:
+        body = await _safe_json(request)
+        try:
+            pid = int(body.get("pid"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="pid (int) is required")
+        ok = _app_power().eco(pid)
+        if not ok:
+            raise HTTPException(status_code=409, detail="could not throttle this process (likely needs admin)")
+        return {"ok": True, "pid": pid, "eco": True}
+
+    @app.post("/power/apps/restore")
+    async def power_apps_restore(request: Request) -> dict[str, Any]:
+        body = await _safe_json(request)
+        # No pid → restore all.
+        if "pid" not in body or body.get("pid") in (None, ""):
+            n = _app_power().restore_all()
+            return {"ok": True, "restored": n}
+        try:
+            pid = int(body.get("pid"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="pid must be an integer")
+        _app_power().restore(pid)
+        return {"ok": True, "pid": pid, "eco": False}
+
     # ─── LoRA training (additive, opt-in) ────────────────────────────────────
     def _training_sources(raw: str | None) -> list[str]:
         from ..learning.training.data import SOURCES  # noqa: PLC0415

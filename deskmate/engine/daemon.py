@@ -27,6 +27,7 @@ from ..fusion import ContextFusionBus, capture_allowed, shutdown_gate
 from ..logger import get
 from ..meeting import MeetingDetector
 from ..pipes import PipeRuntime, PipeScheduler, load_pipes
+from ..platform import PowerManager
 from ..redact import OnnxRedactor, RedactReconciler
 from .app_scheduler import AppScheduler
 
@@ -134,6 +135,17 @@ class Daemon:
         self.fusion_bus = (
             ContextFusionBus(self.cfg)
             if getattr(self.cfg, "fusion", None) and self.cfg.fusion.enabled
+            else None
+        )
+
+        # Additive battery saver: a PowerManager thread tags background workers
+        # (semantic index, redaction, capture/OCR, retention) with EcoQoS on
+        # battery, pushing them onto E/LPE-cores. Discovers workers by thread
+        # name from the outside, so no worker code is modified. Ask keeps P-cores.
+        pcfg = getattr(self.cfg, "power", None)
+        self.power_manager = (
+            PowerManager(enabled=pcfg.enabled, poll_seconds=pcfg.poll_seconds)
+            if pcfg is not None
             else None
         )
 
@@ -274,6 +286,10 @@ class Daemon:
             )
         for t in self._threads:
             t.start()
+        # Battery saver: start after workers exist so it can find + tag them by
+        # name. Additive; a no-op on AC / non-Windows / when disabled.
+        if self.power_manager:
+            self.power_manager.start()
         # Live translation worker (its own tracked thread so it can be toggled at
         # runtime via set_translation without restarting the daemon).
         if self.translator is not None:
@@ -311,6 +327,8 @@ class Daemon:
             self.habit_watcher.stop()
         if self.fusion_bus:
             self.fusion_bus.stop()
+        if self.power_manager:
+            self.power_manager.stop()
         shutdown_gate()
         for t in self._threads:
             t.join(timeout=3.0)

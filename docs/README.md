@@ -105,6 +105,7 @@ and the web `ui` all talk to.
 | 19 | [Habits & reminders](19-habits-reminders.md) | `habits/` — routine mining + proactive nudges (three-tier reminders, presence, bilingual) |
 | 20 | [Model Service](20-model-service.md) | `modelsvc/` — download / pull / run the local Ollama service from the UI |
 | 21 | [Diagnostics](21-diagnostics.md) | `engine/doctor` — bilingual self-checks: backend/runtime/model, background workers & watchers, managed process, OCR, capture freshness, disk, DB |
+| 22 | [Power Manager](22-power-manager.md) | `platform/` — On battery, thread-level EcoQoS pushes background AI onto E-cores + user-driven app throttling |
 
 ## Conventions used in these docs
 

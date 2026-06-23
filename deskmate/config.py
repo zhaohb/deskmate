@@ -307,6 +307,18 @@ class HabitsConfig(BaseModel):
     reminder_lang: str = "zh"
 
 
+class PowerConfig(BaseModel):
+    """Battery-saver: eco-throttle background workers onto E/LPE-cores on battery.
+
+    Zero-invasive — a PowerManager thread tags workers by name via thread-level
+    EcoQoS; existing worker code is untouched. No-op on AC / non-Windows.
+    """
+
+    enabled: bool = True
+    # How often to re-check AC/battery state and re-tag workers (seconds).
+    poll_seconds: float = 15.0
+
+
 class FusionConfig(BaseModel):
     """Additive context-fusion + capture-control module.
 
@@ -389,6 +401,7 @@ class Config(BaseSettings):
     habits: HabitsConfig = Field(default_factory=HabitsConfig)
     fusion: FusionConfig = Field(default_factory=FusionConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
+    power: PowerConfig = Field(default_factory=PowerConfig)
 
 def _read_toml(path: Path) -> dict:
     if not path.exists():
@@ -621,4 +634,11 @@ client_secret = ""
 frame_days = 30
 audio_days = 30
 db_max_mb = 4000
+
+[power]
+# Battery saver: on battery, push background workers (semantic index, redaction,
+# screen capture/OCR, retention) onto efficient cores via thread-level EcoQoS.
+# Zero-invasive and no-op on AC / non-Windows. Ask keeps performance cores.
+enabled = true
+poll_seconds = 15.0
 """

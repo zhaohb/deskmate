@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260614-doctori18n" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260623-power5" />
     <style>
       /* Scoped styles for the Capture & Unified Timeline view */
       #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
@@ -111,6 +111,71 @@
       #view-models .cap-pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; font-weight: 600; font-size: 13px; white-space: nowrap; }
       #view-models .cap-pill.live { background: rgba(34,197,94,.15); color: var(--online); }
       #view-models .cap-pill.paused { background: rgba(224,108,117,.18); color: #e06c75; }
+      /* ── power capsule (battery saver) in topbar ───────────────────────── */
+      .power-capsule { display: inline-flex; align-items: center; gap: 9px; padding: 5px 12px 5px 9px;
+        border-radius: 999px; border: 1px solid var(--line); background: var(--surface-2);
+        cursor: pointer; font-size: 13px; font-weight: 600; white-space: nowrap; color: var(--text); }
+      .power-capsule:hover { border-color: var(--muted); }
+      .power-capsule.eco { border-color: #2c4a37; background: rgba(95,184,120,.12); color: #5fb878; }
+      .power-capsule .pc-batt { position: relative; width: 26px; height: 13px; border: 1.5px solid currentColor;
+        border-radius: 3px; flex: none; opacity: .9; }
+      .power-capsule .pc-batt::after { content: ""; position: absolute; right: -3px; top: 3.5px; width: 2px; height: 5px;
+        background: currentColor; border-radius: 0 2px 2px 0; }
+      .power-capsule .pc-fill { position: absolute; left: 1.5px; top: 1.5px; bottom: 1.5px; border-radius: 1.5px;
+        background: currentColor; transition: width .4s; width: 50%; }
+
+      /* ── 续航管家 view (all scoped under #view-power to avoid collisions) ── */
+      #view-power { --pw-eco: #5fb878; --pw-warn: #e0a458; }
+      #view-power .pw-card { background: var(--surface-2); border: 1px solid var(--line);
+        border-radius: 10px; padding: 18px; margin-bottom: 20px; max-width: 880px; }
+      #view-power .pw-h2 { font-size: 15px; margin: 0 0 14px; }
+      #view-power .pw-capsule { display: flex; align-items: center; gap: 20px;
+        background: linear-gradient(135deg, #1b2330, var(--surface-2));
+        border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; }
+      #view-power .pw-batt { position: relative; width: 92px; height: 46px; border: 2.5px solid var(--text);
+        border-radius: 7px; flex: none; }
+      #view-power .pw-batt::after { content: ""; position: absolute; right: -8px; top: 14px; width: 5px; height: 16px;
+        background: var(--text); border-radius: 0 3px 3px 0; }
+      #view-power .pw-fill { position: absolute; left: 3px; top: 3px; bottom: 3px; border-radius: 3px;
+        background: var(--pw-eco); transition: width .4s, background .4s; }
+      #view-power .pw-big { font-size: 30px; font-weight: 650; letter-spacing: .3px; }
+      #view-power .pw-sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+      #view-power .pw-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+        padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; }
+      #view-power .pw-pill.eco { color: var(--pw-eco); border-color: #2c4a37; background: #16241b; }
+      #view-power .pw-pill.ac  { color: var(--accent); border-color: #28406e; background: #161e2e; }
+      #view-power .pw-savings { font-size: 26px; font-weight: 650; color: var(--pw-eco); }
+      #view-power .pw-row { display: flex; align-items: center; justify-content: space-between;
+        padding: 9px 0; border-bottom: 1px solid var(--line); }
+      #view-power .pw-row:last-child { border-bottom: none; }
+      #view-power .pw-tag { font-size: 11px; padding: 2px 8px; border-radius: 6px; }
+      #view-power .pw-tag.e { color: var(--pw-eco); background: #16241b; }
+      #view-power .pw-tag.p { color: var(--accent); background: #161e2e; }
+      #view-power .pw-tag.idle { color: var(--muted); background: #1c2029; }
+      #view-power .pw-note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+      #view-power .pw-est { font-size: 11px; color: var(--pw-warn); border: 1px dashed #4a3d22;
+        background: #221c10; border-radius: 6px; padding: 8px 10px; margin-top: 10px; }
+      #view-power .pw-app-row { display: flex; align-items: center; gap: 12px; padding: 10px 0;
+        border-bottom: 1px solid var(--line); }
+      #view-power .pw-app-row:last-child { border-bottom: none; }
+      #view-power .pw-app-name { font-weight: 600; }
+      #view-power .pw-app-meta { flex: 1; min-width: 0; }
+      #view-power .pw-app-title { color: var(--muted); font-size: 12px;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #view-power .pw-fg-badge { font-size: 11px; color: var(--accent); background: #161e2e;
+        border-radius: 6px; padding: 1px 7px; margin-left: 8px; }
+      #view-power .pw-eco-badge { font-size: 11px; color: var(--pw-eco); background: #16241b;
+        border-radius: 6px; padding: 1px 7px; }
+      #view-power .pw-no-perm { font-size: 12px; color: var(--muted); }
+      #view-power .pw-sw { position: relative; width: 40px; height: 22px; flex: none; }
+      #view-power .pw-sw input { opacity: 0; width: 0; height: 0; }
+      #view-power .pw-sw .pw-track { position: absolute; inset: 0; background: #2b313c;
+        border-radius: 999px; transition: .25s; cursor: pointer; }
+      #view-power .pw-sw .pw-track::before { content: ""; position: absolute; left: 3px; top: 3px;
+        width: 16px; height: 16px; background: #fff; border-radius: 50%; transition: .25s; }
+      #view-power .pw-sw input:checked + .pw-track { background: var(--pw-eco); }
+      #view-power .pw-sw input:checked + .pw-track::before { transform: translateX(18px); }
+      #view-power .pw-sw input:disabled + .pw-track { opacity: .4; cursor: not-allowed; }
       /* card headers carry a muted step number (training badge palette, not an accent) */
       #view-models .ms-step-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
       #view-models .ms-step-head h3 { margin: 0; }
@@ -259,6 +324,7 @@
           <button class="nav-item" data-view="models" type="button"><span data-i18n="nav.models">Model Service</span></button>
           <button class="nav-item" data-view="doctor" type="button"><span data-i18n="nav.doctor">Diagnostics</span></button>
           <button class="nav-item" data-view="reminders" type="button"><span data-i18n="nav.reminders">Reminders</span></button>
+          <button class="nav-item" data-view="power" type="button"><span data-i18n="nav.power">续航管家</span></button>
           <button class="nav-item nav-item--settings" data-view="settings" type="button">
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9 4a7 7 0 0 0-.1-1.1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.9-1.1L16.3 2h-4.6l-.4 2.7a7 7 0 0 0-1.9 1.1l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 3 12a7 7 0 0 0 .1 1.1l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.9 1.1l.4 2.8h4.6l.4-2.7a7 7 0 0 0 1.9-1.1l2.4 1 2-3.4-2-1.6c.06-.36.1-.73.1-1.1Z" fill="currentColor"/></svg>
             <span data-i18n="nav.settings">Settings</span>
@@ -292,6 +358,11 @@
             <p id="viewSubtitle">Health, activity parameters, and recent records</p>
           </div>
           <div class="actions" id="topbarActions">
+            <button id="powerCapsule" class="power-capsule" type="button" style="display:none"
+                    title="续航管家：拔电后把后台 AI 挪到能效核省电">
+              <span class="pc-batt"><span class="pc-fill" id="pcFill"></span></span>
+              <span class="pc-text" id="pcText">—</span>
+            </button>
             <button id="topbarCaptureButton" class="primary" type="button" style="display:none" data-i18n="home.captureNow">Capture now</button>
             <button id="topbarRefreshButton" type="button" data-i18n="common.refresh">Refresh</button>
           </div>
@@ -1028,6 +1099,46 @@
             <p class="muted" id="remProfileNote" style="margin-top:14px"></p>
           </div>
         </section>
+
+        <section id="view-power" class="view">
+          <div class="pw-card">
+            <div class="pw-capsule">
+              <div class="pw-batt"><div class="pw-fill" id="pwBattFill" style="width:50%"></div></div>
+              <div>
+                <div class="pw-big" id="pwCapMain">撑到 —</div>
+                <div class="pw-sub" id="pwCapSub" data-i18n="power.reading">读取电量中…</div>
+              </div>
+              <span style="flex:1"></span>
+              <span id="pwEcoPill" class="pw-pill">—</span>
+            </div>
+          </div>
+
+          <div class="pw-card">
+            <h2 class="pw-h2" data-i18n="power.workers.title">后台 AI 任务 · 当前核心</h2>
+            <div id="pwWorkers"></div>
+            <div class="pw-note" data-i18n="power.workers.note">Ask 对话不在省电名单：它请求驱动，且重活在 GPU 上，始终保留性能核（P 核）。</div>
+          </div>
+
+
+          <div class="pw-card">
+            <h2 class="pw-h2" data-i18n="power.savings.title">因省电多撑的时间</h2>
+            <div class="pw-savings" id="pwSavings">—</div>
+            <div class="pw-est" id="pwEstNote"></div>
+          </div>
+
+          <div class="pw-card">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
+              <h2 class="pw-h2" style="margin:0" data-i18n="power.apps.title">应用功耗控制</h2>
+              <span style="flex:1"></span>
+              <button id="pwAppsRefresh" type="button" data-i18n="power.apps.refresh">刷新列表</button>
+              <button id="pwAppsRestoreAll" type="button" data-i18n="power.apps.restoreAll">全部恢复</button>
+            </div>
+            <p class="muted" style="margin:6px 0 14px" data-i18n="power.apps.intro">
+              勾选你想让它“慢下来省电”的应用，DeskMate 会把它压到能效核（E 核）。你正在用的前台应用默认不勾，避免卡顿——但你仍可手动勾选。
+            </p>
+            <div id="pwAppsList"><p class="muted" data-i18n="power.loading">加载中…</p></div>
+          </div>
+        </section>
       </main>
     </div>
 
@@ -1210,7 +1321,7 @@
       </article>
     </template>
 
-    <script src="/ui/assets/i18n.js?v=20260614-doctori18n" defer></script>
-    <script src="/ui/assets/app.js?v=20260614-doctori18n" defer></script>
+    <script src="/ui/assets/i18n.js?v=20260623-power5" defer></script>
+    <script src="/ui/assets/app.js?v=20260623-power5" defer></script>
   </body>
 </html>

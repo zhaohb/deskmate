@@ -427,7 +427,8 @@ a:hover {
 #view-reminders.active,
 #view-models.active,
 #view-doctor.active,
-#view-capture.active {
+#view-capture.active,
+#view-power.active {
   overflow: auto;
   padding: 1.25rem 1.5rem;
   gap: 1rem;
