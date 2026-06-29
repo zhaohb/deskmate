@@ -216,7 +216,7 @@ Then restart `deskmate ui` — you can now use Ask on the Home page and run repo
 
 ## ⚡ Advanced features (read when you need them)
 
-These are more specialized capabilities — **beginners can ignore them for now** and
+These are more specialized capabilities - **beginners can ignore them for now** and
 come back when needed:
 
 | Feature | One-liner | Docs |
@@ -225,7 +225,7 @@ come back when needed:
 | Live speech translation | Translate as you speak, shown in the UI | [docs/18-live-translation.md](docs/18-live-translation.md) |
 | Video-call detection | Auto-detect Teams/Zoom/Meet + meeting notes | [docs/09-meeting-workflow.md](docs/09-meeting-workflow.md) |
 | Gmail / Outlook integration | Search real mailboxes in Ask and apps | [docs/11-connections.md](docs/11-connections.md) |
-| Battery Saver / 续航管家 | On battery, move background AI work and user-selected apps onto efficient cores; the SPA view and live status text are localized in Chinese/English | [docs/22-power-manager.md](docs/22-power-manager.md) |
+| Battery Saver | On battery, move background AI work and user-selected apps onto efficient cores; the SPA view and live status text are localized in Chinese/English | [docs/22-power-manager.md](docs/22-power-manager.md) |
 | Local LoRA fine-tuning | Train a small model on your data (incl. Intel iGPU) | [docs/16-learning-training.md](docs/16-learning-training.md) |
 | All technical design docs | Architecture of every module | [docs/README.md](docs/README.md) |
 
