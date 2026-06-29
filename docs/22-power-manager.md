@@ -26,7 +26,7 @@ platforms degrade gracefully to no-ops and never raise.
 | `platform/processes.py` | Enumerates user-facing apps (visible windows via `EnumWindows`) + `AppPowerController` (user-selected process eco/restore) |
 | `platform/cores.py` | Per-core load grouped by P/E efficiency class (`NtQuerySystemInformation` + `GetSystemCpuSetInformation`). Backend retained, not currently shown in UI |
 | `engine/api.py` | `/power/*` routes (see below) |
-| `ui/static/index.html` `app.js` `i18n.js` | Battery Saver SPA view + topbar battery capsule |
+| `ui/static/index.html` `app.js` `i18n.js` | Battery Saver SPA view + topbar battery capsule; all static and dynamic copy is localized through `i18n.js` |
 | `config.py` `PowerConfig` | `[power] enabled / poll_seconds` |
 
 ---
@@ -95,9 +95,19 @@ the 4 P-cores.
 | `POST /power/apps/restore` `{pid}` or `{}` | Restore a specific pid, or omit pid to restore all |
 | `GET /power/ui` | Legacy standalone page entry; now 307-redirects to `/ui` (Battery Saver is a SPA view) |
 
-The UI is a SPA view (`#view-power`, nav button "续航管家", `data-view="power"`).
-Lifecycle mirrors Model Service: enter → start poll, leave → stop poll. The topbar
-also carries a battery capsule that auto-hides when no battery / unsupported.
+The UI is a SPA view (`#view-power`, nav button "续航管家" / "Battery Saver",
+`data-view="power"`). Lifecycle mirrors Model Service: enter → start poll, leave
+→ stop poll. The topbar also carries a battery capsule that auto-hides when no
+battery / unsupported.
+
+### Localization
+
+Power Manager follows the global Settings language. Static labels in
+`index.html` use `data-i18n`, and runtime-rendered state in `app.js` (battery
+state, EcoQoS worker labels, projected runtime, app-control badges, alerts, and
+the topbar battery capsule) uses `T("power.*")` keys from `i18n.js`. This avoids
+the Battery Saver page showing Chinese-only status text while the rest of the UI
+is set to English.
 
 ---
 

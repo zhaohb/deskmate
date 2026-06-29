@@ -89,6 +89,9 @@ pip install -e ".[module1,module2]"      # install several (comma-separated, NO 
 > Beginner tip: start with the default combo from Step 3. Add a module later when you
 > decide you want a feature (e.g. Chinese OCR, semantic search) — re-running
 > `pip install -e ".[...]"` is safe.
+>
+> Battery Saver / Power Manager is built in and uses Windows APIs through the
+> standard library; it does **not** need an extra package.
 
 ### Install from a built wheel (instead of the source checkout)
 
@@ -270,14 +273,20 @@ deskmate ui --no-run-daemon  # view existing data only, don't start new recordin
 | Page | What it does |
 |------|--------------|
 | Home | Health status, recent activity, **Ask** (natural-language queries) |
+| Apps | Run built-in and plugin LLM apps; configure schedules and time ranges |
+| Email | Connect Gmail / Outlook and review mailbox integration status |
 | Timeline | Browse the screenshot timeline |
-| Events | Keyboard / mouse / clipboard / window-focus events |
 | Transcripts | Audio transcriptions |
+| Translate | Live speech translation controls and translated transcript stream |
+| Events | Keyboard / mouse / clipboard / window-focus events |
 | Todos | Action items extracted from email + meetings |
 | Meetings | Detected video calls, transcripts, one-click summary |
+| Capture | Capture-control view for recording sources and runtime toggles |
 | Training | Local LoRA fine-tuning |
-| My Apps | Run LLM apps; connect Gmail/Outlook in Settings |
-| Battery Saver / 续航管家 | EcoQoS battery saver for background AI workers and selected apps, with Chinese/English UI text |
+| Model Service | Start/stop local model backends and inspect service logs |
+| Diagnostics | Environment self-checks for common setup issues |
+| Reminders | Proactive habit reminders, acknowledgement, and history |
+| Battery Saver | EcoQoS battery saver for background AI workers and selected apps; UI text is localized in Chinese/English |
 | Settings | Config and monitors |
 
 ### CLI
