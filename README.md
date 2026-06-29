@@ -222,6 +222,7 @@ come back when needed:
 | Live speech translation | Translate as you speak, shown in the UI | [docs/18-live-translation.md](docs/18-live-translation.md) |
 | Video-call detection | Auto-detect Teams/Zoom/Meet + meeting notes | [docs/09-meeting-workflow.md](docs/09-meeting-workflow.md) |
 | Gmail / Outlook integration | Search real mailboxes in Ask and apps | [docs/11-connections.md](docs/11-connections.md) |
+| Battery Saver / 续航管家 | On battery, move background AI work and user-selected apps onto efficient cores; the SPA view and live status text are localized in Chinese/English | [docs/22-power-manager.md](docs/22-power-manager.md) |
 | Local LoRA fine-tuning | Train a small model on your data (incl. Intel iGPU) | [docs/16-learning-training.md](docs/16-learning-training.md) |
 | All technical design docs | Architecture of every module | [docs/README.md](docs/README.md) |
 
@@ -276,6 +277,7 @@ deskmate ui --no-run-daemon  # view existing data only, don't start new recordin
 | Meetings | Detected video calls, transcripts, one-click summary |
 | Training | Local LoRA fine-tuning |
 | My Apps | Run LLM apps; connect Gmail/Outlook in Settings |
+| Battery Saver / 续航管家 | EcoQoS battery saver for background AI workers and selected apps, with Chinese/English UI text |
 | Settings | Config and monitors |
 
 ### CLI
