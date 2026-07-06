@@ -7,8 +7,10 @@
 DeskMate is a **local-first** desktop activity recorder for **Windows**. It captures
 your screenshots, on-screen text (OCR / accessibility tree), keyboard/mouse/clipboard
 events, and optional audio transcription into a SQLite database **on your own machine**,
-then lets you use that data through a browser UI, a REST API, and an MCP server
-(search, natural-language Q&A, auto-generated reports, and more).
+then lets you use that data through a browser UI, a REST API, and an **MCP server**
+that plugs straight into AI coding agents like **Claude Code** and **Cursor** —
+so your assistant can search your activity, ask natural-language questions, and
+run auto-generated reports (see [MCP server](#-mcp-server-use-deskmate-from-ai-agents)).
 
 > **All your data stays on your own computer — nothing is uploaded to the cloud.**
 
@@ -395,13 +397,58 @@ deskmate mcp                # in another — the MCP stdio server
 > `deskmate_ask` and `deskmate_run_app` invoke a local LLM, so they need **Ollama +
 > the API** running and can take tens of seconds to minutes.
 
-**Register in an MCP client** (e.g. Claude Desktop `claude_desktop_config.json`) —
-point `command` at the Python env that has the `mcp` extra installed:
+### 💡 Why connect it to Claude Code / Cursor?
+
+Once DeskMate is registered, **your coding assistant knows what you've been doing
+locally** — no copy-pasting context. While you work in Claude Code or Cursor you can ask:
+
+**deskmate_ask** — natural-language Q&A over your activity
+- "Use deskmate to recap the last hour: which apps I used, how long on each, and what I was doing — as a timeline."
+- "Ask deskmate: between 2pm and 4pm today, what task was I mainly working on, and which files/windows were involved?"
+- "From my local activity record (deskmate), what was I last reading about in the browser?"
+
+**deskmate_search** — full-text search over OCR / UI / audio
+- "Use deskmate to search my screen OCR, UI text and audio transcripts for 'recursive doubling', list the hits by time with the app/window they appeared in."
+- "Use deskmate to find frames in the last 3 hours whose OCR text contains 'error' or 'exception', and tell me which app each was in."
+- "Use deskmate to find which .py files I opened in VS Code today."
+
+**deskmate_list_apps / run_app** — report apps
+- "Use deskmate to list all available report apps and what each one does."
+- "Use deskmate to run the time-breakdown report for the last hour."
+- "Use deskmate to run day-recap and summarize what I did today."
+- "Use deskmate to run standup-update: what I did, what's next, and any blockers."
+
+**deskmate_recent_events / recent_frames** — raw activity stream
+- "Use deskmate to show my last 50 UI events (clicks/focus/typing/clipboard) and summarize what I was just doing."
+- "Use deskmate to list the last 20 captured frames and tell me which apps/windows I've been switching between."
+
+**deskmate_health / capture_once** — status & instant capture
+- "Use deskmate to check whether the recorder daemon is healthy and how many frames/transcripts it has captured."
+- "Use deskmate to capture the screen right now and tell me what's on it."
+
+**deskmate_list_app_outputs / get_app_output** — past reports
+- "Use deskmate to list day-recap's past report runs and show me the contents of the latest one."
+
+The assistant reads your **local activity record** on demand and answers in-context,
+entirely on your machine.
+
+### Register the server
+
+Point `command` at the Python env that has the `mcp` extra installed.
+
+**Claude Code** (CLI):
+```bash
+claude mcp add deskmate -e DESKMATE_API=http://127.0.0.1:3030 \
+  -- C:/path/to/env/python.exe -m deskmate mcp
+# verify:  claude mcp list      (should show deskmate ✓ connected)
+```
+
+**Cursor** — add to `~/.cursor/mcp.json` (global) or `<project>/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
     "deskmate": {
-      "command": "C:\\path\\to\\env\\python.exe",
+      "command": "C:/path/to/env/python.exe",
       "args": ["-m", "deskmate", "mcp"],
       "env": { "DESKMATE_API": "http://127.0.0.1:3030" }
     }
@@ -409,8 +456,20 @@ point `command` at the Python env that has the `mcp` extra installed:
 }
 ```
 
+**Claude Desktop** — same block in `claude_desktop_config.json`.
+
+> After editing config, **fully restart** the client — MCP servers are only loaded
+> at startup.
+
+### Notes
+
 - **`DESKMATE_API`** (optional) overrides the API base URL; defaults to
   `http://127.0.0.1:3030`.
+- **Slow tools / timeouts:** `deskmate_ask` and `deskmate_run_app` invoke a local
+  LLM and can take minutes. Raise the server-side budget with
+  `DESKMATE_MCP_ASK_TIMEOUT` / `DESKMATE_MCP_RUN_APP_TIMEOUT` (seconds, in the
+  server's `env`), and raise the **client** tool timeout with `MCP_TOOL_TIMEOUT`
+  (milliseconds; e.g. `600000` for 10 min) — both must be long enough.
 - **Behind a corporate proxy?** No action needed — the MCP server talks only to
   the local API and deliberately ignores `HTTP(S)_PROXY`, so `127.0.0.1` traffic
   is never routed through a proxy.

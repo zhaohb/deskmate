@@ -25,10 +25,11 @@ API = os.environ.get("DESKMATE_API", "http://127.0.0.1:3030")
 
 # ask runs an LLM (+ tool rounds); run_app spawns a report subprocess that itself
 # calls the LLM — both are far slower than the read-only queries, so they get
-# their own generous timeouts.
+# their own generous timeouts (10 min for the LLM-backed tools).
 DEFAULT_TIMEOUT = 20
-ASK_TIMEOUT = 180
-RUN_APP_TIMEOUT = 600
+ASK_TIMEOUT = int(os.environ.get("DESKMATE_MCP_ASK_TIMEOUT", "600"))
+RUN_APP_TIMEOUT = int(os.environ.get("DESKMATE_MCP_RUN_APP_TIMEOUT", "600"))
+PROGRESS_INTERVAL_S = 15.0
 
 # trust_env=False: never route the local API through an HTTP(S)_PROXY. On a
 # machine behind a corporate proxy httpx would otherwise try to send even
@@ -52,6 +53,41 @@ def _http_get_text(path: str, timeout: float = DEFAULT_TIMEOUT) -> str:
 def _http_post(path: str, body: dict[str, Any] | None = None, timeout: float = DEFAULT_TIMEOUT) -> Any:
     with _client(timeout) as c:
         return c.post(f"{API}{path}", json=body).json()
+
+
+async def _http_post_with_progress(
+    path: str,
+    body: dict[str, Any] | None,
+    *,
+    timeout: float,
+    label: str,
+) -> Any:
+    """Run a blocking POST in a worker thread and emit MCP progress while waiting."""
+    import asyncio
+
+    from mcp.server.lowlevel.server import request_ctx
+
+    task = asyncio.create_task(asyncio.to_thread(_http_post, path, body, timeout))
+    elapsed = 0.0
+    while not task.done():
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=PROGRESS_INTERVAL_S)
+        except TimeoutError:
+            elapsed += PROGRESS_INTERVAL_S
+            try:
+                ctx = request_ctx.get()
+            except LookupError:
+                continue
+            token = ctx.meta.progressToken if ctx.meta else None
+            if token is None:
+                continue
+            await ctx.session.send_progress_notification(
+                token,
+                min(elapsed, timeout),
+                total=timeout,
+                message=f"{label}: waiting for DeskMate API ({int(elapsed)}s)",
+            )
+    return await task
 
 
 def run_stdio() -> None:
@@ -113,8 +149,8 @@ def run_stdio() -> None:
                     "Ask a natural-language question about the user's recent activity. "
                     "An LLM agent searches the local captured context (screen OCR, UI events, "
                     "audio transcripts, meetings, todos) and runs tools to answer. Returns the "
-                    "grounded answer plus a summary of the tool calls it made. Can take tens of "
-                    "seconds."
+                    "grounded answer plus a summary of the tool calls it made. Can take up to "
+                    "10 minutes."
                 ),
                 inputSchema={
                     "type": "object",
@@ -198,7 +234,12 @@ def run_stdio() -> None:
         elif name == "deskmate_health":
             data = _http_get("/health")
         elif name == "deskmate_ask":
-            data = _http_post("/ask", body={"question": arguments.get("question", "")}, timeout=ASK_TIMEOUT)
+            data = await _http_post_with_progress(
+                "/ask",
+                {"question": arguments.get("question", "")},
+                timeout=ASK_TIMEOUT,
+                label="deskmate_ask",
+            )
         elif name == "deskmate_list_apps":
             data = _http_get("/apps")
         elif name == "deskmate_run_app":
@@ -207,7 +248,12 @@ def run_stdio() -> None:
                 data = {"error": "app_name is required"}
             else:
                 body = {k: v for k, v in arguments.items() if k != "app_name" and v is not None}
-                data = _http_post(f"/apps/{app_name}/run", body=body, timeout=RUN_APP_TIMEOUT)
+                data = await _http_post_with_progress(
+                    f"/apps/{app_name}/run",
+                    body,
+                    timeout=RUN_APP_TIMEOUT,
+                    label=f"deskmate_run_app:{app_name}",
+                )
         elif name == "deskmate_list_app_outputs":
             app_name = arguments.get("app_name")
             data = _http_get(f"/apps/{app_name}/outputs") if app_name else {"error": "app_name is required"}
