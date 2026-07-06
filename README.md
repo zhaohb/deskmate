@@ -295,7 +295,7 @@ deskmate serve          # HTTP API only (records by default)
 deskmate record         # recorder only
 deskmate capture-once   # capture one frame manually
 deskmate search "query" # keyword search via the API
-deskmate mcp            # MCP server (API must be running)
+deskmate mcp            # MCP server for AI agents (see "MCP server" below; API must be running)
 ```
 Split API and recorder into two processes:
 ```powershell
@@ -359,6 +359,64 @@ GET  /health        GET  /search?q=...      POST /ask
 GET  /frames        POST /capture           GET  /meetings
 GET  /todos         POST /todos             PATCH /todos/{id}
 ```
+
+---
+
+## 🔌 MCP server (use DeskMate from AI agents)
+
+DeskMate ships an [MCP](https://modelcontextprotocol.io) stdio server so other AI
+agents (Claude Desktop, IDE assistants, custom clients) can query your local
+activity **and** drive DeskMate's Q&A and report apps. It's a thin proxy over the
+local HTTP API, so **the DeskMate API must already be running** (`deskmate serve`
+or `deskmate ui`).
+
+**Install & launch**
+```powershell
+pip install -e ".[mcp]"     # or add `mcp` to your extras combo
+deskmate serve              # in one terminal — the API on :3030
+deskmate mcp                # in another — the MCP stdio server
+```
+
+**Tools exposed** (all prefixed `deskmate_` so they don't collide with other MCP servers):
+
+| Tool | Kind | What it does |
+|------|------|--------------|
+| `deskmate_search` | read | Full-text search over frames (OCR + a11y text), UI events, audio transcripts |
+| `deskmate_recent_frames` | read | List the latest captured frames |
+| `deskmate_recent_events` | read | List latest UI events (clicks, focus, key text, clipboard) |
+| `deskmate_health` | read | Daemon liveness + counters |
+| `deskmate_capture_once` | action | Trigger a paired capture now |
+| `deskmate_ask` | action | Natural-language Q&A: an LLM searches your local context and answers (slow) |
+| `deskmate_list_apps` | read | List the report apps (day-recap, standup-update, todo-list, meeting-summary, email-compose, …) |
+| `deskmate_run_app` | action | Run a report app and return its result (slow; params vary per app) |
+| `deskmate_list_app_outputs` | read | List an app's past run outputs |
+| `deskmate_get_app_output` | read | Fetch one output file (markdown/json) of a past run |
+
+> `deskmate_ask` and `deskmate_run_app` invoke a local LLM, so they need **Ollama +
+> the API** running and can take tens of seconds to minutes.
+
+**Register in an MCP client** (e.g. Claude Desktop `claude_desktop_config.json`) —
+point `command` at the Python env that has the `mcp` extra installed:
+```json
+{
+  "mcpServers": {
+    "deskmate": {
+      "command": "C:\\path\\to\\env\\python.exe",
+      "args": ["-m", "deskmate", "mcp"],
+      "env": { "DESKMATE_API": "http://127.0.0.1:3030" }
+    }
+  }
+}
+```
+
+- **`DESKMATE_API`** (optional) overrides the API base URL; defaults to
+  `http://127.0.0.1:3030`.
+- **Behind a corporate proxy?** No action needed — the MCP server talks only to
+  the local API and deliberately ignores `HTTP(S)_PROXY`, so `127.0.0.1` traffic
+  is never routed through a proxy.
+- The MCP server and the daemon are **independent processes** coupled only by the
+  API, so the MCP server can run from a different environment than the daemon —
+  it just needs the `mcp` extra.
 
 ---
 
