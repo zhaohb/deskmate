@@ -27,8 +27,8 @@ API = os.environ.get("DESKMATE_API", "http://127.0.0.1:3030")
 # calls the LLM — both are far slower than the read-only queries, so they get
 # their own generous timeouts (10 min for the LLM-backed tools).
 DEFAULT_TIMEOUT = 20
-ASK_TIMEOUT = int(os.environ.get("DESKMATE_MCP_ASK_TIMEOUT", "600"))
-RUN_APP_TIMEOUT = int(os.environ.get("DESKMATE_MCP_RUN_APP_TIMEOUT", "600"))
+ASK_TIMEOUT = int(os.environ.get("DESKMATE_MCP_ASK_TIMEOUT", "1800"))
+RUN_APP_TIMEOUT = int(os.environ.get("DESKMATE_MCP_RUN_APP_TIMEOUT", "1800"))
 PROGRESS_INTERVAL_S = 15.0
 
 # trust_env=False: never route the local API through an HTTP(S)_PROXY. On a

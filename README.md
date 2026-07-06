@@ -466,10 +466,12 @@ claude mcp add deskmate -e DESKMATE_API=http://127.0.0.1:3030 \
 - **`DESKMATE_API`** (optional) overrides the API base URL; defaults to
   `http://127.0.0.1:3030`.
 - **Slow tools / timeouts:** `deskmate_ask` and `deskmate_run_app` invoke a local
-  LLM and can take minutes. Raise the server-side budget with
-  `DESKMATE_MCP_ASK_TIMEOUT` / `DESKMATE_MCP_RUN_APP_TIMEOUT` (seconds, in the
-  server's `env`), and raise the **client** tool timeout with `MCP_TOOL_TIMEOUT`
-  (milliseconds; e.g. `600000` for 10 min) — both must be long enough.
+  LLM and can take minutes. The server-side budget defaults to **30 min** and is
+  configurable via `DESKMATE_MCP_ASK_TIMEOUT` / `DESKMATE_MCP_RUN_APP_TIMEOUT`
+  (seconds, in the server's `env`). These tools also stream MCP progress every
+  ~15s, which keeps most clients from cutting the call off; if your client still
+  times out, raise its tool timeout with `MCP_TOOL_TIMEOUT` (milliseconds; e.g.
+  `1800000` for 30 min).
 - **Behind a corporate proxy?** No action needed — the MCP server talks only to
   the local API and deliberately ignores `HTTP(S)_PROXY`, so `127.0.0.1` traffic
   is never routed through a proxy.
