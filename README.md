@@ -498,8 +498,7 @@ claude mcp add deskmate -e DESKMATE_API=http://127.0.0.1:3030 \
 
 ## License
 
-**PolyForm Noncommercial License 1.0.0** — see [LICENSE](LICENSE).
+**MIT** — see [LICENSE](LICENSE).
 
-DeskMate is free to use, copy, modify, and share **for any noncommercial
-purpose**. Commercial use is **not** permitted under this license; for a
-commercial license, contact the author.
+DeskMate is free to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, subject to the MIT license terms.
