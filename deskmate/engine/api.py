@@ -2188,6 +2188,265 @@ def create_app(
     def habits_ui():  # noqa: ANN201
         return FileResponse(static_dir() / "habits.html", media_type="text/html")
 
+    # ─── learning memory (concepts / lecture structure / SM-2 reviews) ───────
+    def _learning_store():
+        from ..learning_memory import LearningStore  # noqa: PLC0415
+
+        store = getattr(app.state, "learning_store", None)
+        if store is None:
+            store = LearningStore()
+            app.state.learning_store = store
+        return store
+
+    def _learning_detector():
+        """Live FSM when the daemon runs; manual session APIs must go through it."""
+        return getattr(getattr(app.state, "daemon", None), "learning_detector", None)
+
+    def _end_learning_session(session_id: int | None) -> dict[str, Any] | None:
+        """Close via the detector when it owns the row, else straight to the store.
+
+        Recap is suppressed on the FSM path because these routes flush it
+        themselves and would otherwise queue two runs.
+        """
+        det = _learning_detector()
+        active = getattr(det, "active_session_id", None) if det else None
+        if active is not None and (session_id is None or int(session_id) == int(active)):
+            sid = det.force_close(trigger_recap=False)
+            return _learning_store().get_session(sid) if sid else None
+        return _learning_store().end_session(session_id)
+
+    @app.get("/learning/concepts")
+    def learning_concepts(limit: int = 50) -> dict[str, Any]:
+        """Rule-extracted study concepts (hints for LLM topics)."""
+        rows = _learning_store().list_concepts(limit=max(1, min(limit, 200)))
+        return {"data": rows, "total": len(rows)}
+
+    @app.get("/learning/topics")
+    def learning_topics(limit: int = 40) -> dict[str, Any]:
+        """LLM topic/subtopic extractions with confidence + evidence."""
+        rows = _learning_store().list_topics(limit=max(1, min(limit, 100)))
+        return {"data": rows, "total": len(rows)}
+
+    @app.get("/learning/reviews")
+    def learning_reviews(limit: int = 20) -> dict[str, Any]:
+        """SM-2 + BKT review queue (OVERDUE / low decayed p(know) first)."""
+        rows = _learning_store().list_due_reviews(limit=max(1, min(limit, 100)))
+        return {"data": rows, "total": len(rows)}
+
+    @app.post("/learning/reviews/{concept_id}/grade")
+    async def learning_review_grade(concept_id: int, request: Request) -> dict[str, Any]:
+        """Grade a concept review: body ``{quality:0..5}`` and/or ``{correct:bool}``."""
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+        quality = body.get("quality")
+        correct = body.get("correct")
+        if quality is not None:
+            try:
+                quality = int(quality)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="quality must be int 0..5")
+            if quality < 0 or quality > 5:
+                raise HTTPException(status_code=400, detail="quality must be int 0..5")
+        if correct is not None and not isinstance(correct, bool):
+            raise HTTPException(status_code=400, detail="correct must be bool")
+        if quality is None and correct is None:
+            raise HTTPException(status_code=400, detail="provide quality or correct")
+        row = _learning_store().grade_review(
+            concept_id, quality=quality, correct=correct
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="review not found for concept_id")
+        return {"ok": True, "data": row}
+
+    @app.get("/learning/lecture-items")
+    def learning_lecture_items(limit: int = 40) -> dict[str, Any]:
+        """Recent definition / step / relation extractions."""
+        rows = _learning_store().recent_lecture_items(limit=max(1, min(limit, 200)))
+        return {"data": rows, "total": len(rows)}
+
+    @app.get("/learning/sessions")
+    def learning_sessions_list(
+        status: str | None = None, limit: int = 40
+    ) -> dict[str, Any]:
+        rows = _learning_store().list_sessions(
+            limit=max(1, min(limit, 200)), status=status
+        )
+        return {"data": rows, "total": len(rows)}
+
+    @app.get("/learning/live")
+    def learning_live() -> dict[str, Any]:
+        """Frame-level detector status (open session + config)."""
+        open_rows = _learning_store().list_sessions(status="open", limit=1)
+        det = getattr(getattr(app.state, "daemon", None), "learning_detector", None)
+        return {
+            "enabled": bool(cfg.learning.enabled),
+            "open_session": open_rows[0] if open_rows else None,
+            "active_session_id": getattr(det, "active_session_id", None) if det else (
+                open_rows[0]["id"] if open_rows else None
+            ),
+            "end_grace_seconds": cfg.learning.end_grace_seconds,
+            "auto_recap_on_end": cfg.learning.auto_recap_on_end,
+            "use_audio_cues": cfg.learning.use_audio_cues,
+            "audio_enabled": cfg.audio.enabled,
+        }
+
+    @app.post("/learning/sessions/start")
+    async def learning_sessions_start(request: Request) -> dict[str, Any]:
+        """study-agent style /start-study — open a timed learning session."""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        kwargs = {
+            "kind": str(body.get("kind") or "study_other"),
+            "title": str(body.get("title") or ""),
+            "topics": list(body.get("topics") or []),
+            "concepts": list(body.get("concepts") or []),
+            "meta": body.get("meta") if isinstance(body.get("meta"), dict) else {},
+        }
+        det = _learning_detector()
+        row = det.force_open(**kwargs) if det else _learning_store().start_session(**kwargs)
+        return {"ok": True, "data": row}
+
+    @app.post("/learning/sessions/end")
+    async def learning_sessions_end(request: Request) -> dict[str, Any]:
+        """study-agent style /end-session — close session and optionally flush recap."""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        sid = body.get("session_id")
+        if sid is not None:
+            try:
+                sid = int(sid)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="session_id must be int")
+        row = _end_learning_session(sid)
+        if row is None:
+            raise HTTPException(status_code=404, detail="no open session to end")
+        flush_info: dict[str, Any] = {"queued": False}
+        if body.get("trigger_recap", True):
+            from ..learning_memory.flush import trigger_user_learning_recap  # noqa: PLC0415
+
+            hours = body.get("hours", 8)
+            try:
+                hours = float(hours)
+            except (TypeError, ValueError):
+                hours = 8.0
+            flush_info = trigger_user_learning_recap(
+                hours=hours, verbose=bool(body.get("verbose")), background=True
+            )
+        return {"ok": True, "data": row, "recap": flush_info}
+
+    @app.post("/learning/sessions/{session_id}/end")
+    async def learning_session_end_id(session_id: int, request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        row = _end_learning_session(session_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        flush_info: dict[str, Any] = {"queued": False}
+        if body.get("trigger_recap", True):
+            from ..learning_memory.flush import trigger_user_learning_recap  # noqa: PLC0415
+
+            flush_info = trigger_user_learning_recap(
+                hours=float(body.get("hours") or 8),
+                verbose=bool(body.get("verbose")),
+                background=True,
+            )
+        return {"ok": True, "data": row, "recap": flush_info}
+
+    @app.get("/learning/events")
+    def learning_events_list(
+        kind: str | None = None,
+        status: str | None = "open",
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        rows = _learning_store().list_events(
+            kind=kind, status=status, limit=max(1, min(limit, 200))
+        )
+        return {"data": rows, "total": len(rows)}
+
+    @app.post("/learning/ask-later")
+    async def learning_ask_later(request: Request) -> dict[str, Any]:
+        """study-agent style /ask-later — queue a question/problem for review."""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        text = str(body.get("text") or body.get("summary") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text is required")
+        kind = str(body.get("kind") or "ask_later")
+        if kind not in {"ask_later", "problem", "note"}:
+            kind = "ask_later"
+        sid = body.get("session_id")
+        cid = body.get("concept_id")
+        try:
+            sid_i = int(sid) if sid is not None else None
+        except (TypeError, ValueError):
+            sid_i = None
+        try:
+            cid_i = int(cid) if cid is not None else None
+        except (TypeError, ValueError):
+            cid_i = None
+        dedup = str(body.get("dedup_key") or f"ask:{kind}:{text[:80]}")
+        eid = _learning_store().insert_event(
+            kind=kind,
+            summary=text,
+            session_id=sid_i,
+            concept_id=cid_i,
+            evidence=str(body.get("evidence") or "")[:400],
+            payload=body.get("payload") if isinstance(body.get("payload"), dict) else {},
+            dedup_key=dedup,
+        )
+        # Optional mirror into todos for the global inbox.
+        todo_id = None
+        if body.get("also_todo", True):
+            try:
+                todo_id = db.upsert_todo(
+                    text=f"[学习·{kind}] {text[:160]}",
+                    source="learning",
+                    source_detail=kind,
+                    origin_app="user-learning",
+                    dedup_key=f"learning:{dedup}",
+                    priority=str(body.get("priority") or "medium"),
+                )
+            except Exception:  # noqa: BLE001
+                todo_id = None
+        return {"ok": True, "event_id": eid, "todo_id": todo_id}
+
+    @app.post("/learning/events/{event_id}/status")
+    async def learning_event_status(event_id: int, request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        status = str((body or {}).get("status") or "").strip()
+        if status not in {"open", "done", "dismissed"}:
+            raise HTTPException(status_code=400, detail="status must be open|done|dismissed")
+        ok = _learning_store().set_event_status(event_id, status)
+        if not ok:
+            raise HTTPException(status_code=404, detail="event not found")
+        return {"ok": True}
+
+    @app.get("/learning/graph")
+    def learning_graph(limit: int = 100) -> dict[str, Any]:
+        """Concept dependency / relatedness edges for Ask / UI."""
+        rows = _learning_store().list_edges(limit=max(1, min(limit, 500)))
+        return {"data": rows, "total": len(rows)}
+
     # ─── capture control + unified timeline (additive) ───────────────────────
     async def _safe_json(request: Request) -> dict[str, Any]:
         try:

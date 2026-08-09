@@ -53,6 +53,23 @@ class Daemon:
         self.db = db or DatabaseManager()
         self.paired = PairedCapture(self.cfg, self.db)
         self.meeting_detector = MeetingDetector(self.db)
+        from ..learning_memory.detector import LearningSessionDetector  # noqa: PLC0415
+
+        lcfg = self.cfg.learning
+        self.learning_detector = LearningSessionDetector(
+            end_grace_seconds=lcfg.end_grace_seconds,
+            start_confidence=lcfg.start_confidence,
+            keep_confidence=lcfg.keep_confidence,
+            auto_recap_on_end=lcfg.auto_recap_on_end,
+            auto_recap_hours=lcfg.auto_recap_hours,
+            enabled=lcfg.enabled,
+        )
+        # Last foreground context for audio-driven learning cues.
+        self._last_fg: dict[str, str | None] = {
+            "app_name": "",
+            "window_title": "",
+            "browser_url": None,
+        }
 
         self._trigger_queue: queue.Queue = queue.Queue(maxsize=4096)
         self._linker = FrameLinkerActor(self.db)
@@ -61,7 +78,7 @@ class Daemon:
             self.db,
             trigger_queue=self._trigger_queue,
             linker=self._linker,
-            on_meeting_observe=self._meeting_observe_insert,
+            on_meeting_observe=self._activity_observe_insert,
         )
         self.ui = UiRecorder(self.cfg.a11y, on_event=self._ui_pipeline.handle_event)
 
@@ -222,13 +239,20 @@ class Daemon:
             logger.debug("recent-speech probe failed: %s", exc)
             return None
 
-    def _meeting_observe_insert(self, insert: UiEventInsert) -> None:
+    def _activity_observe_insert(self, insert: UiEventInsert) -> None:
+        """UI-path observation for meeting + learning session FSMs."""
         self.meeting_detector.observe(
             app_name=insert.app_name or "",
             window_title=insert.window_title or "",
             browser_url=insert.browser_url,
             text=insert.text_content or "",
             audio_active=self._recent_speech(),
+        )
+        self._learning_observe(
+            app_name=insert.app_name or "",
+            window_title=insert.window_title or "",
+            browser_url=insert.browser_url,
+            text=insert.text_content or "",
         )
 
     def start(self) -> None:
@@ -273,8 +297,8 @@ class Daemon:
                         trigger_rx=self._trigger_queue,
                         linker=self._linker,
                         stop=self._stop,
-                        meeting_observe=self._meeting_observe_frame,
-                        meeting_expire=self.meeting_detector.expire_if_idle,
+                        meeting_observe=self._activity_observe_frame,
+                        meeting_expire=self._activity_expire,
                     ),
                     name="event-driven-capture",
                     daemon=True,
@@ -380,8 +404,96 @@ class Daemon:
             audio_active=self._recent_speech(),
         )
 
+    def _learning_observe(
+        self,
+        *,
+        app_name: str,
+        window_title: str,
+        browser_url: str | None,
+        text: str,
+        extra_audio: str = "",
+    ) -> None:
+        skip = False
+        if self.cfg.learning.pause_during_meeting:
+            try:
+                skip = self.meeting_detector.is_in_meeting()
+            except Exception:  # noqa: BLE001
+                skip = False
+
+        # Remember foreground for transcript-triggered observes.
+        if app_name or window_title:
+            self._last_fg = {
+                "app_name": app_name or "",
+                "window_title": window_title or "",
+                "browser_url": browser_url,
+            }
+
+        merged = text or ""
+        if self.cfg.learning.use_audio_cues and self.cfg.audio.enabled:
+            try:
+                audio_bits = self.db.recent_transcript_text(
+                    within_seconds=float(self.cfg.learning.audio_lookback_seconds),
+                    limit=10,
+                    max_chars=1000,
+                )
+            except Exception:  # noqa: BLE001
+                audio_bits = ""
+            if extra_audio:
+                audio_bits = (extra_audio + "\n" + audio_bits).strip()
+            if audio_bits:
+                merged = f"{merged}\n{audio_bits}".strip() if merged else audio_bits
+
+        self.learning_detector.observe(
+            app_name=app_name,
+            window_title=window_title,
+            browser_url=browser_url,
+            text=merged,
+            skip=skip,
+        )
+
+    def _learning_observe_from_audio(self, transcript: str) -> None:
+        """React to a fresh transcript segment (video speech → study cue)."""
+        if not self.cfg.learning.enabled or not self.cfg.learning.use_audio_cues:
+            return
+        text = (transcript or "").strip()
+        if len(text) < 8:
+            return
+        fg = self._last_fg or {}
+        self._learning_observe(
+            app_name=str(fg.get("app_name") or ""),
+            window_title=str(fg.get("window_title") or ""),
+            browser_url=fg.get("browser_url"),  # type: ignore[arg-type]
+            text="",
+            extra_audio=text,
+        )
+
+    def _activity_observe_frame(
+        self,
+        *,
+        app_name: str,
+        window_title: str,
+        browser_url: str | None,
+        text: str,
+    ) -> None:
+        self._meeting_observe_frame(
+            app_name=app_name,
+            window_title=window_title,
+            browser_url=browser_url,
+            text=text,
+        )
+        self._learning_observe(
+            app_name=app_name,
+            window_title=window_title,
+            browser_url=browser_url,
+            text=text,
+        )
+
+    def _activity_expire(self) -> None:
+        self.meeting_detector.expire_if_idle()
+        self.learning_detector.expire_if_idle()
+
     def _on_bus_event(self, event: "bus.Event") -> None:
-        """React to in-process events. Currently: auto-summarize ended meetings."""
+        """React to in-process events: meeting/learning session end flushes."""
         try:
             if event.type == bus.EventType.MEETING_ENDED:
                 meeting_id = event.data.get("meeting_id")
@@ -391,8 +503,29 @@ class Daemon:
                 # doesn't inherit stale context from the meeting that just ended.
                 if self.translator is not None:
                     self.translator.reset_context()
+            elif event.type == bus.EventType.LEARNING_SESSION_ENDED:
+                if event.data.get("trigger_recap"):
+                    self._fire_learning_recap(
+                        hours=float(event.data.get("hours") or self.cfg.learning.auto_recap_hours),
+                        session_id=event.data.get("session_id"),
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.debug("bus event handler error: %s", exc)
+
+    def _fire_learning_recap(
+        self, *, hours: float = 8.0, session_id: object = None
+    ) -> None:
+        """Background user-learning flush after a live session ends."""
+        try:
+            from ..learning_memory.flush import trigger_user_learning_recap  # noqa: PLC0415
+
+            logger.info(
+                "auto user-learning recap queued session=%s hours=%s",
+                session_id, hours,
+            )
+            trigger_user_learning_recap(hours=hours, verbose=False, background=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("auto user-learning recap failed: %s", exc)
 
     def _fire_meeting_summary(self, meeting_id: int) -> None:
         """Launch the meeting-summary app for a just-ended meeting, detached.
@@ -446,21 +579,21 @@ class Daemon:
             params = feed.get_capture_params()
             interval_ms = max(params.interval_ms, floor_ms) if self.cfg.capture.adaptive_fps_floor else params.interval_ms
             self._stop.wait(interval_ms / 1000.0)
-            self.meeting_detector.expire_if_idle()
+            self._activity_expire()
 
     def _meeting_observe_frame_from_id(self, frame_id: int) -> None:
         try:
             row = self.db.frame_by_id(frame_id)
             if not row:
                 return
-            self._meeting_observe_frame(
+            self._activity_observe_frame(
                 app_name=row.get("app_name") or "",
                 window_title=row.get("window_name") or "",
                 browser_url=row.get("browser_url"),
                 text="\n".join(filter(None, [row.get("accessibility_text"), row.get("ocr_text")])),
             )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("meeting observation failed: %s", exc)
+            logger.debug("activity observation failed: %s", exc)
 
     def _audio_loop(self) -> None:
         if not self.audio or not self.transcriber:
@@ -514,6 +647,11 @@ class Daemon:
                         start_time=seg.start_time,
                         end_time=seg.end_time,
                     )
+                    # Video/lecture speech → learning session cues (loopback).
+                    try:
+                        self._learning_observe_from_audio(seg.text)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("learning audio cue failed: %s", exc)
                     bus.send(
                         bus.EventType.AUDIO_TRANSCRIBED,
                         transcript_id=tid, device=label, text=seg.text[:200],

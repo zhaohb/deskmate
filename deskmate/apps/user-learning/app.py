@@ -5,16 +5,20 @@ app asks: was the user studying? If yes, keep only courseware / material-query /
 code-practice / problem evidence, then ask the LLM for a study summary and a
 concrete next-step learning plan.
 
-Prefetch + session detection live in agent.py / learning_slice.py; this file is
-the CLI entry point discovered by My Apps.
+Prefetch also runs deterministic concept extraction, lecture structure
+(definition/step/relation), and SM-2 review seeding into the local DB.
+
+Prefetch + session detection live in agent.py / learning_slice.py /
+learning_memory/; this file is the CLI entry point discovered by My Apps.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
-from deskmate.apps.agent import run_agent
+from deskmate.apps.agent import G_LEARNING_ENRICHMENT, run_agent
 from deskmate.apps.common import add_agent_time_args, agent_time_kwargs_from_args, output_dir, run_cli, write_markdown
 
 APP_NAME = "user-learning"
@@ -42,6 +46,20 @@ def main() -> int:
 
     out = output_dir(APP_NAME)
     write_markdown(out / "user-learning.md", report)
+    if G_LEARNING_ENRICHMENT:
+        side = {
+            "extraction": G_LEARNING_ENRICHMENT.get("extraction"),
+            "topics": G_LEARNING_ENRICHMENT.get("topics"),
+            "due_reviews": G_LEARNING_ENRICHMENT.get("due_reviews"),
+            "events": G_LEARNING_ENRICHMENT.get("events"),
+            "edges": G_LEARNING_ENRICHMENT.get("edges"),
+            "session_ids": G_LEARNING_ENRICHMENT.get("session_ids"),
+            "persisted": G_LEARNING_ENRICHMENT.get("persisted"),
+        }
+        (out / "learning-enrichment.json").write_text(
+            json.dumps(side, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     print(out / "user-learning.md")
     return 0
 

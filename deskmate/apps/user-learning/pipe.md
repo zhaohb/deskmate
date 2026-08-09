@@ -33,28 +33,36 @@ Mention whether audio transcripts were available.
 - Problems / errors they hit (quote short error text when present).
 
 ## 讲解重点
-- 4–8 bullets: the key points the teacher / courseware / video **explained**.
-- Prefer content from **Audio transcripts (lecture)** and courseware OCR slides.
-- Each bullet: the concept name + one sentence of what was taught + cite source
-  as `录音` / `课件OCR` / session id like `[1]`.
-- Extract formulas, definitions, steps, contrasts (e.g. A vs B) when present.
-- If transcripts/OCR are insufficient, write: "材料不足以还原完整讲解" and list
+- 4–8 bullets grounded on **Pre-computed learning structure** when present.
+- Prefer: LLM `主题:` / subtopics (with confidence) → `结构:定义` → `结构:步骤`
+  → `结构:关系`, then remaining Audio / Courseware OCR.
+- Each bullet: topic/concept + one taught sentence + cite `主题:` / `结构:*`
+  and/or `录音` / `课件OCR` / `[session]`.
+- Do not invent topics/definitions/steps/relations absent from the pre-computed
+  block or direct OCR/audio quotes.
+- If structure + transcripts/OCR are thin: "材料不足以还原完整讲解" and list
   only what is supported.
 
 ## 理解要点
-- 3–6 bullets: **how to understand / remember** those points (intuition, analogy,
-  common pitfalls, relationship to practice/code errors in the slice).
-- Must connect to 讲解重点 — do not invent a textbook chapter that was not observed.
-- Cite `录音` / `课件OCR` / `[session]` / error text when grounding a pitfall.
+- 3–6 bullets: **how to understand / remember** the same subjects as 讲解重点
+  (intuition, analogy, common pitfalls, link to practice/code errors).
+- Prefer explaining extracted concepts / definition subjects — not new chapters.
+- Cite `结构:*` / `录音` / `课件OCR` / `[session]` / error text when grounding.
 
 ## 复习重点
-- 3–5 concrete points to review, ranked by how often they appeared or blocked progress.
-- Each bullet must cite a session id, 录音, or file/URL from the data.
+- 3–5 points ranked by **复习队列** urgency: OVERDUE first, then WEAK /
+  `exposure`/`recognition` mastery_tier, then hit count.
+- Include open **问题队列** items when present.
+- Each bullet: concept/problem + why now + cite `复习队列` / `问题队列` / `图谱:`.
 
 ## 下一步学习计划
-- 3 ordered next actions for the next study block (30–90 minutes each idea).
-- Make them actionable (re-watch X segment, re-derive Y, finish Z exercise, fix error W).
-- Tie each step to evidence from the slice — no generic "keep learning" advice.
+- 3 ordered next actions for the next study block (30–90 minutes each).
+- Start with OVERDUE / WEAK / low-tier concepts and open 问题队列 items;
+  use `图谱:先决` to order prerequisites before dependents.
+- Each step executable and trackable (review topic T, re-derive step S,
+  contrast relation R, fix problem P).
+- If queues empty: derive gentle steps from LLM topics / concepts only.
+- No generic "keep learning" advice.
 
 ## 数据说明
 - Time window, session count, whether audio was used for 讲解重点, and any gap

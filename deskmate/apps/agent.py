@@ -37,6 +37,7 @@ from .learning_slice import (
     filter_learning_key_texts,
     format_learning_bundle,
 )
+from deskmate.learning_memory import build_learning_enrichment
 
 
 def _todo_list_email_evidence(
@@ -1232,6 +1233,10 @@ def _collect_courseware_ocr_lines(
     return lines[:35]
 
 
+# Last enrichment payload from user-learning prefetch (for app.py sidecar).
+G_LEARNING_ENRICHMENT: dict[str, Any] = {}
+
+
 def _do_user_learning_prefetch(start: str, end: str, verbose: bool = False) -> str:
     """Detect learning sessions and slice screen/audio evidence to that subset.
 
@@ -1282,7 +1287,27 @@ def _do_user_learning_prefetch(start: str, end: str, verbose: bool = False) -> s
 
     sections = [bundle]
 
+    # Concept extraction + lecture structure + SM-2 queue (persisted locally).
+    G_LEARNING_ENRICHMENT.clear()
     if sessions:
+        key_blobs = [
+            str(row.get("text") or "")
+            for row in key_texts
+            if row.get("text")
+        ]
+        enrichment = build_learning_enrichment(
+            audio_bits=audio_bits,
+            courseware_ocr_lines=courseware_ocr,
+            key_text_blobs=key_blobs,
+            sessions=sessions,
+            persist=True,
+            verbose=verbose,
+        )
+        if enrichment.get("prompt_block"):
+            sections.append(enrichment["prompt_block"])
+        # Stash for callers that want the JSON sidecar (optional).
+        G_LEARNING_ENRICHMENT.update(enrichment)
+
         queries: list[str] = []
         for s in sessions:
             for q in s.get("queries") or []:
@@ -2689,18 +2714,20 @@ def run_agent(
             verbose=verbose,
             extra_rules=(
                 "LEARNING RULES: This is a STUDY report, not a day log or user profile. "
-                "Use ONLY the pre-computed Learning sessions, Audio transcripts (lecture), "
-                "Courseware OCR, and learning-related key texts. "
+                "Use ONLY Learning sessions, Audio transcripts, Courseware OCR, key texts, "
+                "and the Pre-computed learning structure / SM-2 review queue blocks. "
                 "If NO_LEARNING_SESSION: state that under 是否在学习 and write a minimal "
                 "数据说明 — do NOT invent coursework; keep 下一步学习计划 to ≤1 gentle tip. "
-                "讲解重点: extract what was taught — prefer Audio transcripts first, then "
-                "Courseware OCR; each bullet cite 录音 or 课件OCR or [session id]; include "
-                "definitions/formulas/steps when present; if NO_AUDIO_TRANSCRIPT and OCR is "
-                "thin, say 材料不足以还原完整讲解. "
-                "理解要点: explain how to understand those same points (intuition, pitfalls, "
-                "link to code errors in the slice) — do not invent textbook chapters. "
-                "Maximize concrete courseware/lecture content when evidence exists. "
-                "Cite [1]/[2] / 录音 / 课件OCR in 复习重点 and 下一步学习计划. "
+                "讲解重点: prefer LLM topics/subtopics (主题:…) then 结构:定义/步骤/关系, "
+                "then audio/OCR; each bullet cite 主题:* / 结构:* and/or 录音 / 课件OCR / "
+                "[session]; do not invent topics/structure absent from the pre-computed "
+                "block; if thin, say 材料不足以还原完整讲解. "
+                "理解要点: explain those same subjects (intuition, pitfalls, code errors) — "
+                "no invented textbook chapters. "
+                "复习重点 + 下一步学习计划: prefer OVERDUE / WEAK / exposure-tier "
+                "复习队列 and open 问题队列; use 图谱:先决 for ordering; "
+                "make next steps executable and trackable. "
+                "Cite 复习队列 / 问题队列 / 主题:* / 图谱:* / [1]/[2] / 录音 / 课件OCR. "
                 "Ignore chat/shopping/random entertainment unless inside a session. "
                 "Use ONLY the section headings from the Report Instructions."
             ),

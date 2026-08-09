@@ -319,6 +319,27 @@ class PowerConfig(BaseModel):
     poll_seconds: float = 15.0
 
 
+class LearningConfig(BaseModel):
+    """Frame-level learning session detector (MeetingDetector-style FSM)."""
+
+    enabled: bool = True
+    # Seconds without a learning signal before the open session is closed.
+    end_grace_seconds: float = 180.0
+    # Open a new session only at/above this confidence.
+    start_confidence: float = 0.75
+    # Keep an open session alive at/above this (lower than start).
+    keep_confidence: float = 0.60
+    # On grace-close, queue a user-learning recap in the background.
+    auto_recap_on_end: bool = True
+    auto_recap_hours: float = 8.0
+    # While a meeting is active, do not open/keep learning sessions.
+    pause_during_meeting: bool = True
+    # Use recent audio transcripts (loopback/mic) as lecture cues — enables
+    # "video speech sounds like a class" detection. Requires [audio] enabled.
+    use_audio_cues: bool = True
+    audio_lookback_seconds: float = 90.0
+
+
 class FusionConfig(BaseModel):
     """Additive context-fusion + capture-control module.
 
@@ -399,6 +420,7 @@ class Config(BaseSettings):
     gmail: GmailConfig = Field(default_factory=GmailConfig)
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
     habits: HabitsConfig = Field(default_factory=HabitsConfig)
+    learning: LearningConfig = Field(default_factory=LearningConfig)
     fusion: FusionConfig = Field(default_factory=FusionConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
     power: PowerConfig = Field(default_factory=PowerConfig)
@@ -634,6 +656,18 @@ client_secret = ""
 frame_days = 30
 audio_days = 30
 db_max_mb = 4000
+
+[learning]
+# Frame-level learning session detector (like meeting detection).
+enabled = true
+end_grace_seconds = 180.0
+start_confidence = 0.75
+keep_confidence = 0.60
+auto_recap_on_end = true
+auto_recap_hours = 8.0
+pause_during_meeting = true
+use_audio_cues = true
+audio_lookback_seconds = 90.0
 
 [power]
 # Battery saver: on battery, push background workers (semantic index, redaction,

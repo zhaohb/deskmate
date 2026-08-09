@@ -62,6 +62,30 @@ class DatabaseManager:
             self._ensure_transcript_translation_columns()
             self._ensure_suggestion_columns()
             self._ensure_rule_columns()
+            self._ensure_learning_review_columns()
+
+    def _ensure_learning_review_columns(self) -> None:
+        """Add BKT mastery columns to ``learning_reviews`` on pre-existing DBs."""
+        cols = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(learning_reviews)"
+            ).fetchall()
+        }
+        if not cols:
+            return
+        alters = [
+            ("p_mastery", "REAL NOT NULL DEFAULT 0.1"),
+            ("bkt_attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_bkt_at", "TEXT"),
+            ("skill_type", "TEXT NOT NULL DEFAULT ''"),
+            ("mastery_tier", "TEXT NOT NULL DEFAULT 'exposure'"),
+        ]
+        for name, decl in alters:
+            if name not in cols:
+                self._conn.execute(
+                    f"ALTER TABLE learning_reviews ADD COLUMN {name} {decl}"
+                )
 
     def _ensure_rule_columns(self) -> None:
         """Add ``snoozed_until`` to ``habit_rules`` on pre-existing DBs.
@@ -488,6 +512,46 @@ class DatabaseManager:
                 (since,),
             ).fetchone()
         return row is not None
+
+    def recent_transcript_text(
+        self,
+        *,
+        within_seconds: float = 90.0,
+        limit: int = 12,
+        max_chars: int = 1200,
+    ) -> str:
+        """Concatenate recent non-empty transcript snippets (newest first).
+
+        Used by the learning detector as an adaptive-learning-agent-style
+        audio cue: lecture speech from loopback/mic can mark video study even
+        when the window title is generic.
+        """
+        from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+
+        since = (
+            datetime.now(timezone.utc).astimezone()
+            - timedelta(seconds=within_seconds)
+        ).replace(microsecond=0).isoformat()
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT transcription FROM audio_transcriptions
+                    WHERE timestamp >= ? AND text_length > 0
+                    ORDER BY timestamp DESC
+                    LIMIT ?""",
+                (since, max(1, limit)),
+            ).fetchall()
+        parts: list[str] = []
+        used = 0
+        for r in rows:
+            t = " ".join(str(r.get("transcription") or "").split())
+            if len(t) < 4:
+                continue
+            piece = t[:240]
+            if used + len(piece) > max_chars:
+                break
+            parts.append(piece)
+            used += len(piece)
+        return "\n".join(parts)
 
     def insert_transcript(
         self,

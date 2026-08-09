@@ -83,6 +83,42 @@ _LEARNING_APP_PROCS = frozenset({
     "obsidian.exe",
 })
 
+# Local / desktop video players — adaptive-learning-agent style: treat as
+# candidate study surface when title/OCR looks educational (not every movie).
+_VIDEO_PLAYER_PROCS = frozenset({
+    "potplayer.exe",
+    "potplayermini64.exe",
+    "potplayermini.exe",
+    "vlc.exe",
+    "mpc-hc64.exe",
+    "mpc-hc.exe",
+    "mpc-be64.exe",
+    "mpc-be.exe",
+    "wmplayer.exe",
+    "microsoft.media.player.exe",
+    "video.ui.exe",           # Windows Films & TV / Media Player shell
+    "applicationframehost.exe",  # UWP host — only with strong title/OCR
+    "quicktimeplayer.exe",
+    "kmplayer.exe",
+    "stormplayer.exe",
+    "qqplayer.exe",
+    "qqlive.exe",
+    "iqiyi.exe",
+    "cloudmusic.exe",        # sometimes plays course audio/video
+})
+
+_VIDEO_HOST_FRAGMENTS = (
+    "bilibili.com",
+    "youtube.com",
+    "youtu.be",
+    "vimeo.com",
+    "ted.com",
+    "iqiyi.com",
+    "youku.com",
+    "v.qq.com",
+    "ixigua.com",
+)
+
 _CODING_LEARN_PROCS = frozenset({
     "cursor.exe",
     "code.exe",
@@ -98,7 +134,28 @@ _CODING_LEARN_PROCS = frozenset({
 
 _TITLE_LEARN_RE = re.compile(
     r"(课件|课程|讲义|作业|习题|考试|复习|tutorial|lecture|courseware|"
-    r"lesson|homework|assignment|教材|学堂|慕课|网课|学习|练习)",
+    r"lesson|homework|assignment|教材|学堂|慕课|网课|学习|练习|"
+    r"第\s*\d+\s*[讲章课回]|week\s*\d+|chapter\s*\d+|lecture\s*\d+|"
+    r"公开课|精品课|考研|考公|四级|六级|托福|雅思|cs\d{2,3}|机器学习|深度学习|"
+    r"操作系统|数据结构|算法|编译原理)",
+    re.I,
+)
+
+# OCR / on-screen text that looks like a lecture slide or hard subtitle
+# (adaptive-learning-agent: topic from captured text, not app name alone).
+_OCR_LECTURE_RE = re.compile(
+    r"(定义|定理|证明|引理|公式|例题|练习|小结|本节|本章|本节课|今天我们|"
+    r"首先|其次|最后|步骤\s*\d|step\s*\d|"
+    r"definition|theorem|lemma|corollary|proof|example|summary|"
+    r"learning objectives|agenda|outline|"
+    r"所谓|是指|指的是|表示为|推导|等价于|"
+    r"attention|softmax|gradient|backprop|transformer|"
+    r"第\s*\d+\s*[讲章节页]|slide\s*\d+|页码)",
+    re.I,
+)
+
+_VIDEO_FILE_RE = re.compile(
+    r"\.(mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts|mpeg|mpg)(\b|$)",
     re.I,
 )
 
@@ -130,6 +187,31 @@ def _path_query(url: str) -> str:
         return ""
 
 
+def lecture_content_score(*, title: str = "", text: str = "", pathq: str = "") -> float:
+    """How lecture-like on-screen / title text looks (0..1).
+
+    Inspired by adaptive-learning-agent's OCR→topic path: dense educational
+    phrases raise the score even when the app is a generic video player.
+    """
+    blob = f"{title} {pathq} {text}".strip()
+    if len(blob) < 4:
+        return 0.0
+    score = 0.0
+    if _TITLE_LEARN_RE.search(title) or _TITLE_LEARN_RE.search(pathq):
+        score += 0.55
+    if _TITLE_LEARN_RE.search(text or ""):
+        score += 0.25
+    ocr_hits = _OCR_LECTURE_RE.findall(text or "")
+    if ocr_hits:
+        score += min(0.55, 0.18 * len(set(h.lower() if isinstance(h, str) else h for h in ocr_hits)))
+    if _VIDEO_FILE_RE.search(title) and score >= 0.25:
+        score += 0.15
+    # Long OCR with multiple lecture cues ≈ slide deck / hardsubs
+    if text and len(text) >= 80 and len(ocr_hits) >= 2:
+        score += 0.1
+    return max(0.0, min(1.0, score))
+
+
 def extract_search_query(url: str) -> str:
     """Best-effort query string from a search / docs URL."""
     if not url:
@@ -155,6 +237,9 @@ def classify_learning_signal(
     """Return (kind, confidence, reason) or (None, 0, '') if not learning.
 
     kind ∈ {courseware_view, material_query, code_edit, problem, study_other}
+
+    Video path (adaptive-learning-agent inspired):
+      player/site is only a *candidate*; title + OCR lecture cues decide.
     """
     app = _norm_app(app_name)
     title = window_name or ""
@@ -162,6 +247,7 @@ def classify_learning_signal(
     host = _host(url)
     pathq = _path_query(url)
     blob = f"{title} {text}".strip()
+    lec = lecture_content_score(title=title, text=text or "", pathq=pathq)
 
     if blob and _PROBLEM_RE.search(blob):
         return "problem", 0.85, "error/exception pattern in on-screen text"
@@ -171,22 +257,56 @@ def classify_learning_signal(
         if q and any(h in host or h in pathq for h in _QUERY_HOST_FRAGMENTS):
             return "material_query", 0.9, f"search query: {q}"
         if any(h in host for h in _COURSEWARE_HOST_FRAGMENTS):
-            if any(x in host for x in ("bilibili.com", "youtube.com", "youtu.be")):
-                if _TITLE_LEARN_RE.search(title) or _TITLE_LEARN_RE.search(pathq):
-                    return "courseware_view", 0.8, f"video learning site: {host}"
+            is_video_host = any(x in host for x in _VIDEO_HOST_FRAGMENTS)
+            if is_video_host:
+                # Bilibili/YouTube: title OR on-screen OCR/subtitles look like class.
+                if lec >= 0.45:
+                    return (
+                        "courseware_view",
+                        min(0.92, 0.7 + 0.25 * lec),
+                        f"video site + lecture cues ({host})",
+                    )
                 return None, 0.0, ""
             return "courseware_view", 0.9, f"course/docs host: {host}"
+        # Generic video CDN / share page without course host list
+        if any(x in host for x in _VIDEO_HOST_FRAGMENTS) and lec >= 0.45:
+            return (
+                "courseware_view",
+                min(0.9, 0.68 + 0.25 * lec),
+                f"video host + lecture cues ({host})",
+            )
         if q and _TITLE_LEARN_RE.search(q):
             return "material_query", 0.75, f"learning-flavored query: {q}"
 
     if app in _LEARNING_APP_PROCS:
         return "courseware_view", 0.85, f"reader/office app: {app}"
 
+    # Local video player / UWP media: need lecture-like title or OCR.
+    if app in _VIDEO_PLAYER_PROCS or (
+        app == "applicationframehost.exe" and (_VIDEO_FILE_RE.search(title) or lec >= 0.5)
+    ):
+        if lec >= 0.45:
+            return (
+                "courseware_view",
+                min(0.9, 0.72 + 0.2 * lec),
+                f"video player + lecture cues: {app or 'player'}",
+            )
+        # Filename alone: "机器学习第3讲.mp4"
+        if _VIDEO_FILE_RE.search(title) and _TITLE_LEARN_RE.search(title):
+            return "courseware_view", 0.8, f"video file with learning title: {app}"
+        return None, 0.0, ""
+
+    # Browser / other app showing a video file name + lecture OCR (no URL yet)
+    if _VIDEO_FILE_RE.search(title) and lec >= 0.5:
+        return "courseware_view", 0.78, "video filename + lecture on-screen text"
+
+    # Strong OCR-only lecture surface (slides occupying the screen)
+    if lec >= 0.7 and len(text or "") >= 40:
+        return "courseware_view", min(0.88, 0.65 + 0.25 * lec), "on-screen lecture OCR/slides"
+
     if app in _CODING_LEARN_PROCS:
         if _TITLE_LEARN_RE.search(title) or _TITLE_LEARN_RE.search(blob):
             return "code_edit", 0.8, "IDE/terminal with learning title"
-        # Coding counts as study practice when the window looks technical
-        # (file extensions / repo-ish titles) — still a learning slice.
         if re.search(r"\.(py|c|cpp|h|js|ts|java|go|rs|md|ipynb)\b", title, re.I):
             return "code_edit", 0.7, "IDE editing source file"
         if app in {"cursor.exe", "code.exe", "pycharm64.exe", "idea64.exe"}:
@@ -196,7 +316,6 @@ def classify_learning_signal(
         return "study_other", 0.7, "learning keyword in window title"
 
     return None, 0.0, ""
-
 
 def _parse_ts(value: str | None) -> datetime | None:
     if not value:
@@ -342,6 +461,14 @@ def build_learning_sessions(summary: dict[str, Any]) -> list[dict[str, Any]]:
             q = extract_search_query(u)
             if q and q not in queries:
                 queries.append(q)
+        sample = next(
+            (e["text"] for e in sess["evidence"] if e.get("text")),
+            "",
+        )
+        # Topic/concept tags on the session (adaptive-learning-agent style) —
+        # not just "is learning", but *what* is being studied.
+        tag_blobs = [title, sample, *queries, *sess["titles"][:3]]
+        topics, concepts = _tag_session_texts(tag_blobs, kind=sess["kind"])
         out.append({
             "id": i,
             "kind": sess["kind"],
@@ -352,14 +479,35 @@ def build_learning_sessions(summary: dict[str, Any]) -> list[dict[str, Any]]:
             "apps": sorted(a for a in sess["apps"] if a),
             "urls": sess["urls"][:8],
             "queries": queries[:8],
+            "topics": topics,
+            "concepts": concepts,
             "confidence": round(float(sess["confidence"]), 2),
             "reason": sess["reasons"][0] if sess["reasons"] else "",
-            "sample_text": next(
-                (e["text"] for e in sess["evidence"] if e.get("text")),
-                "",
-            ),
+            "sample_text": sample,
         })
     return out
+
+
+def _tag_session_texts(texts: list[str], *, kind: str = "") -> tuple[list[str], list[str]]:
+    """Return (topics, concepts) for a learning session from local evidence."""
+    try:
+        from deskmate.learning_memory.extract import (  # noqa: PLC0415
+            extract_concepts_from_texts,
+        )
+    except Exception:  # noqa: BLE001
+        return [], []
+    blobs = [t for t in texts if t and str(t).strip()]
+    if not blobs:
+        return ([], [kind] if kind else [])
+    hits = extract_concepts_from_texts(blobs, max_concepts=8)
+    concepts = [h.name for h in hits[:6]]
+    topics = []
+    for h in hits:
+        if h.topic and h.topic not in topics and h.topic not in {"general", "general-zh"}:
+            topics.append(h.topic)
+    if not topics and kind:
+        topics = [kind]
+    return topics[:4], concepts
 
 
 def filter_learning_key_texts(
@@ -465,6 +613,10 @@ def format_learning_bundle(
             f"{s['duration_min']} min | conf={s['confidence']}"
         )
         lines.append(f"  title: {s['title']}")
+        if s.get("topics"):
+            lines.append(f"  topics: {', '.join(s['topics'])}")
+        if s.get("concepts"):
+            lines.append(f"  concepts: {', '.join(s['concepts'])}")
         if s.get("apps"):
             lines.append(f"  apps: {', '.join(s['apps'])}")
         if s.get("queries"):

@@ -7,7 +7,7 @@ historical migration. `_pca_migrations` stores the active schema version.
 from __future__ import annotations
 
 # Bumped whenever the consolidated schema changes.
-SCHEMA_VERSION = "20260907000000"
+SCHEMA_VERSION = "20260810000003"
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -442,4 +442,144 @@ CREATE TABLE IF NOT EXISTS ask_history (
     created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_ask_history_created ON ask_history(created_at);
+
+-- ─── learning memory: concepts + lecture structure + SM-2 reviews ──────────
+-- Built by the user-learning app from sliced screen/audio evidence. Concepts
+-- are topic tags; lecture_items hold definition/step/relation extractions;
+-- learning_reviews tracks SM-2 spaced-repetition state per concept.
+CREATE TABLE IF NOT EXISTS learning_concepts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    NOT NULL,
+    name_norm     TEXT    NOT NULL UNIQUE,       -- lowercase / collapsed key
+    topic         TEXT    NOT NULL DEFAULT '',  -- coarse topic bucket
+    first_seen    TEXT    NOT NULL,
+    last_seen     TEXT    NOT NULL,
+    hit_count     INTEGER NOT NULL DEFAULT 1,
+    evidence_json TEXT    NOT NULL DEFAULT '[]', -- short quoted snippets
+    meta_json     TEXT    NOT NULL DEFAULT '{}',
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_learning_concepts_topic ON learning_concepts(topic);
+CREATE INDEX IF NOT EXISTS idx_learning_concepts_last  ON learning_concepts(last_seen);
+
+CREATE TABLE IF NOT EXISTS learning_lecture_items (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind          TEXT    NOT NULL,             -- definition | step | relation
+    concept_id    INTEGER,                      -- optional FK to learning_concepts
+    subject       TEXT    NOT NULL DEFAULT '',  -- left side / concept name
+    content       TEXT    NOT NULL,             -- definition text / step body / right side
+    ordinal       INTEGER NOT NULL DEFAULT 0,   -- step order when kind=step
+    source        TEXT    NOT NULL DEFAULT '',  -- audio | ocr | mixed
+    evidence      TEXT    NOT NULL DEFAULT '',  -- short quote
+    session_ref   TEXT    NOT NULL DEFAULT '',  -- e.g. "[1]"
+    seen_at       TEXT    NOT NULL,
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (concept_id) REFERENCES learning_concepts(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lecture_items_kind ON learning_lecture_items(kind, seen_at);
+CREATE INDEX IF NOT EXISTS idx_lecture_items_concept ON learning_lecture_items(concept_id);
+
+CREATE TABLE IF NOT EXISTS learning_reviews (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    concept_id      INTEGER NOT NULL UNIQUE,
+    ease_factor      REAL    NOT NULL DEFAULT 2.5,
+    interval_days   REAL    NOT NULL DEFAULT 0,
+    repetitions     INTEGER NOT NULL DEFAULT 0,
+    due_at          TEXT    NOT NULL,           -- next review due (local ISO)
+    last_quality    INTEGER,                    -- last SM-2 quality 0..5
+    last_reviewed   TEXT,
+    -- BKT mastery (adaptive-learning-agent style): p(know) + decay clock
+    p_mastery       REAL    NOT NULL DEFAULT 0.1,
+    bkt_attempts    INTEGER NOT NULL DEFAULT 0,
+    last_bkt_at     TEXT,
+    skill_type      TEXT    NOT NULL DEFAULT '', -- conceptual | procedural | ''
+    mastery_tier    TEXT    NOT NULL DEFAULT 'exposure', -- exposure|recognition|recall|fluent
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (concept_id) REFERENCES learning_concepts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_learning_reviews_due ON learning_reviews(due_at);
+CREATE INDEX IF NOT EXISTS idx_learning_reviews_mastery ON learning_reviews(p_mastery);
+
+-- LLM-extracted topics/subtopics (one call per user-learning prefetch).
+CREATE TABLE IF NOT EXISTS learning_topics (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT    NOT NULL,
+    name_norm       TEXT    NOT NULL,
+    confidence      REAL    NOT NULL DEFAULT 0.0,
+    subtopics_json  TEXT    NOT NULL DEFAULT '[]',  -- [{name, confidence}]
+    evidence_json   TEXT    NOT NULL DEFAULT '[]',
+    source          TEXT    NOT NULL DEFAULT 'llm',
+    seen_at         TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_learning_topics_norm ON learning_topics(name_norm);
+CREATE INDEX IF NOT EXISTS idx_learning_topics_seen ON learning_topics(seen_at);
+
+-- Persisted study sessions (study-agent /start-study /end-session style).
+CREATE TABLE IF NOT EXISTS learning_sessions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind            TEXT    NOT NULL DEFAULT '',       -- courseware_view | material_query | ...
+    title           TEXT    NOT NULL DEFAULT '',
+    status          TEXT    NOT NULL DEFAULT 'closed',  -- open | closed
+    started_at      TEXT    NOT NULL,
+    ended_at        TEXT,
+    duration_min    REAL    NOT NULL DEFAULT 0,
+    apps_json       TEXT    NOT NULL DEFAULT '[]',
+    urls_json       TEXT    NOT NULL DEFAULT '[]',
+    queries_json    TEXT    NOT NULL DEFAULT '[]',
+    topics_json     TEXT    NOT NULL DEFAULT '[]',
+    concepts_json   TEXT    NOT NULL DEFAULT '[]',
+    confidence      REAL    NOT NULL DEFAULT 0,
+    reason          TEXT    NOT NULL DEFAULT '',
+    sample_text     TEXT    NOT NULL DEFAULT '',
+    slice_ref       TEXT    NOT NULL DEFAULT '',       -- e.g. "[1]" from detector
+    meta_json       TEXT    NOT NULL DEFAULT '{}',
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_learning_sessions_status ON learning_sessions(status, started_at);
+CREATE INDEX IF NOT EXISTS idx_learning_sessions_time ON learning_sessions(started_at);
+
+-- Problem / ask-later queue (study-agent /ask-later style).
+CREATE TABLE IF NOT EXISTS learning_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind            TEXT    NOT NULL,                  -- problem | ask_later | note
+    summary         TEXT    NOT NULL,
+    status          TEXT    NOT NULL DEFAULT 'open',   -- open | done | dismissed
+    session_id      INTEGER,
+    concept_id      INTEGER,
+    app_name        TEXT    NOT NULL DEFAULT '',
+    evidence        TEXT    NOT NULL DEFAULT '',
+    payload_json    TEXT    NOT NULL DEFAULT '{}',
+    dedup_key       TEXT    NOT NULL DEFAULT '',
+    seen_at         TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (session_id) REFERENCES learning_sessions(id) ON DELETE SET NULL,
+    FOREIGN KEY (concept_id) REFERENCES learning_concepts(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_learning_events_kind ON learning_events(kind, status, seen_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_events_dedup
+    ON learning_events(dedup_key) WHERE dedup_key != '';
+
+-- Concept dependency / relatedness graph (Sapling / Smart-Study style).
+CREATE TABLE IF NOT EXISTS learning_edges (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    src_concept_id  INTEGER NOT NULL,
+    dst_concept_id  INTEGER NOT NULL,
+    rel             TEXT    NOT NULL,  -- prerequisite | related | contrasts | leads_to
+    weight          REAL    NOT NULL DEFAULT 1.0,
+    evidence        TEXT    NOT NULL DEFAULT '',
+    source          TEXT    NOT NULL DEFAULT 'extract',
+    seen_at         TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (src_concept_id, dst_concept_id, rel),
+    FOREIGN KEY (src_concept_id) REFERENCES learning_concepts(id) ON DELETE CASCADE,
+    FOREIGN KEY (dst_concept_id) REFERENCES learning_concepts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_learning_edges_src ON learning_edges(src_concept_id);
+CREATE INDEX IF NOT EXISTS idx_learning_edges_dst ON learning_edges(dst_concept_id);
 """

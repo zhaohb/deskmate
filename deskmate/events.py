@@ -30,6 +30,8 @@ class EventType(str, Enum):
     WORKFLOW = "workflow"
     MEETING_STARTED = "meeting_started"
     MEETING_ENDED = "meeting_ended"
+    LEARNING_SESSION_STARTED = "learning_session_started"
+    LEARNING_SESSION_ENDED = "learning_session_ended"
 
 
 class PermissionKind(str, Enum):

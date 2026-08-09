@@ -33,6 +33,7 @@ _HOURS_ARG_APPS = frozenset({
     "time-breakdown",
     "todo-list",
     "user-profile",
+    "user-learning",
 })
 
 

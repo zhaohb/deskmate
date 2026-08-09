@@ -41,11 +41,30 @@ python deskmate\apps\day-recap\app.py --hours 16 --verbose
 ### user-learning
 
 Detects whether the user was in a **learning phase** (courseware / material
-queries / study coding / on-screen problems), **slices** that evidence (with
-extra weight on **lecture audio transcripts** and **courseware OCR**), then asks
-the LLM for 讲解重点 / 理解要点, review focuses, and a next-step plan. Does not
-start a separate capture pipeline — it focuses retention/summarization on
-learning dwell.
+queries / study coding / on-screen problems / **video lecture**), **slices**
+that evidence (with extra weight on **lecture audio transcripts** and
+**courseware OCR**), then asks the LLM for 讲解重点 / 理解要点, review focuses,
+and a next-step plan.
+
+Video learning (adaptive-learning-agent style): local players (PotPlayer/VLC/…)
+or Bilibili/YouTube count when **title, on-screen OCR/subtitles, or recent
+audio transcripts** look like a lecture. Audio cues need `[audio] enabled`
+(with loopback) so system/video speech is transcribed.
+
+Before the report LLM runs, prefetch builds a **learning memory** block:
+session topic/concept tags, lecture structure (definition / step / relation),
+**one Ollama call** for topics/subtopics, concept graph edges, problem /
+ask-later events, and an SM-2 + BKT review queue (Exposure→fluent tiers).
+Sidecar: `learning-enrichment.json`.
+
+Live detector (MeetingDetector-style): daemon watches UI/frames, opens
+`learning_sessions` on strong learning signals, grace-closes after idle, and
+can auto-queue `user-learning` recap. Config: `[learning]` in config.toml.
+Status: `GET /learning/live`.
+
+API highlights: `POST /learning/sessions/start|end` (end can flush recap),
+`POST /learning/ask-later`, `GET /learning/graph`, `/learning/topics`,
+`/learning/reviews`, `POST /learning/reviews/{id}/grade`.
 
 ```cmd
 python deskmate\apps\user-learning\app.py --hours 8 --verbose
