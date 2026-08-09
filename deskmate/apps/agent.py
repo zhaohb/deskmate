@@ -31,6 +31,12 @@ from deskmate.engine.day_recap_context import (
 )
 
 from .common import normalize_capture_text
+from .learning_slice import (
+    build_learning_sessions,
+    filter_learning_edited_files,
+    filter_learning_key_texts,
+    format_learning_bundle,
+)
 
 
 def _todo_list_email_evidence(
@@ -697,10 +703,11 @@ def _do_content_search(
     limit: int = 20,
     app_name: str | None = None,
     q: str | None = None,
+    content_type: str = "all",
     verbose: bool = False,
 ) -> list[dict[str, Any]]:
     params = [
-        "content_type=all",
+        f"content_type={quote(content_type or 'all')}",
         f"limit={limit}",
         f"start_time={quote(start)}",
         f"end_time={quote(end)}",
@@ -715,7 +722,7 @@ def _do_content_search(
         result = _http_get(url)
         items = result.get("data", [])
         if verbose:
-            label = app_name or q or "all"
+            label = app_name or q or content_type or "all"
             echo_stderr(f"  [search] {label}: {len(items)} raw")
         return items
     except Exception as exc:
@@ -1130,6 +1137,179 @@ def _do_user_profile_prefetch(start: str, end: str, verbose: bool = False) -> st
         echo_stderr(
             f"  [user-profile] meetings={len(meeting_names)} "
             f"email_sources={len(email_verified)} habits={'y' if habit_text else 'n'}"
+        )
+    return "\n\n".join(sections)
+
+
+def _collect_learning_audio_bits(
+    start: str,
+    end: str,
+    summary: dict[str, Any],
+    *,
+    verbose: bool = False,
+) -> list[str]:
+    """Pull lecture audio: dedicated /search content_type=audio + summary tops."""
+    bits: list[str] = []
+    seen: set[str] = set()
+
+    def _add(ts: str, text: str, speaker: str = "") -> None:
+        clean = " ".join((text or "").split())
+        if len(clean) < 8:
+            return
+        key = clean[:160].lower()
+        if key in seen:
+            return
+        seen.add(key)
+        prefix = ts or ""
+        if speaker:
+            prefix = f"{prefix} [{speaker}]".strip()
+        # Keep longer lines so 讲解重点 can quote definitions / steps.
+        body = clean[:700]
+        bits.append(f"{prefix}: {body}".strip(": ").strip() if prefix else body)
+
+    audio_items = _do_content_search(
+        start, end, limit=40, content_type="audio", verbose=verbose,
+    )
+    for item in audio_items:
+        c = item.get("content") or {}
+        _add(
+            str(c.get("timestamp") or ""),
+            str(c.get("transcription") or c.get("text") or ""),
+            str(c.get("speaker") or c.get("speaker_name") or ""),
+        )
+
+    audio = summary.get("audio_summary") or {}
+    for t in audio.get("top_transcriptions") or []:
+        if isinstance(t, dict):
+            _add(
+                str(t.get("timestamp") or ""),
+                str(t.get("transcription") or t.get("text") or ""),
+                str(t.get("speaker") or ""),
+            )
+        elif isinstance(t, str):
+            _add("", t)
+
+    for snip in summary.get("snippets") or []:
+        if (snip.get("source") or "") != "audio":
+            continue
+        _add(str(snip.get("timestamp") or ""), str(snip.get("text") or ""))
+
+    return bits[:40]
+
+
+def _collect_courseware_ocr_lines(
+    start: str,
+    end: str,
+    sessions: list[dict[str, Any]],
+    *,
+    verbose: bool = False,
+) -> list[str]:
+    """Extra OCR from courseware / browser study apps for slide text."""
+    app_names: list[str] = []
+    for s in sessions:
+        if s.get("kind") not in {"courseware_view", "material_query", "study_other"}:
+            continue
+        for a in s.get("apps") or []:
+            if a and a not in app_names:
+                app_names.append(a)
+    if not app_names:
+        # Fall back to any session apps — still better than nothing for slides.
+        for s in sessions:
+            for a in s.get("apps") or []:
+                if a and a not in app_names:
+                    app_names.append(a)
+
+    lines: list[str] = []
+    for app in app_names[:4]:
+        items = _do_content_search(
+            start, end, limit=12, app_name=app, content_type="ocr", verbose=verbose,
+        )
+        formatted = format_search_items(items, max_text=550)
+        for fl in formatted:
+            lines.append(fl)
+        if len(lines) >= 35:
+            break
+    return lines[:35]
+
+
+def _do_user_learning_prefetch(start: str, end: str, verbose: bool = False) -> str:
+    """Detect learning sessions and slice screen/audio evidence to that subset.
+
+    Pipeline:
+      1) rich activity-summary for the window
+      2) rule-based learning session merge (courseware / query / code / problem)
+      3) heavy audio transcript pull (primary for 讲解重点)
+      4) courseware OCR pull (slides / docs)
+      5) learning-related key_texts + study files
+      6) focused topic searches
+    """
+    # Request more snippets than day-recap so lecture audio/OCR survive capping.
+    try:
+        summary = _http_get(
+            f"{API_BASE}/activity-summary"
+            f"?start_time={quote(start)}&end_time={quote(end)}"
+            f"&include_recording=true&include_snippets=true&include_guidance=true"
+            f"&max_snippets=12&max_snippet_chars=1200&max_memories=8"
+        )
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            echo_stderr(f"  [user-learning] activity-summary error: {exc}")
+        summary = _fetch_activity_summary(start, end, verbose=verbose, rich=True)
+    if not summary:
+        return "(Failed to fetch activity data from DeskMate API.)"
+
+    sessions = build_learning_sessions(summary)
+    key_texts = filter_learning_key_texts(summary.get("key_texts") or [], limit=80)
+    edited = filter_learning_edited_files(summary.get("edited_files") or [], limit=30)
+
+    audio_bits: list[str] = []
+    courseware_ocr: list[str] = []
+    if sessions:
+        audio_bits = _collect_learning_audio_bits(start, end, summary, verbose=verbose)
+        courseware_ocr = _collect_courseware_ocr_lines(
+            start, end, sessions, verbose=verbose,
+        )
+
+    bundle = format_learning_bundle(
+        sessions=sessions,
+        key_texts=key_texts,
+        edited_files=edited,
+        audio_bits=audio_bits,
+        range_start=start,
+        range_end=end,
+        courseware_ocr_lines=courseware_ocr,
+    )
+
+    sections = [bundle]
+
+    if sessions:
+        queries: list[str] = []
+        for s in sessions:
+            for q in s.get("queries") or []:
+                if q and q not in queries:
+                    queries.append(q)
+        for q in queries[:4]:
+            items = _do_content_search(start, end, limit=10, q=q, verbose=verbose)
+            lines = format_search_items(items, max_text=450)
+            if lines:
+                sections.append(f"### Topic search: {q}\n" + "\n".join(lines))
+
+        # Compact contrast only (avoid drowning lecture evidence).
+        apps = summary.get("apps") or []
+        if apps:
+            top = sorted(apps, key=lambda a: float(a.get("minutes") or 0), reverse=True)[:8]
+            contrast = ["### Full-window top apps (contrast — NOT study evidence)"]
+            for a in top:
+                contrast.append(
+                    f"- {a.get('name')}: {float(a.get('minutes') or 0):.1f} min"
+                )
+            sections.append("\n".join(contrast))
+
+    if verbose:
+        echo_stderr(
+            f"  [user-learning] sessions={len(sessions)} "
+            f"key_texts={len(key_texts)} edited={len(edited)} "
+            f"audio_bits={len(audio_bits)} courseware_ocr={len(courseware_ocr)}"
         )
     return "\n\n".join(sections)
 
@@ -2494,6 +2674,39 @@ def run_agent(
             start_heading="## 一句话画像",
             num_predict=4096,
             max_data_chars=16000,
+        )
+
+    # User learning: detect study phases, slice evidence, summarize + next plan.
+    if pipe_md_path.parent.name == "user-learning":
+        if verbose:
+            echo_stderr("  [agent] user-learning → learning-slice prefetch + single-shot")
+        data_text = _do_user_learning_prefetch(start_iso, end_iso, verbose=verbose)
+        return _single_shot_report(
+            pipe_body=pipe_body,
+            skill_text=skill_text,
+            context_header=context_header,
+            data_text=data_text,
+            verbose=verbose,
+            extra_rules=(
+                "LEARNING RULES: This is a STUDY report, not a day log or user profile. "
+                "Use ONLY the pre-computed Learning sessions, Audio transcripts (lecture), "
+                "Courseware OCR, and learning-related key texts. "
+                "If NO_LEARNING_SESSION: state that under 是否在学习 and write a minimal "
+                "数据说明 — do NOT invent coursework; keep 下一步学习计划 to ≤1 gentle tip. "
+                "讲解重点: extract what was taught — prefer Audio transcripts first, then "
+                "Courseware OCR; each bullet cite 录音 or 课件OCR or [session id]; include "
+                "definitions/formulas/steps when present; if NO_AUDIO_TRANSCRIPT and OCR is "
+                "thin, say 材料不足以还原完整讲解. "
+                "理解要点: explain how to understand those same points (intuition, pitfalls, "
+                "link to code errors in the slice) — do not invent textbook chapters. "
+                "Maximize concrete courseware/lecture content when evidence exists. "
+                "Cite [1]/[2] / 录音 / 课件OCR in 复习重点 and 下一步学习计划. "
+                "Ignore chat/shopping/random entertainment unless inside a session. "
+                "Use ONLY the section headings from the Report Instructions."
+            ),
+            start_heading="## 是否在学习",
+            num_predict=6144,
+            max_data_chars=22000,
         )
 
     # Time breakdown: prefetch with pre-computed minutes + single-shot

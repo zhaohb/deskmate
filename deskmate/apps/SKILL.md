@@ -125,6 +125,10 @@ Each transcript segment has `text`, `speaker_name`, `start_time`, `end_time`.
 ## Rules
 
 - Prefer /activity-summary for broad context (day recap, habits analysis).
+- For **user-learning** reports: trust the Learning sessions slice; prioritize
+  **Audio transcripts (lecture)** then **Courseware OCR** for 讲解重点 / 理解要点.
+  Do not narrate non-learning browsing/chat as study. If `NO_LEARNING_SESSION`
+  or `NO_AUDIO_TRANSCRIPT` is present, say so and do not invent lecture content.
 - Use /search only when you need specific keyword matches or targeted queries.
 - Use /timeline/unified for strongly time-ordered, cross-source "what happened step by step" questions.
 - Always provide start_time — without it, queries scan the entire history.

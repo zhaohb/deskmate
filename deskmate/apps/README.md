@@ -38,6 +38,19 @@ Summary, Accomplishments, Key Moments, Unfinished Work, Patterns, and Next step.
 python deskmate\apps\day-recap\app.py --hours 16 --verbose
 ```
 
+### user-learning
+
+Detects whether the user was in a **learning phase** (courseware / material
+queries / study coding / on-screen problems), **slices** that evidence (with
+extra weight on **lecture audio transcripts** and **courseware OCR**), then asks
+the LLM for 讲解重点 / 理解要点, review focuses, and a next-step plan. Does not
+start a separate capture pipeline — it focuses retention/summarization on
+learning dwell.
+
+```cmd
+python deskmate\apps\user-learning\app.py --hours 8 --verbose
+```
+
 ### ai-habits
 
 LLM searches for AI tool usage (ChatGPT, Claude, Copilot, Cursor, Gemini,
@@ -160,6 +173,7 @@ python deskmate\apps\email-compose\app.py --provider outlook --to a@b.com --inte
 | A meeting just ended | `meeting-summary` (auto on `meeting_ended`) | Patches summary back to the meeting record |
 | Capture what I asked AI in a time window | `ai-prompt-journal` (manual) | Appends new prompts to today's journal |
 | End-of-day reflection | `day-recap` | Accomplishments + key moments + unfinished work |
+| After a study block | `user-learning` | Learning-session slice + review focuses + next plan |
 | Audit my email time today | `email-digest` | Tool minutes + senders + drafts + todos + patterns |
 | Weekly time breakdown | `time-breakdown` | App / category / project + productivity score |
 | Weekly AI usage habits | `ai-habits` | Per-tool time + effectiveness, no fabricated tools |
