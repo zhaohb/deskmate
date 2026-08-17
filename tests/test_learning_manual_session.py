@@ -201,6 +201,71 @@ def test_manual_span_replaces_derived_sessions_inside_it(store, monkeypatch, tmp
     assert "user-declared" in manual["reason"]
 
 
+def test_experiments_inside_a_declared_span_are_kept_as_evidence() -> None:
+    """Hands-on work during a declared session is the point of the session.
+
+    "Should this keep a session alive?" and "is this evidence of what the user
+    did while studying?" are different questions. Answering both with the same
+    classifier meant that once editors stopped counting as a learning signal,
+    the experiments run against the lecture disappeared from the study report
+    unless they happened to throw an error.
+    """
+    from deskmate.apps.learning_slice import filter_learning_key_texts
+
+    rows = [
+        {"app_name": "chrome.exe", "window_name": "npu shape - Google 搜索",
+         "browser_url": "https://www.google.com/search?q=npu",
+         "text": "搜索 NPU dynamic shape", "timestamp": "2026-08-17T10:05:00+08:00"},
+        {"app_name": "Code.exe", "window_name": "test_openvino.py - Visual Studio Code",
+         "text": "core = ov.Core()  # 试一下 NPU", "timestamp": "2026-08-17T10:10:00+08:00"},
+        {"app_name": "WindowsTerminal.exe", "window_name": "终端",
+         "text": "python test_openvino.py → latency 12ms", "timestamp": "2026-08-17T10:12:00+08:00"},
+        {"app_name": "Code.exe", "window_name": "billing.py - company - Visual Studio Code",
+         "text": "def billing(): pass", "timestamp": "2026-08-17T15:00:00+08:00"},
+    ]
+    span = [("2026-08-17T10:00:00+08:00", "2026-08-17T10:30:00+08:00")]
+    titles = {r["window_name"] for r in filter_learning_key_texts(rows, declared_spans=span)}
+
+    assert "test_openvino.py - Visual Studio Code" in titles
+    assert "终端" in titles
+    assert "npu shape - Google 搜索" in titles
+    # Unrelated work outside the declared span stays out.
+    assert "billing.py - company - Visual Studio Code" not in titles
+
+
+def test_editor_activity_outside_a_declared_span_is_still_dropped() -> None:
+    """Without a declaration, an editor remains no evidence of studying."""
+    from deskmate.apps.learning_slice import filter_learning_key_texts
+
+    rows = [{
+        "app_name": "Code.exe", "window_name": "billing.py - Visual Studio Code",
+        "text": "def billing(): pass", "timestamp": "2026-08-17T15:00:00+08:00",
+    }]
+    assert filter_learning_key_texts(rows) == []
+
+
+def test_manual_session_inherits_observations_it_replaced(store, monkeypatch, tmp_path) -> None:
+    """Replacing derived spans must not throw away what they observed."""
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
+    from deskmate.apps.agent import _merge_manual_sessions
+
+    det = _detector(store)
+    det.force_open(title=TITLE)
+    det.force_close(trigger_recap=False)
+    row = store.list_sessions(limit=1)[0]
+
+    derived = [{
+        "id": 90, "kind": "courseware_view", "started_at": row["started_at"],
+        "ended_at": row["ended_at"], "duration_min": 3,
+        "apps": ["chrome.exe"], "urls": ["https://pytorch.org/docs/"],
+        "queries": [], "topics": ["pytorch"], "concepts": ["autograd"],
+    }]
+    merged = _merge_manual_sessions(derived, row["started_at"], row["ended_at"])
+    manual = next(s for s in merged if s["id"] == row["id"])
+    assert "chrome.exe" in manual["apps"]
+    assert "autograd" in manual["concepts"]
+
+
 def test_merge_is_a_noop_without_manual_sessions(store, monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
     from deskmate.apps.agent import _merge_manual_sessions

@@ -905,16 +905,43 @@ def _tag_session_texts(texts: list[str], *, kind: str = "") -> tuple[list[str], 
     return topics[:4], concepts
 
 
+def in_any_span(ts: str, spans: list[tuple[str, str]] | tuple) -> bool:
+    """Does ``ts`` fall inside any (start, end) span? Bounds may be blank."""
+    stamp = (ts or "").strip().replace(" ", "T", 1)
+    if not stamp:
+        return False
+    for lo, hi in spans or ():
+        lo_n = (lo or "").strip().replace(" ", "T", 1)
+        hi_n = (hi or "").strip().replace(" ", "T", 1)
+        if lo_n and stamp < lo_n:
+            continue
+        if hi_n and stamp > hi_n + "￿":
+            continue
+        if lo_n or hi_n:
+            return True
+    return False
+
+
 def filter_learning_key_texts(
     key_texts: list[dict[str, Any]],
     *,
     limit: int = 80,
     prefer_courseware: bool = True,
+    declared_spans: list[tuple[str, str]] | tuple = (),
 ) -> list[dict[str, Any]]:
     """Keep key_texts that look like learning / problems / study notes.
 
     When ``prefer_courseware`` is set, courseware_view / material_query rows are
     sorted ahead of code/problem so lecture OCR fills the prompt budget first.
+
+    ``declared_spans`` are the windows of sessions the user started by hand.
+    Screen activity inside one is kept whatever the classifier makes of it,
+    because "should this keep a session alive?" and "is this evidence of what
+    the user did while studying?" are different questions. Answering both with
+    the same classifier meant that once editors stopped counting as a learning
+    signal, the experiments someone ran against the lecture — the code, the
+    terminal output — vanished from their own study report unless they happened
+    to throw an error.
     """
     scored: list[tuple[int, dict[str, Any]]] = []
     for row in key_texts or []:
@@ -924,6 +951,10 @@ def filter_learning_key_texts(
             browser_url=str(row.get("browser_url") or ""),
             text=str(row.get("text") or ""),
         )
+        declared = in_any_span(str(row.get("timestamp") or ""), declared_spans)
+        if not kind and declared:
+            # Inside a declared session: the user's word outranks the heuristics.
+            kind, conf = "study_other", 0.6
         if not kind and not (row.get("text") and _PROBLEM_RE.search(str(row.get("text") or ""))):
             continue
         if not kind:

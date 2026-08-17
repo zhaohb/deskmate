@@ -1200,12 +1200,25 @@ def _merge_manual_sessions(
         return any(lo <= began <= hi for lo, hi in spans if lo)
 
     kept = [row for row in derived if not _inside(row)]
+    absorbed = [row for row in derived if _inside(row)]
     for m in manual:
         # Say plainly that this span is the user's word, not an inference — the
         # report cites `why_learning`, and "the user marked it" is the strongest
         # reason available.
         m.setdefault("reason", "")
         m["reason"] = "user-declared study session (manual start/end)"
+        # Inherit what the replaced spans observed. A manual session only
+        # accumulates apps/urls while some automatic signal is also firing, so
+        # one spent entirely on hands-on work would otherwise name no
+        # application at all — and the courseware-OCR pass, which searches by
+        # app, would have nothing to search.
+        for field in ("apps", "urls", "queries", "topics", "concepts"):
+            merged_vals = list(m.get(field) or [])
+            for row in absorbed:
+                for v in row.get(field) or []:
+                    if v and v not in merged_vals:
+                        merged_vals.append(v)
+            m[field] = merged_vals
     if verbose:
         echo_stderr(
             f"  [user-learning] manual sessions: {len(manual)} "
@@ -1442,7 +1455,17 @@ def _do_user_learning_prefetch(start: str, end: str, verbose: bool = False) -> s
         return "(Failed to fetch activity data from DeskMate API.)"
 
     sessions = _merge_manual_sessions(build_learning_sessions(summary), start, end, verbose=verbose)
-    key_texts = filter_learning_key_texts(summary.get("key_texts") or [], limit=80)
+    # Spans the user declared by hand. Everything on screen inside one counts as
+    # study evidence — the searches and experiments they ran against the lecture
+    # are the point of the session, and the classifier alone would drop them.
+    declared_spans = [
+        (str(s.get("started_at") or ""), str(s.get("ended_at") or "") or end)
+        for s in sessions
+        if "user-declared" in str(s.get("reason") or "")
+    ]
+    key_texts = filter_learning_key_texts(
+        summary.get("key_texts") or [], limit=80, declared_spans=declared_spans,
+    )
     edited = filter_learning_edited_files(summary.get("edited_files") or [], limit=30)
 
     audio_bits: list[str] = []
