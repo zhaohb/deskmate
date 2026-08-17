@@ -27,7 +27,12 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from deskmate.apps.agent import _AUDIO_MAX_LINES, _collect_learning_audio_bits
+from deskmate.apps import agent
+from deskmate.apps.agent import (
+    _AUDIO_MAX_LINES,
+    _collect_courseware_ocr_lines,
+    _collect_learning_audio_bits,
+)
 from deskmate.apps.learning_slice import format_learning_bundle, select_spanning
 from deskmate.db.manager import DatabaseManager
 
@@ -197,6 +202,31 @@ def test_bundle_flags_unknown_order_on_the_search_fallback() -> None:
     )
     assert "ORDER NOT GUARANTEED" in bundle
     assert "total in window unknown" in bundle
+
+
+def test_manual_session_without_apps_collects_ocr_from_its_exact_span(monkeypatch) -> None:
+    calls: list[tuple[str, str, dict]] = []
+
+    def fake_search(start: str, end: str, **kwargs):
+        calls.append((start, end, kwargs))
+        return []
+
+    monkeypatch.setattr(agent, "_do_content_search", fake_search)
+    session = {
+        "kind": "study_other",
+        "apps": [],
+        "started_at": "2026-08-16T09:00:00+08:00",
+        "ended_at": "2026-08-16T10:30:00+08:00",
+    }
+
+    assert _collect_courseware_ocr_lines(
+        session["started_at"], session["ended_at"], [session]
+    ) == []
+    assert calls == [(
+        session["started_at"],
+        session["ended_at"],
+        {"limit": 35, "app_name": None, "content_type": "ocr", "verbose": False},
+    )]
 
 
 # ── timestamp-format robustness (the bug that zeroed the auto-recap) ─────────

@@ -46,10 +46,33 @@ that evidence (with extra weight on **lecture audio transcripts** and
 **courseware OCR**), then asks the LLM for 讲解重点 / 理解要点, review focuses,
 and a next-step plan.
 
-Video learning (adaptive-learning-agent style): local players (PotPlayer/VLC/…)
-or Bilibili/YouTube count when **title, on-screen OCR/subtitles, or recent
-audio transcripts** look like a lecture. Audio cues need `[audio] enabled`
-(with loopback) so system/video speech is transcribed.
+**Sessions are user-declared by default.** Press *Start studying* on the Learning
+page, press *End session* when done; everything in between — audio, screen text,
+input, searches, edited files — is that session's evidence, including the
+stretches away from the screen.
+
+Automatic detection exists but ships **off** (`[learning] auto_detect = false`).
+"Is this person studying?" turned out to have no reliable signal: an editor in the
+foreground read as study-coding, DeskMate's own Learning page read as courseware
+(its copy is full of 学习 / 课件 / 复习), window furniture read as errors, and
+interface labels ranked as taught concepts. A day of ordinary work produced a dozen
+bogus sessions. Set `auto_detect = true` to try the heuristics anyway — they are
+described below and still tested.
+
+Two conveniences for the manual flow:
+
+- **Backfill** — forgot to press start? Give a past start/end on the Learning page
+  (or `POST /learning/sessions/backfill`). Capture never stopped, so the evidence
+  is already recorded; the session row just declares the span. Overlapping an
+  existing session merges into it rather than duplicating.
+- **Reminders** — a declared session never times out, so `[learning]
+  nudge_minutes` (default 15, 0 disables) toasts a reminder while one is open.
+  It never closes a session on your behalf.
+
+When `auto_detect = true`, video learning works adaptive-learning-agent style:
+local players (PotPlayer/VLC/…) or Bilibili/YouTube count when **title, on-screen
+OCR/subtitles, or recent audio transcripts** look like a lecture. Audio cues need
+`[audio] enabled` (with loopback) so system/video speech is transcribed.
 
 **Always-learning whitelist.** That lecture test keys on school-flavoured
 wording (课程 / 讲义 / tutorial / lecture / 深度学习), so a genuine technical

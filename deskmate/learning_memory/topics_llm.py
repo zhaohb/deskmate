@@ -1,7 +1,15 @@
-"""One-shot LLM topic/subtopic extraction with confidence + evidence quotes.
+"""One-shot LLM extraction of what a study session actually taught.
 
-Uses DeskMate's configured Ollama model (not Gemini). Soft-fails to [] if the
-LLM is unavailable or returns unparseable JSON — rule concepts still work.
+Returns topics, concepts and lecture structure from a single Ollama call, using
+DeskMate's configured model. Soft-fails to empty results when the LLM is
+unavailable or returns unparseable JSON.
+
+Why the LLM owns concepts now: rule extraction ranked candidates by word shape
+and recurrence, which cannot tell a taught term from a button label — 「复习队列」
+and 「推理优化」 are both four-character Chinese noun phrases. A real session
+produced a review queue led by "SCREEN", "ask" and fragments of DeskMate's own
+interface copy. No stoplist fixes that; judging whether something was *taught* is
+a semantic call, which is exactly what a model can do and a regex cannot.
 """
 
 from __future__ import annotations
@@ -28,20 +36,78 @@ class TopicHit:
     evidence: list[str] = field(default_factory=list)
 
 
+@dataclass
+class StructuredExtraction:
+    """Everything one LLM pass understood about the session."""
+
+    topics: list[TopicHit] = field(default_factory=list)
+    concepts: list[Any] = field(default_factory=list)       # ConceptHit
+    structure: list[Any] = field(default_factory=list)      # LectureItem
+
+    @property
+    def ok(self) -> bool:
+        """Did the call yield anything usable?
+
+        Callers gate persistence on this: seeding SM-2 from a failed pass would
+        put junk on a schedule that then persists across every later session,
+        which is worse than an empty queue for one report.
+        """
+        return bool(self.topics or self.concepts or self.structure)
+
+
 _JSON_FENCE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.I)
 
 _SYSTEM = (
-    "You extract study topics from classroom/courseware evidence. "
-    "Return ONLY a JSON object (no markdown, no prose) with this shape:\n"
+    "You extract what a study session TAUGHT, from lecture audio and courseware "
+    "text. Return ONLY a JSON object (no markdown, no prose) with this shape:\n"
     '{"topics":[{"name":"string","confidence":0.0,'
     '"subtopics":[{"name":"string","confidence":0.0}],'
-    '"evidence":["short quote from evidence"]}]}\n'
+    '"evidence":["short quote from evidence"]}],'
+    '"concepts":[{"name":"string","topic":"string","is_definition":false,'
+    '"is_problem":false,"is_code":false,'
+    '"evidence":["short quote from evidence"]}],'
+    '"structure":[{"kind":"definition|step|relation","subject":"string",'
+    '"content":"definition or step text","target":"relation target concept",'
+    '"ordinal":0,"evidence":"short verbatim quote"}]}\n'
     "Rules:\n"
-    "- Max 6 topics; max 4 subtopics each.\n"
+    "- Max 6 topics (4 subtopics each), 20 concepts, 20 structure items.\n"
     "- confidence in [0,1] = how clearly the evidence supports the topic.\n"
     "- evidence must be short verbatim quotes from the provided text.\n"
-    "- Do not invent topics absent from evidence.\n"
+    "- Do not invent anything absent from the evidence.\n"
     "- Prefer the user's language (Chinese if evidence is Chinese).\n"
+    "\n"
+    "A concept is a subject that was EXPLAINED or PRACTISED. It is never:\n"
+    "- interface text: button, menu, tab, window or page labels, app names,\n"
+    "  window-manager words (Minimize / Maximize / Restore / Close / 任务栏)\n"
+    "- a heading from the tool the user is studying WITH, as opposed to the\n"
+    "  material they are studying\n"
+    "- a fragment of a sentence, or a phrase containing pronouns or particles\n"
+    "  (你/我/的/会/直到/正在) — those are prose, not terms\n"
+    "If the evidence is only interface text with nothing taught, return an empty\n"
+    "concepts list. An empty list is correct and expected; a list of button\n"
+    "labels is a failure.\n"
+    "\n"
+    "Extract the TECHNICAL substance, not a table of contents. Strongly prefer:\n"
+    "- named algorithms, data structures, methods, APIs, model architectures\n"
+    "- quantitative facts (numbers, %, latency, memory, precision such as INT4 /\n"
+    "  FP16 / 68% / tokens per second) — keep the number inside the evidence quote\n"
+    "- hardware, backends, formats, versions (CPU / GPU / NPU / FPGA, IR, ONNX)\n"
+    "- mechanisms: how it works, what it optimises, what trade-off it makes\n"
+    "A name like 新特性 / 功能介绍 / 课程介绍 is a section title, not a technical\n"
+    "concept — drop it and keep the specific technique it introduces instead. For\n"
+    "each concept, the evidence quote should state a technical fact about it (what\n"
+    "it does, its spec, or its number), not merely repeat its name.\n"
+    "\n"
+    "structure: `definition` = subject is defined as content; `step` = an ordered\n"
+    "procedure step (set ordinal from 1); `relation` links two named concepts: put\n"
+    "the source concept in subject and destination concept in target (not content).\n"
+    "Both endpoints must exactly match a name in topics, subtopics, or concepts.\n"
+    "Prefer relations that carry technical meaning between two named techniques\n"
+    "(压缩 / 加速 / 部署到 / 支持 / 依赖 / 量化为 / 替代), e.g. '<technique> 压缩\n"
+    "<structure>', '<model> 部署到 <hardware>', '<method> 将 <metric> 降低 <number>'.\n"
+    "Never use a clause, benefit, outcome, explanation, pronoun phrase, or sentence\n"
+    "fragment as an endpoint. Evidence must be a verbatim quote that states the\n"
+    "relation, including any number. Omit uncertain relations instead of guessing.\n"
 )
 
 
@@ -60,25 +126,104 @@ def _clip_corpus(parts: list[str], *, max_chars: int = 4500) -> str:
     return "\n---\n".join(chunks)
 
 
-def _parse_topics_json(raw: str) -> list[TopicHit]:
+def _load_json_object(raw: str) -> dict[str, Any]:
+    """Pull the outermost JSON object out of a model reply, or ``{}``."""
     from ..engine import llm as llm_mod  # noqa: PLC0415
 
     text = llm_mod.strip_thinking(raw or "").strip()
     if not text:
-        return []
+        return {}
     m = _JSON_FENCE.search(text)
     if m:
         text = m.group(1).strip()
-    # Prefer outermost object
     start = text.find("{")
     end = text.rfind("}")
     if start < 0 or end <= start:
-        return []
+        return {}
     try:
         obj = json.loads(text[start : end + 1])
     except json.JSONDecodeError:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def _clean_quotes(raw: Any, *, limit: int = 3) -> list[str]:
+    out: list[str] = []
+    for e in (raw or [])[:limit]:
+        if isinstance(e, str) and e.strip():
+            out.append(e.strip()[:180])
+    return out
+
+
+def _parse_concepts(obj: dict[str, Any]) -> list[Any]:
+    """Build ConceptHit rows from the model's `concepts` array."""
+    from .extract import ConceptHit  # noqa: PLC0415
+
+    rows = obj.get("concepts")
+    if not isinstance(rows, list):
         return []
-    rows = obj.get("topics") if isinstance(obj, dict) else None
+    out: list[Any] = []
+    seen: set[str] = set()
+    for row in rows[:20]:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if len(name) < 2 or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        out.append(
+            ConceptHit(
+                name=name[:100],
+                topic=str(row.get("topic") or "").strip()[:60] or "general",
+                count=1,
+                evidence=_clean_quotes(row.get("evidence")),
+                has_definition=bool(row.get("is_definition")),
+                has_problem=bool(row.get("is_problem")),
+                has_code=bool(row.get("is_code")),
+            )
+        )
+    return out
+
+
+def _parse_structure(obj: dict[str, Any]) -> list[Any]:
+    """Build LectureItem rows from the model's `structure` array."""
+    from .extract import LectureItem  # noqa: PLC0415
+
+    rows = obj.get("structure")
+    if not isinstance(rows, list):
+        return []
+    out: list[Any] = []
+    for row in rows[:20]:
+        if not isinstance(row, dict):
+            continue
+        kind = str(row.get("kind") or "").strip().lower()
+        if kind not in {"definition", "step", "relation"}:
+            continue
+        subject = str(row.get("subject") or "").strip()
+        raw_content = row.get("target") if kind == "relation" else row.get("content")
+        content = str(raw_content or row.get("content") or "").strip()
+        if len(subject) < 2 or len(content) < 2:
+            continue
+        try:
+            ordinal = int(row.get("ordinal") or 0)
+        except (TypeError, ValueError):
+            ordinal = 0
+        ev = _clean_quotes(row.get("evidence"), limit=1)
+        out.append(
+            LectureItem(
+                kind=kind,
+                subject=subject[:120],
+                content=content[:400],
+                ordinal=max(0, ordinal),
+                source="llm",
+                evidence=ev[0] if ev else "",
+            )
+        )
+    return out
+
+
+def _parse_topics(obj: dict[str, Any]) -> list[TopicHit]:
+    rows = obj.get("topics")
     if not isinstance(rows, list):
         return []
     out: list[TopicHit] = []
@@ -105,36 +250,44 @@ def _parse_topics_json(raw: str) -> list[TopicHit]:
             except (TypeError, ValueError):
                 sc = 0.5
             subs.append(SubtopicHit(name=sn[:80], confidence=max(0.0, min(1.0, sc))))
-        ev = []
-        for e in (row.get("evidence") or [])[:3]:
-            if isinstance(e, str) and e.strip():
-                ev.append(e.strip()[:180])
         out.append(
-            TopicHit(name=name[:100], confidence=conf, subtopics=subs, evidence=ev)
+            TopicHit(
+                name=name[:100],
+                confidence=conf,
+                subtopics=subs,
+                evidence=_clean_quotes(row.get("evidence")),
+            )
         )
     return out
 
 
-def extract_topics_llm(
+def extract_structured_llm(
     *,
     audio_texts: list[str],
     ocr_texts: list[str],
     other_texts: list[str],
     concept_hints: list[str] | None = None,
     verbose: bool = False,
-) -> list[TopicHit]:
-    """One Ollama chat call → topics with confidence. Empty on failure."""
+) -> StructuredExtraction:
+    """One Ollama chat call → topics + concepts + lecture structure.
+
+    A single call on purpose: on a local model each round trip costs real time,
+    and these three outputs are the same reading task at different granularity.
+    """
     corpus = _clip_corpus(list(audio_texts) + list(ocr_texts) + list(other_texts))
     if len(corpus) < 40:
         if verbose:
-            echo_stderr("  [learning_memory] LLM topics skipped: thin corpus")
-        return []
+            echo_stderr("  [learning_memory] LLM extraction skipped: thin corpus")
+        return StructuredExtraction()
 
+    # Rule candidates go in as hints only — they are noisy by nature, and the
+    # model's job includes rejecting the interface text among them.
     hints = ", ".join((concept_hints or [])[:16]) or "(none)"
     user = (
-        f"Rule-extracted concept hints (may be noisy): {hints}\n\n"
+        f"Candidate terms found by pattern matching (NOISY — many are interface "
+        f"labels; keep only what was actually taught): {hints}\n\n"
         f"Evidence corpus:\n{corpus}\n\n"
-        "Extract topics JSON now."
+        "Extract the JSON now."
     )
     try:
         from ..engine import llm as llm_mod  # noqa: PLC0415
@@ -159,18 +312,27 @@ def extract_topics_llm(
             tools=None,
             base=base,
             model=model,
-            num_predict=1024,
-            timeout=min(120, int(timeout or 120)),
+            # Three arrays now instead of one, so the reply is longer.
+            num_predict=2048,
+            timeout=min(180, int(timeout or 180)),
         )
-        content = str(msg.get("content") or "")
-        topics = _parse_topics_json(content)
+        obj = _load_json_object(str(msg.get("content") or ""))
+        out = StructuredExtraction(
+            topics=_parse_topics(obj),
+            concepts=_parse_concepts(obj),
+            structure=_parse_structure(obj),
+        )
         if verbose:
-            echo_stderr(f"  [learning_memory] LLM topics={len(topics)} model={model}")
-        return topics
+            echo_stderr(
+                f"  [learning_memory] LLM topics={len(out.topics)} "
+                f"concepts={len(out.concepts)} structure={len(out.structure)} "
+                f"model={model}"
+            )
+        return out
     except Exception as exc:  # noqa: BLE001
         if verbose:
-            echo_stderr(f"  [learning_memory] LLM topics error: {exc}")
-        return []
+            echo_stderr(f"  [learning_memory] LLM extraction error: {exc}")
+        return StructuredExtraction()
 
 
 def topics_to_dict(topics: list[TopicHit]) -> list[dict[str, Any]]:

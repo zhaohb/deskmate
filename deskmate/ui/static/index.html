@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260817-transcript1" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260817-manual2" />
     <style>
       /* Scoped styles for the Capture & Unified Timeline view */
       #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
@@ -282,8 +282,11 @@
       #view-learning .lrn-manual { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
       #view-learning .lrn-manual-idle { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
       #view-learning .lrn-manual-idle input { flex: 1 1 300px; min-width: 220px; }
-      #view-learning .lrn-manual-go { background: var(--accent, #5b8cff); border-color: var(--accent, #5b8cff); color: #fff; font-weight: 600; }
-      #view-learning .lrn-manual-go:hover { filter: brightness(1.08); }
+      /* Dark fill, light text. NOT `background: var(--accent)` — the theme sets
+         --accent to #ffffff, so pairing it with white text rendered this button
+         invisible. */
+      #view-learning .lrn-manual-go { background: #000; border-color: var(--line-strong, #3a3a3a); color: #fff; font-weight: 600; }
+      #view-learning .lrn-manual-go:hover { background: #111; border-color: var(--accent, #fff); }
       #view-learning .lrn-manual-active { display: flex; gap: 12px; align-items: center; padding: 13px 14px; border-radius: var(--radius); background: color-mix(in srgb, var(--online, #5fb878) 12%, transparent); border: 1px solid color-mix(in srgb, var(--online, #5fb878) 42%, var(--line)); }
       #view-learning .lrn-manual-active .lrn-manual-body { flex: 1 1 auto; min-width: 0; }
       #view-learning .lrn-manual-name { font-size: 14px; font-weight: 600; color: var(--text); word-break: break-word; }
@@ -292,6 +295,14 @@
       #view-learning .lrn-manual-stop { flex: 0 0 auto; border-color: color-mix(in srgb, #e06c75 55%, var(--line)); color: #e06c75; font-weight: 600; }
       #view-learning .lrn-manual-stop:hover { background: color-mix(in srgb, #e06c75 14%, transparent); }
       #view-learning .lrn-manual-note { margin: 10px 0 0; font-size: 12px; line-height: 1.6; }
+      /* backfill — recording a span that already happened */
+      #view-learning .lrn-backfill { margin-top: 12px; }
+      #view-learning .lrn-backfill > summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+      #view-learning .lrn-backfill > summary:hover { color: var(--text); }
+      #view-learning .lrn-backfill > p { margin: 9px 0; font-size: 12px; line-height: 1.6; }
+      #view-learning .lrn-backfill-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 8px; }
+      #view-learning .lrn-backfill-row label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+      #view-learning .lrn-backfill-row input[type="text"] { flex: 1 1 240px; min-width: 180px; }
       /* generic list rows shared by sessions / reviews / problems / concepts */
       #view-learning .lrn-item { display: flex; gap: 12px; padding: 12px 14px; margin-bottom: 10px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); transition: border-color .15s; }
       #view-learning .lrn-item:hover { border-color: color-mix(in srgb, var(--accent, #5b8cff) 45%, var(--line)); }
@@ -308,6 +319,31 @@
       #view-learning .lrn-para:last-child { margin-bottom: 0; }
       #view-learning .lrn-para-t { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--accent, #5b8cff); font-size: 11.5px; padding-top: 1px; }
       #view-learning .lrn-para-x { flex: 1 1 auto; min-width: 0; color: var(--text); word-break: break-word; }
+      #view-learning .lrn-recap { margin: 0; font-family: inherit; font-size: 12.5px; line-height: 1.7; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+      #view-learning .lrn-recap-box { max-height: 680px; }
+      #view-learning .lrn-graph { margin-bottom: 14px; border: 1px solid var(--line); background: color-mix(in srgb, var(--surface-2) 82%, transparent); border-radius: 6px; overflow: hidden; }
+      #view-learning .lrn-graph-head { min-height: 42px; padding: 0 10px 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+      #view-learning .lrn-graph-head strong { font-size: 13px; }
+      #view-learning .lrn-graph-tools { display: flex; gap: 4px; }
+      #view-learning .lrn-graph-tools button { width: 28px; height: 28px; padding: 0; font-size: 17px; line-height: 1; }
+      #view-learning .lrn-graph-stage { width: 100%; min-height: 260px; max-height: 460px; overflow: auto; cursor: grab; overscroll-behavior: contain; background-image: radial-gradient(circle, color-mix(in srgb, var(--line) 55%, transparent) 1px, transparent 1px); background-size: 18px 18px; }
+      #view-learning .lrn-graph-stage.grabbing { cursor: grabbing; }
+      #view-learning .lrn-graph-stage svg { display: block; margin: auto; }
+      #view-learning .lrn-graph-edge { stroke-width: 2; opacity: .82; cursor: pointer; transition: opacity .15s, stroke-width .15s; }
+      #view-learning .lrn-graph-edge.muted { opacity: .1; }
+      #view-learning .lrn-graph-edge-label { text-anchor: middle; paint-order: stroke; stroke: var(--surface-2); stroke-width: 4px; font-size: 10px; font-weight: 700; pointer-events: none; }
+      #view-learning .lrn-graph-node { cursor: pointer; }
+      #view-learning .lrn-graph-node rect { fill: var(--surface-2); stroke: var(--accent, #5b8cff); stroke-width: 2.5; transition: fill .15s, stroke-width .15s; }
+      #view-learning .lrn-graph-node.topic rect { fill: color-mix(in srgb, var(--accent, #5b8cff) 16%, var(--surface-2)); }
+      #view-learning .lrn-graph-node:hover rect { fill: color-mix(in srgb, var(--accent, #5b8cff) 22%, var(--surface-2)); stroke-width: 4; }
+      #view-learning .lrn-graph-node text { fill: var(--text); text-anchor: middle; dominant-baseline: middle; font-size: 12px; font-weight: 650; pointer-events: none; }
+      #view-learning .lrn-graph-evidence { padding: 9px 14px; border-top: 1px solid var(--line); font-size: 12px; line-height: 1.5; color: var(--text); }
+      #view-learning .lrn-graph-evidence[data-empty="1"] { color: var(--muted); }
+      #view-learning .lrn-graph-ev-title { font-weight: 700; margin-bottom: 3px; }
+      #view-learning .lrn-graph-ev-body { color: var(--muted); }
+      #view-learning .lrn-graph-legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 9px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+      #view-learning .lrn-graph-legend span { display: inline-flex; align-items: center; gap: 5px; }
+      #view-learning .lrn-graph-legend i { width: 16px; height: 3px; background: var(--graph-color); }
       /* "why was this detected as learning" — the detector's own reason string */
       #view-learning .lrn-why { font-size: 11.5px; color: var(--muted); margin-top: 6px; font-style: italic; word-break: break-word; }
       #view-learning .lrn-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--surface-3); color: var(--muted); }
@@ -1190,12 +1226,35 @@
                        placeholder="What are you studying? e.g. OpenVINO inference optimization">
                 <button id="lrnManualStart" type="button" class="lrn-manual-go" data-i18n="learning.manual.start">Start studying</button>
               </div>
+
+              <details id="lrnBackfill" class="lrn-backfill">
+                <summary data-i18n="learning.backfill.summary">Forgot to start? Record a past session</summary>
+                <p class="muted" data-i18n="learning.backfill.intro">Capture never stopped — the audio, screen text and input for that window are already recorded. Naming the span is all that is needed.</p>
+                <div class="lrn-backfill-row">
+                  <label>
+                    <span class="muted" data-i18n="learning.backfill.from">From</span>
+                    <input id="lrnBackfillFrom" type="datetime-local">
+                  </label>
+                  <label>
+                    <span class="muted" data-i18n="learning.backfill.to">To</span>
+                    <input id="lrnBackfillTo" type="datetime-local">
+                  </label>
+                </div>
+                <div class="lrn-backfill-row">
+                  <input id="lrnBackfillTitle" type="text" maxlength="120"
+                         data-i18n-attr="placeholder:learning.manual.placeholder"
+                         placeholder="What were you studying?">
+                  <button id="lrnBackfillBtn" type="button" data-i18n="learning.backfill.add">Record it</button>
+                  <span id="lrnBackfillMsg" class="muted"></span>
+                </div>
+              </details>
               <div id="lrnManualActive" class="lrn-manual-active" hidden>
                 <div class="lrn-manual-body">
                   <div class="lrn-manual-name" id="lrnManualName"></div>
                   <div class="lrn-manual-meta">
                     <span class="lrn-manual-timer" id="lrnManualTimer">00:00</span>
                     <span class="muted" data-i18n="learning.manual.running">recording everything until you stop</span>
+                    <span class="muted" id="lrnManualNudge"></span>
                   </div>
                 </div>
                 <button id="lrnManualStop" type="button" class="lrn-manual-stop" data-i18n="learning.manual.stop">End session</button>
@@ -1210,11 +1269,6 @@
             <div id="lrnReviews"></div>
           </div>
 
-          <div class="lrn-card">
-            <h3><span data-i18n="learning.problems.title">Open problems</span> <span id="lrnProblemCount" class="lrn-count" hidden></span></h3>
-            <p class="muted" style="margin-top:0" data-i18n="learning.problems.intro">Errors and questions captured while you were studying, kept until you close them.</p>
-            <div id="lrnProblems"></div>
-          </div>
 
           <div class="lrn-card">
             <h3><span data-i18n="learning.sessions.title">Study sessions</span> <span id="lrnSessionCount" class="lrn-count" hidden></span></h3>
@@ -1236,11 +1290,6 @@
             <p class="muted" style="margin-top:12px;font-size:12px" data-i18n="learning.always.help">Matched case-insensitively against the URL, host, window title, app name and on-screen text. A channel name usually only appears in the page text.</p>
           </div>
 
-          <div class="lrn-card">
-            <h3><span data-i18n="learning.concepts.title">Concepts seen</span> <span id="lrnConceptCount" class="lrn-count" hidden></span></h3>
-            <p class="muted" style="margin-top:0" data-i18n="learning.concepts.intro">Concepts extracted from lecture audio and courseware, newest first.</p>
-            <div id="lrnConcepts"></div>
-          </div>
         </section>
 
         <section id="view-power" class="view">
@@ -1464,7 +1513,7 @@
       </article>
     </template>
 
-    <script src="/ui/assets/i18n.js?v=20260817-transcript1" defer></script>
-    <script src="/ui/assets/app.js?v=20260817-transcript1" defer></script>
+    <script src="/ui/assets/i18n.js?v=20260817-manual2" defer></script>
+    <script src="/ui/assets/app.js?v=20260817-manual2" defer></script>
   </body>
 </html>

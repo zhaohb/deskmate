@@ -320,9 +320,32 @@ class PowerConfig(BaseModel):
 
 
 class LearningConfig(BaseModel):
-    """Frame-level learning session detector (MeetingDetector-style FSM)."""
+    """Learning sessions: user-declared by default, auto-detection opt-in."""
 
+    # Whether the learning subsystem runs at all.
     enabled: bool = True
+
+    # Automatic session detection from screen/audio signals. OFF by default.
+    #
+    # "Is this person studying?" turns out to have no reliable signal. Every
+    # heuristic tried produced the same class of false positive: an editor in the
+    # foreground read as study-coding, DeskMate's own Learning page read as
+    # courseware (its copy is full of 学习 / 课件 / 复习), window furniture read
+    # as errors, and interface labels ranked as taught concepts. A day of ordinary
+    # work generated a dozen bogus sessions, and each patch moved the problem
+    # rather than solving it.
+    #
+    # Sessions the user starts and ends are unambiguous by construction, and the
+    # whole declared span counts as evidence — including the stretches away from
+    # the screen that no detector could have seen. The detection code and its
+    # tests are kept intact so this can be switched back on.
+    auto_detect: bool = False
+
+    # While a user-started session is running, remind every N minutes that it is
+    # still open (0 disables). A manual session never times out by design, so the
+    # only failure mode left is forgetting to end one — after which the next recap
+    # would sweep in everything that happened since.
+    nudge_minutes: int = 15
     # Seconds without a learning signal before the open session is closed.
     end_grace_seconds: float = 180.0
     # Open a new session only at/above this confidence.

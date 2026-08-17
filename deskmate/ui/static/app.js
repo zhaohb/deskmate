@@ -1801,6 +1801,13 @@ function lrnRenderManual(live) {
   }
   const name = $("#lrnManualName");
   if (name) name.textContent = open.title || T("learning.manual.untitled");
+  // State the real cadence from the server rather than hardcoding it, and say
+  // nothing when reminders are switched off.
+  const nudge = $("#lrnManualNudge");
+  if (nudge) {
+    const every = Number(live.nudge_minutes) || 0;
+    nudge.textContent = every > 0 ? T("learning.manual.nudge", { n: every }) : "";
+  }
   const began = Date.parse(open.started_at || "");
   lrnManualStartedAt = Number.isNaN(began) ? Date.now() : began;
   lrnRenderElapsed();
@@ -1878,38 +1885,6 @@ async function loadLearningReviews() {
   }).join("");
 }
 
-async function loadLearningProblems() {
-  const box = $("#lrnProblems");
-  const countEl = $("#lrnProblemCount");
-  if (!box) return;
-  const j = await api("/learning/events?status=open&limit=40");
-  const rows = j.data || [];
-  if (countEl) {
-    if (rows.length) { countEl.textContent = rows.length; countEl.hidden = false; }
-    else { countEl.hidden = true; }
-  }
-  if (!rows.length) {
-    box.innerHTML = lrnEmpty("✅", "learning.problems.empty.title", "learning.problems.empty.body");
-    return;
-  }
-  box.innerHTML = rows.map((e) => `
-    <div class="lrn-item" data-event="${e.id}">
-      <div class="lrn-body">
-        <div class="lrn-name">${capEscape(e.summary || "")}</div>
-        <div class="lrn-meta">
-          <span class="lrn-badge">${TF(`learning.event.${e.kind}`, e.kind || "")}</span>
-          ${e.app_name ? `<span>${capEscape(e.app_name)}</span>` : ""}
-          ${e.created_at ? `<span>${capEscape(timeAgo(e.created_at))}</span>` : ""}
-        </div>
-        ${e.evidence ? `<div class="lrn-why">${capEscape(String(e.evidence).slice(0, 200))}</div>` : ""}
-        <div class="lrn-acts">
-          <button type="button" class="ghost" data-status="done">${T("learning.problem.done")}</button>
-          <button type="button" class="ghost" data-status="dismissed">${T("learning.problem.dismiss")}</button>
-        </div>
-      </div>
-    </div>`).join("");
-}
-
 async function loadLearningSessions() {
   const box = $("#lrnSessions");
   const countEl = $("#lrnSessionCount");
@@ -1941,11 +1916,306 @@ async function loadLearningSessions() {
         ${s.reason ? `<div class="lrn-why">${T("learning.why")}: ${capEscape(s.reason)}</div>` : ""}
         <div class="lrn-acts">
           <button type="button" class="ghost" data-transcript="${s.id}">${T("learning.transcript.show")}</button>
+          <button type="button" class="ghost" data-generate-recap="${s.id}">${T((s.meta || {}).recap_path ? "learning.recap.regenerate" : "learning.recap.generate")}</button>
+          <button type="button" class="ghost" data-recap="${s.id}">${T("learning.recap.show")}</button>
         </div>
         <div class="lrn-transcript" data-for="${s.id}" hidden></div>
+        <div class="lrn-transcript lrn-recap-box" data-recap-for="${s.id}" hidden></div>
       </div>
     </div>`;
   }).join("");
+}
+
+function renderSessionGraph(graph, host) {
+  const allNodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const nodes = allNodes.slice(0, 12);
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = (Array.isArray(graph?.edges) ? graph.edges : [])
+    .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+    .slice(0, 18);
+  if (!nodes.length) return;
+
+  const relationMeta = {
+    contains: { label: T("learning.graph.contains"), color: "#2563eb" },
+    prerequisite: { label: T("learning.graph.prerequisite"), color: "#d97706" },
+    related: { label: T("learning.graph.related"), color: "#64748b" },
+    contrasts: { label: T("learning.graph.contrasts"), color: "#dc2626" },
+    leads_to: { label: T("learning.graph.leadsTo"), color: "#059669" },
+  };
+  const ns = "http://www.w3.org/2000/svg";
+  const panel = document.createElement("section");
+  panel.className = "lrn-graph";
+  panel.innerHTML = `
+    <div class="lrn-graph-head">
+      <strong>${T("learning.graph.title")}</strong>
+      <div class="lrn-graph-tools">
+        <button type="button" data-graph-zoom="in" title="${T("learning.graph.zoomIn")}" aria-label="${T("learning.graph.zoomIn")}">+</button>
+        <button type="button" data-graph-zoom="out" title="${T("learning.graph.zoomOut")}" aria-label="${T("learning.graph.zoomOut")}">−</button>
+        <button type="button" data-graph-zoom="reset" title="${T("learning.graph.reset")}" aria-label="${T("learning.graph.reset")}">↺</button>
+      </div>
+    </div>
+    <div class="lrn-graph-stage"></div>
+    <div class="lrn-graph-evidence" data-empty="1"></div>
+    <div class="lrn-graph-legend"></div>`;
+  host.appendChild(panel);
+
+  const evidenceBox = panel.querySelector(".lrn-graph-evidence");
+  evidenceBox.textContent = T("learning.graph.evidenceHint");
+  const setEvidence = (title, body) => {
+    evidenceBox.dataset.empty = "0";
+    evidenceBox.innerHTML =
+      `<div class="lrn-graph-ev-title">${capEscape(title)}</div>` +
+      `<div class="lrn-graph-ev-body">${capEscape(body)}</div>`;
+  };
+
+  const legend = panel.querySelector(".lrn-graph-legend");
+  Object.values(relationMeta).forEach((meta) => {
+    const item = document.createElement("span");
+    item.innerHTML = `<i style="--graph-color:${meta.color}"></i>${capEscape(meta.label)}`;
+    legend.appendChild(item);
+  });
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", T("learning.graph.aria"));
+  const defs = document.createElementNS(ns, "defs");
+  Object.entries(relationMeta).forEach(([relation, meta]) => {
+    const marker = document.createElementNS(ns, "marker");
+    marker.setAttribute("id", `lrn-arrow-${relation}`);
+    marker.setAttribute("viewBox", "0 0 10 10");
+    marker.setAttribute("refX", "9");
+    marker.setAttribute("refY", "5");
+    marker.setAttribute("markerWidth", "7");
+    marker.setAttribute("markerHeight", "7");
+    marker.setAttribute("orient", "auto-start-reverse");
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+    path.setAttribute("fill", meta.color);
+    marker.appendChild(path);
+    defs.appendChild(marker);
+  });
+  svg.appendChild(defs);
+  const viewport = document.createElementNS(ns, "g");
+  svg.appendChild(viewport);
+
+  const hierarchyEdges = edges.filter((edge) => edge.relation === "contains");
+  const incoming = new Set(hierarchyEdges.map((edge) => edge.target));
+  const depth = new Map();
+  nodes.forEach((node) => {
+    if (node.kind === "topic" && !incoming.has(node.id)) depth.set(node.id, 0);
+  });
+  for (let pass = 0; pass < nodes.length; pass += 1) {
+    hierarchyEdges.forEach((edge) => {
+      if (!depth.has(edge.source)) return;
+      depth.set(edge.target, Math.max(depth.get(edge.target) + 0 || 0, depth.get(edge.source) + 1));
+    });
+  }
+  const knownDepths = Array.from(depth.values());
+  const fallbackDepth = knownDepths.length ? Math.max(...knownDepths, 1) : 0;
+  nodes.forEach((node) => {
+    if (!depth.has(node.id)) depth.set(node.id, node.kind === "topic" ? 0 : fallbackDepth);
+  });
+  const maxDepth = Math.max(...depth.values(), 0);
+  const levels = new Map();
+  nodes.forEach((node) => {
+    const level = depth.get(node.id);
+    if (!levels.has(level)) levels.set(level, []);
+    levels.get(level).push(node);
+  });
+
+  const nodeWidthOf = (node) =>
+    Math.max(node.kind === "topic" ? 132 : 108, Math.min(248, node.id.length * 8.4 + 30));
+  const NODE_H_TOPIC = 50;
+  const NODE_H = 44;
+  const H_GAP = 42;
+  const LEVEL_H = 138;
+  const PAD_Y = 44;
+  const PAD_X = 44;
+
+  const levelWidths = new Map();
+  levels.forEach((levelNodes, level) => {
+    const total = levelNodes.reduce((sum, node) => sum + nodeWidthOf(node), 0)
+      + H_GAP * Math.max(0, levelNodes.length - 1);
+    levelWidths.set(level, total);
+  });
+  const contentW = Math.max(360, Math.max(...levelWidths.values(), 0) + PAD_X * 2);
+  const contentH = PAD_Y * 2 + NODE_H_TOPIC + (maxDepth === 0 ? 0 : maxDepth * LEVEL_H);
+
+  const positions = new Map();
+  levels.forEach((levelNodes, level) => {
+    let cursor = (contentW - levelWidths.get(level)) / 2;
+    const y = maxDepth === 0 ? contentH / 2 : PAD_Y + NODE_H_TOPIC / 2 + level * LEVEL_H;
+    levelNodes.forEach((node) => {
+      const width = nodeWidthOf(node);
+      positions.set(node.id, { x: cursor + width / 2, y, width, height: node.kind === "topic" ? NODE_H_TOPIC : NODE_H });
+      cursor += width + H_GAP;
+    });
+  });
+
+  svg.setAttribute("viewBox", `0 0 ${contentW} ${contentH}`);
+  svg.style.width = `${contentW}px`;
+  svg.style.height = `${contentH}px`;
+
+  edges.forEach((edge) => {
+    const from = positions.get(edge.source);
+    const to = positions.get(edge.target);
+    if (!from || !to) return;
+    const relation = relationMeta[edge.relation] ? edge.relation : "related";
+    const meta = relationMeta[relation];
+    const deltaX = to.x - from.x;
+    const deltaY = to.y - from.y;
+    const sourceScale = Math.min(
+      (from.width / 2) / Math.max(1, Math.abs(deltaX)),
+      (from.height / 2) / Math.max(1, Math.abs(deltaY)),
+    );
+    const targetScale = Math.min(
+      (to.width / 2 + 6) / Math.max(1, Math.abs(deltaX)),
+      (to.height / 2 + 6) / Math.max(1, Math.abs(deltaY)),
+    );
+    const start = { x: from.x + deltaX * sourceScale, y: from.y + deltaY * sourceScale };
+    const end = { x: to.x - deltaX * targetScale, y: to.y - deltaY * targetScale };
+    const line = document.createElementNS(ns, "line");
+    line.classList.add("lrn-graph-edge");
+    line.dataset.source = edge.source;
+    line.dataset.target = edge.target;
+    line.setAttribute("x1", start.x);
+    line.setAttribute("y1", start.y);
+    line.setAttribute("x2", end.x);
+    line.setAttribute("y2", end.y);
+    line.setAttribute("stroke", meta.color);
+    line.setAttribute("marker-end", `url(#lrn-arrow-${relation})`);
+    const title = document.createElementNS(ns, "title");
+    title.textContent = edge.evidence || `${edge.source} ${meta.label} ${edge.target}`;
+    line.appendChild(title);
+    line.addEventListener("click", () => setEvidence(
+      `${edge.source} · ${meta.label} · ${edge.target}`,
+      edge.evidence || T("learning.graph.noEvidence"),
+    ));
+    viewport.appendChild(line);
+
+    const label = document.createElementNS(ns, "text");
+    label.classList.add("lrn-graph-edge-label");
+    label.setAttribute("x", (from.x + to.x) / 2);
+    label.setAttribute("y", (from.y + to.y) / 2 - 5);
+    label.setAttribute("fill", meta.color);
+    label.textContent = meta.label;
+    viewport.appendChild(label);
+  });
+
+  nodes.forEach((node) => {
+    const position = positions.get(node.id);
+    const group = document.createElementNS(ns, "g");
+    group.classList.add("lrn-graph-node");
+    if (node.kind === "topic") group.classList.add("topic");
+    group.dataset.node = node.id;
+    group.setAttribute("transform", `translate(${position.x} ${position.y})`);
+    const shape = document.createElementNS(ns, "rect");
+    shape.setAttribute("x", -position.width / 2);
+    shape.setAttribute("y", -position.height / 2);
+    shape.setAttribute("width", position.width);
+    shape.setAttribute("height", position.height);
+    shape.setAttribute("rx", node.kind === "topic" ? "6" : "22");
+    group.appendChild(shape);
+    const label = document.createElementNS(ns, "text");
+    label.textContent = node.id.length > 27 ? `${node.id.slice(0, 26)}…` : node.id;
+    group.appendChild(label);
+    const title = document.createElementNS(ns, "title");
+    title.textContent = node.id;
+    group.appendChild(title);
+    group.addEventListener("click", () => setEvidence(
+      node.id,
+      T(node.kind === "topic" ? "learning.graph.topicNode" : "learning.graph.conceptNode"),
+    ));
+    group.addEventListener("mouseenter", () => {
+      viewport.querySelectorAll(".lrn-graph-edge").forEach((item) => {
+        item.classList.toggle("muted", item.dataset.source !== node.id && item.dataset.target !== node.id);
+      });
+    });
+    group.addEventListener("mouseleave", () => {
+      viewport.querySelectorAll(".lrn-graph-edge").forEach((item) => item.classList.remove("muted"));
+    });
+    viewport.appendChild(group);
+  });
+  panel.querySelector(".lrn-graph-stage").appendChild(svg);
+
+  const stage = panel.querySelector(".lrn-graph-stage");
+  let zoom = 1;
+  const applyZoom = () => {
+    svg.style.width = `${contentW * zoom}px`;
+    svg.style.height = `${contentH * zoom}px`;
+  };
+  panel.querySelector(".lrn-graph-tools").addEventListener("click", (event) => {
+    const action = event.target.closest("button")?.dataset.graphZoom;
+    if (!action) return;
+    zoom = action === "reset" ? 1 : Math.max(0.6, Math.min(2.4, zoom + (action === "in" ? 0.15 : -0.15)));
+    applyZoom();
+  });
+  stage.addEventListener("wheel", (event) => {
+    if (!event.ctrlKey) return; // plain wheel scrolls; ctrl+wheel zooms
+    event.preventDefault();
+    zoom = Math.max(0.6, Math.min(2.4, zoom + (event.deltaY < 0 ? 0.1 : -0.1)));
+    applyZoom();
+  }, { passive: false });
+
+  let panning = false, panX = 0, panY = 0, panL = 0, panT = 0;
+  stage.addEventListener("pointerdown", (event) => {
+    if (event.target.closest(".lrn-graph-node") || event.target.closest(".lrn-graph-edge")) return;
+    panning = true;
+    panX = event.clientX; panY = event.clientY;
+    panL = stage.scrollLeft; panT = stage.scrollTop;
+    stage.classList.add("grabbing");
+    stage.setPointerCapture(event.pointerId);
+  });
+  stage.addEventListener("pointermove", (event) => {
+    if (!panning) return;
+    stage.scrollLeft = panL - (event.clientX - panX);
+    stage.scrollTop = panT - (event.clientY - panY);
+  });
+  const endPan = () => { panning = false; stage.classList.remove("grabbing"); };
+  stage.addEventListener("pointerup", endPan);
+  stage.addEventListener("pointercancel", endPan);
+}
+
+/** Load the report generated when a session ended, if one was linked. */
+async function loadSessionRecap(sessionId, host, btn) {
+  host.innerHTML = `<div class="muted">${T("learning.recap.loading")}</div>`;
+  host.hidden = false;
+  try {
+    const j = await api(`/learning/sessions/${sessionId}/recap`);
+    host.innerHTML = "";
+    renderSessionGraph(j.graph, host);
+    const report = document.createElement("pre");
+    report.className = "lrn-recap";
+    report.textContent = j.markdown || "";
+    host.appendChild(report);
+    if (btn) btn.textContent = T("learning.recap.hide");
+  } catch (err) {
+    // 404 is the normal case for sessions that did not trigger a recap.
+    const msg = /404|not found|no recap/i.test(String(err.message || err))
+      ? T("learning.recap.none")
+      : String(err.message || err);
+    host.innerHTML = `<div class="muted">${capEscape(msg)}</div>`;
+  }
+}
+
+/** Generate a report from exactly this session's start/end span, then show it. */
+async function generateSessionRecap(sessionId, host, generateBtn, viewBtn) {
+  generateBtn.disabled = true;
+  const originalText = generateBtn.textContent;
+  generateBtn.textContent = T("learning.recap.generating");
+  host.hidden = false;
+  host.innerHTML = `<div class="muted">${T("learning.recap.generating.detail")}</div>`;
+  try {
+    await api(`/learning/sessions/${sessionId}/recap`, { method: "POST" });
+    host.dataset.loaded = "1";
+    await loadSessionRecap(sessionId, host, viewBtn);
+    generateBtn.textContent = T("learning.recap.regenerate");
+  } catch (err) {
+    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+    generateBtn.textContent = originalText;
+  } finally {
+    generateBtn.disabled = false;
+  }
 }
 
 /** Load a session's spoken record on demand — a long class is a lot of DOM. */
@@ -1970,27 +2240,6 @@ async function loadSessionTranscript(sessionId, host, btn) {
   } catch (err) {
     host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
   }
-}
-
-async function loadLearningConcepts() {
-  const box = $("#lrnConcepts");
-  const countEl = $("#lrnConceptCount");
-  if (!box) return;
-  const j = await api("/learning/concepts?limit=40");
-  const rows = j.data || [];
-  if (countEl) {
-    if (rows.length) { countEl.textContent = rows.length; countEl.hidden = false; }
-    else { countEl.hidden = true; }
-  }
-  if (!rows.length) {
-    box.innerHTML = lrnEmpty("🔖", "learning.concepts.empty.title", "learning.concepts.empty.body");
-    return;
-  }
-  box.innerHTML = `<div class="lrn-chips">${rows.map((c) => `
-    <span class="lrn-chip" title="${capEscape(c.topic || "")}">
-      ${capEscape(c.name || "")}
-      ${c.hit_count > 1 ? `<span class="lrn-badge">${c.hit_count}</span>` : ""}
-    </span>`).join("")}</div>`;
 }
 
 async function loadLearningAlways() {
@@ -2030,9 +2279,7 @@ function refreshLearningView() {
   return Promise.all([
     loadLearningLive().catch((e) => console.error("[learning]", e)),
     loadLearningReviews().catch((e) => console.error("[learning]", e)),
-    loadLearningProblems().catch((e) => console.error("[learning]", e)),
     loadLearningSessions().catch((e) => console.error("[learning]", e)),
-    loadLearningConcepts().catch((e) => console.error("[learning]", e)),
     loadLearningAlways().catch((e) => console.error("[learning]", e)),
   ]);
 }
@@ -2061,6 +2308,40 @@ function bindLearningView() {
   $("#lrnManualStart")?.addEventListener("click", () => startManual());
   $("#lrnManualTitle")?.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") { ev.preventDefault(); startManual(); }
+  });
+
+  // Backfill: name a span that already happened. `datetime-local` has no
+  // timezone, so the values are read as local wall time and sent with the
+  // browser's offset — otherwise the server would read them as UTC and the
+  // session would land hours away from the evidence.
+  $("#lrnBackfillBtn")?.addEventListener("click", async () => {
+    const from = $("#lrnBackfillFrom")?.value;
+    const to = $("#lrnBackfillTo")?.value;
+    const msg = $("#lrnBackfillMsg");
+    if (!from || !to) {
+      if (msg) msg.textContent = T("learning.backfill.needBoth");
+      return;
+    }
+    const btn = $("#lrnBackfillBtn");
+    if (btn) btn.disabled = true;
+    try {
+      await api("/learning/sessions/backfill", {
+        method: "POST",
+        body: JSON.stringify({
+          started_at: new Date(from).toISOString(),
+          ended_at: new Date(to).toISOString(),
+          title: ($("#lrnBackfillTitle")?.value || "").trim(),
+        }),
+      });
+      if (msg) msg.textContent = T("learning.backfill.done");
+      if ($("#lrnBackfillTitle")) $("#lrnBackfillTitle").value = "";
+      await refreshLearningView();
+    } catch (err) {
+      if (msg) msg.textContent = String(err.message || err);
+    } finally {
+      if (btn) btn.disabled = false;
+      setTimeout(() => { if (msg) msg.textContent = ""; }, 6000);
+    }
   });
 
   $("#lrnManualStop")?.addEventListener("click", async () => {
@@ -2145,23 +2426,36 @@ function bindLearningView() {
     loadSessionTranscript(id, host, btn);
   });
 
-  $("#lrnProblems")?.addEventListener("click", async (ev) => {
-    const btn = ev.target.closest("button[data-status]");
+  // Recap expand / collapse, same shape as the transcript toggle above.
+  $("#lrnSessions")?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-recap]");
     if (!btn) return;
-    const row = btn.closest("[data-event]");
-    if (!row) return;
-    btn.disabled = true;
-    try {
-      await api(`/learning/events/${row.dataset.event}/status`, {
-        method: "POST",
-        body: JSON.stringify({ status: btn.dataset.status }),
-      });
-      row.classList.add("done");
-      await loadLearningProblems();
-    } catch (err) {
-      showError(err);
-      btn.disabled = false;
+    const id = btn.dataset.recap;
+    const host = document.querySelector(`.lrn-recap-box[data-recap-for="${id}"]`);
+    if (!host) return;
+    if (!host.hidden) {
+      host.hidden = true;
+      btn.textContent = T("learning.recap.show");
+      return;
     }
+    if (host.dataset.loaded === "1") {
+      host.hidden = false;
+      btn.textContent = T("learning.recap.hide");
+      return;
+    }
+    host.dataset.loaded = "1";
+    loadSessionRecap(id, host, btn);
+  });
+
+  // Generate/regenerate a recap scoped to the selected session's exact time span.
+  $("#lrnSessions")?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-generate-recap]");
+    if (!btn) return;
+    const id = btn.dataset.generateRecap;
+    const host = document.querySelector(`.lrn-recap-box[data-recap-for="${id}"]`);
+    const viewBtn = document.querySelector(`button[data-recap="${id}"]`);
+    if (!host) return;
+    generateSessionRecap(id, host, btn, viewBtn);
   });
 
   const addAlways = async () => {

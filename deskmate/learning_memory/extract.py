@@ -24,7 +24,33 @@ _STOP = frozenset({
     "今天", "现在", "然后", "首先", "最后", "接下来",
     "定义", "不同", "相比", "比如", "例如", "所以说", "也就是",
     "内容", "方法", "问题", "结果", "过程", "概念", "知识",
+    # Window furniture and application chrome. Present in every OCR dump, so it
+    # accumulates the highest recurrence counts of anything on screen and ends up
+    # ranked as the user's main "concepts" — a review queue led by SCREEN, ask,
+    # EXPLORER and Minimize.
+    "minimize", "maximize", "restore", "close", "back", "forward", "reload",
+    "screen", "explorer", "chrome", "edge", "firefox", "window", "tab", "menu",
+    "file", "edit", "view", "help", "run", "terminal", "search", "settings",
+    "ask", "chat", "send", "save", "open", "cancel", "delete", "refresh",
+    "最小化", "最大化", "还原", "关闭", "后退", "前进", "刷新", "开始", "任务栏",
+    "文件", "编辑", "视图", "帮助", "终端", "设置", "搜索", "发送", "保存", "取消",
 })
+
+# Function words and pronouns. A concept is a noun phrase; running prose is not.
+# UI copy and subtitles arrive as fragments the CJK matcher happily accepts —
+# "会保留你填的名字", "接下来该复习什么", "直到你点结束" — and each looks like a
+# 2-8 character Chinese term to the scorer, which rewards exactly that shape.
+_CN_FUNCTION_RE = re.compile(
+    r"(的|了|你|我|他|她|它|们|会|要|把|被|给|让|从|向|对|跟|还|就|才|再|"
+    r"很|太|都|也|不|没|别|请|吗|呢|吧|啊|哪|谁|怎|什么|直到|正在|已经|应该|该)"
+)
+
+
+def _looks_like_prose(term: str) -> bool:
+    """True when a CJK candidate reads as a sentence fragment, not a term."""
+    if not re.search(r"[一-鿿]", term):
+        return False
+    return bool(_CN_FUNCTION_RE.search(term))
 
 _DEF_PATTERNS = [
     # EN: "X is/are ..." / "X means ..." / "X refers to ..."
@@ -138,6 +164,8 @@ def _topic_bucket(name: str, surrounding: str) -> str:
 def _score_term(term: str, count: int) -> float:
     t = term.strip()
     if len(t) < 2 or t.lower() in _STOP:
+        return -1.0
+    if _looks_like_prose(t):
         return -1.0
     score = float(count)
     if _CAMEL.fullmatch(t) or (t[:1].isupper() and any(c.isupper() for c in t[1:])):
