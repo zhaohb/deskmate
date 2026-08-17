@@ -103,6 +103,11 @@ class LearningSessionDetector:
         # True while the user is running a session they started by hand. Such a
         # session ignores idle expiry and keeps the title they gave it.
         self._manual = False
+        # Reason that justified the CURRENT kind. Frozen alongside it, because
+        # kind is sticky while observations keep arriving — without this the two
+        # drift apart and a session reads "courseware_view because IDE
+        # foreground", which explains nothing.
+        self._reason = ""
         self._restore_open()
 
     def _restore_open(self) -> None:
@@ -121,6 +126,7 @@ class LearningSessionDetector:
         # started and still considers running.
         meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
         self._manual = str(meta.get("detection_source") or "") == "manual"
+        self._reason = str(row.get("reason") or "")
         # Treat restored session as recently seen so we don't instantly close.
         self._last_seen = time.time()
         logger.info(
@@ -140,6 +146,7 @@ class LearningSessionDetector:
     def is_manual(self) -> bool:
         """True while a user-started session is running (never auto-expires)."""
         return self._manual
+
 
     def observe(
         self,
@@ -179,6 +186,7 @@ class LearningSessionDetector:
                 self.expire_if_idle()
             return obs
 
+        now = time.time()
         kind, conf, reason = classify_learning_signal(
             app_name=app_name or "",
             window_name=window_title or "",
@@ -206,7 +214,6 @@ class LearningSessionDetector:
             kind=kind or "",
             title_is_relevant=bool(subject_title),
         )
-        now = time.time()
         active = False
 
         # An error on screen is an EVENT inside a study session, never the kind
@@ -408,6 +415,10 @@ class LearningSessionDetector:
         promoted = _better_kind(self._kind, kind)
         if promoted != self._kind:
             self._kind = promoted
+            # Reason travels with the kind it justified. Kind is sticky while
+            # observations keep arriving, so letting reason follow the latest
+            # frame produced rows like "courseware_view because IDE foreground".
+            self._reason = reason or self._reason
             # A manual session keeps the name the user gave it — they described
             # what they sat down to study, which no window title improves on.
             # The kind may still climb, since that only sharpens the category.
@@ -415,7 +426,9 @@ class LearningSessionDetector:
                 self._title = title or self._title
         elif not self._title:
             self._title = title or self._title
-        kind, title = self._kind or kind, self._title or title
+        kind = self._kind or kind
+        title = self._title or title
+        reason = self._reason or reason
         try:
             self.store.touch_session(
                 self._session_id,

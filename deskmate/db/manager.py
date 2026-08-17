@@ -1098,9 +1098,9 @@ class DatabaseManager:
         start_iso: str,
         end_iso: str,
         *,
-        limit: int = 2000,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Transcriptions inside a window, OLDEST FIRST.
+        """Every transcription inside a window, OLDEST FIRST.
 
         Distinct from :meth:`recent_transcripts` and from the ``/search`` audio
         path, both of which are ``ORDER BY timestamp DESC LIMIT n`` — i.e. they
@@ -1108,21 +1108,26 @@ class DatabaseManager:
         wrong: summarizing a class needs the whole span in teaching order, so a
         capped DESC query silently hands the model only the last few minutes.
 
-        ``limit`` is a runaway guard, not a content budget; callers do their own
-        budget-aware selection and report what they dropped.
+        ``limit`` defaults to *no cap*, because a study session must be readable
+        end to end: a fixed ceiling here is just the same bug pointing the other
+        way. An earlier 2000-row default cut off anything past roughly two hours
+        — and since the row count came from a separate ``COUNT(*)``, the loss did
+        not even show up in the coverage figures. Pass a limit only when a
+        genuine ceiling is wanted, and say so to the user when it bites.
         """
         lo, hi = self._ts_bounds(start_iso, end_iso)
+        sql = """SELECT id, timestamp, transcription, redacted_transcription,
+                        speaker_id, language, text_length
+                   FROM audio_transcriptions
+                  WHERE timestamp >= ? AND timestamp <= ?
+                    AND TRIM(COALESCE(transcription, '')) <> ''
+                  ORDER BY timestamp ASC, id ASC"""
+        args: list[Any] = [lo, hi]
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(int(limit))
         with self._lock:
-            return self._conn.execute(
-                """SELECT id, timestamp, transcription, redacted_transcription,
-                          speaker_id, language, text_length
-                     FROM audio_transcriptions
-                    WHERE timestamp >= ? AND timestamp <= ?
-                      AND TRIM(COALESCE(transcription, '')) <> ''
-                    ORDER BY timestamp ASC, id ASC
-                    LIMIT ?""",
-                (lo, hi, int(limit)),
-            ).fetchall()
+            return self._conn.execute(sql, args).fetchall()
 
     def count_transcripts_in_range(self, start_iso: str, end_iso: str) -> int:
         """How many non-empty transcriptions exist in a window (for coverage stats)."""

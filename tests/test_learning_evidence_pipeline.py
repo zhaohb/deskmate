@@ -71,6 +71,12 @@ def _window(stamps: list[str]) -> tuple[str, str]:
     return stamps[0], stamps[-1]
 
 
+def _minutes(hhmmss: str) -> float:
+    """'14:11:32' → minutes past the hour, for span assertions."""
+    h, m, s = (int(x) for x in hhmmss.split(":"))
+    return h * 60 + m + s / 60
+
+
 # ── volume: the whole class reaches the prompt, not a 40-row sliver ──────────
 
 def test_lecture_seeds_more_rows_than_the_old_cap(lecture_db) -> None:
@@ -81,11 +87,13 @@ def test_lecture_seeds_more_rows_than_the_old_cap(lecture_db) -> None:
 
 
 def test_collected_audio_far_exceeds_the_old_40_row_cap(lecture_db) -> None:
+    """Coverage is counted in transcript rows, whatever the paragraphing."""
     _, stamps = lecture_db
     bits, stats = _collect_learning_audio_bits(*_window(stamps), {})
     assert stats["source"] == "db"
-    assert len(bits) > 200
     assert stats["total"] == len(stamps)
+    assert stats["included"] > 200
+    assert bits
 
 
 # ── order + span: teaching order preserved, whole class represented ──────────
@@ -102,14 +110,14 @@ def test_collected_audio_spans_the_whole_lecture(lecture_db) -> None:
     """The old DESC+LIMIT path returned only the final minutes."""
     _, stamps = lecture_db
     bits, _ = _collect_learning_audio_bits(*_window(stamps), {})
-    assert bits[0].startswith(stamps[0][:16])
-    assert bits[-1].startswith(stamps[-1][:16])
-    # Coverage is spread, not clustered at either end: the midpoint line must
+    # Paragraphs are stamped HH:MM:SS, and must bracket the whole class.
+    began, ended = _minutes(stamps[0][11:19]), _minutes(stamps[-1][11:19])
+    assert bits[0].startswith(stamps[0][11:19])
+    assert _minutes(bits[-1][:8]) >= ended - 1
+    # Coverage is spread, not clustered at either end: the middle paragraph must
     # come from somewhere near the middle of the class.
-    middle = bits[len(bits) // 2]
-    mid_minute = int(middle[11:13]) * 60 + int(middle[14:16])
-    start_minute = int(stamps[0][11:13]) * 60 + int(stamps[0][14:16])
-    assert 8 <= (mid_minute - start_minute) <= 15
+    middle = _minutes(bits[len(bits) // 2][:8]) - began
+    assert 0.35 <= middle / (ended - began) <= 0.65
 
 
 def test_short_lecture_is_delivered_complete(tmp_path, monkeypatch) -> None:
@@ -118,7 +126,11 @@ def test_short_lecture_is_delivered_complete(tmp_path, monkeypatch) -> None:
     db = DatabaseManager(tmp_path / "data.db")
     stamps = _seed_lecture(db, n=30)
     bits, stats = _collect_learning_audio_bits(*_window(stamps), {})
-    assert len(bits) == 30
+    assert bits, "a short lecture must still produce paragraphs"
+    # Coverage counts source rows, not paragraphs: all 30 rows are present even
+    # though they are delivered as a handful of merged paragraphs.
+    assert stats["included"] == 30
+    assert stats["total"] == 30
     assert stats["truncated"] is False
 
 
@@ -166,7 +178,7 @@ def test_bundle_does_not_cry_truncation_when_complete(tmp_path, monkeypatch) -> 
         range_start=stamps[0], range_end=stamps[-1], audio_stats=stats,
     )
     assert "PARTIAL TRANSCRIPT" not in bundle
-    assert f"{len(bits)} of {len(bits)} (complete)" in bundle
+    assert f"{stats['total']} of {stats['total']} (complete)" in bundle
 
 
 def test_bundle_flags_unknown_order_on_the_search_fallback() -> None:
@@ -207,6 +219,41 @@ def test_window_excludes_rows_outside_the_range(lecture_db) -> None:
         (later, "无关的后续录音"),
     )
     assert db.count_transcripts_in_range(*_window(stamps)) == len(stamps)
+
+
+def test_long_session_is_retrieved_whole(tmp_path, monkeypatch) -> None:
+    """Retrieval must not cap. A study session is read end to end or not at all.
+
+    An earlier 2000-row default silently kept only the first ~2 hours, and the
+    loss was invisible because the total came from a separate COUNT(*) — the same
+    class of bug as the old DESC cap, pointing the other way.
+    """
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
+    db = DatabaseManager(tmp_path / "data.db")
+    stamps = _seed_lecture(db, n=2600)          # ~2.9 h at 4 s per utterance
+    lo, hi = _window(stamps)
+    assert db.count_transcripts_in_range(lo, hi) == 2600
+    assert len(db.transcripts_in_range(lo, hi)) == 2600
+
+
+def test_full_transcript_keeps_everything_the_prompt_dropped(tmp_path, monkeypatch) -> None:
+    """The archived transcript is unbudgeted even when the prompt copy is not."""
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
+    from deskmate.apps.agent import _full_transcript_text
+
+    db = DatabaseManager(tmp_path / "data.db")
+    stamps = _seed_lecture(db, n=1500)
+    lo, hi = _window(stamps)
+
+    _, stats = _collect_learning_audio_bits(lo, hi, {})
+    assert stats["truncated"] is True, "this fixture must exceed the prompt budget"
+
+    full = _full_transcript_text(lo, hi)
+    # Every seeded utterance is numbered, so the first and last prove the span
+    # survived, and the length proves the middle did too.
+    assert "第0段讲解" in full
+    assert "第1499段讲解" in full
+    assert len(full) > stats["included"] * 10
 
 
 def test_blank_transcriptions_are_not_counted(lecture_db) -> None:

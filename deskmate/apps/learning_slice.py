@@ -376,6 +376,61 @@ def lecture_content_score(*, title: str = "", text: str = "", pathq: str = "") -
     return max(0.0, min(1.0, score))
 
 
+# Target size of one merged transcript paragraph, in characters.
+_PARA_CHARS = 220
+
+
+def merge_transcript_paragraphs(
+    rows: list[dict[str, Any]],
+    fmt: Any,
+) -> list[tuple[str, int]]:
+    """Group consecutive transcript rows into timestamped paragraphs.
+
+    Whisper emits a row every few seconds — around 14 characters of Chinese —
+    which are sentence fragments, not sentences. Feeding them one per line costs
+    a timestamp per fragment and hands the reader shredded prose.
+
+    Merging consecutive rows until a paragraph is worth reading fixes both: one
+    timestamp per paragraph instead of per fragment, and complete sentences. On a
+    measured 35-minute talk this is the difference between fitting half the
+    lecture in a prompt and fitting all of it.
+
+    Returns ``(paragraph, rows_merged)`` pairs. The row count travels with the
+    text so coverage can be reported in the same unit the total is counted in —
+    reporting "4 of 25" for four paragraphs holding all twenty-five rows would
+    describe a complete transcript as partial.
+    """
+    out: list[tuple[str, int]] = []
+    buf: list[str] = []
+    buf_ts = ""
+    buf_len = 0
+    buf_rows = 0
+
+    def flush() -> None:
+        nonlocal buf, buf_ts, buf_len, buf_rows
+        if buf:
+            line = fmt(buf_ts, " ".join(buf))
+            if line:
+                out.append((line, buf_rows))
+        buf, buf_ts, buf_len, buf_rows = [], "", 0, 0
+
+    for r in rows:
+        text = " ".join(
+            str(r.get("redacted_transcription") or r.get("transcription") or "").split()
+        )
+        if not text:
+            continue
+        if not buf:
+            buf_ts = str(r.get("timestamp") or "")
+        buf.append(text)
+        buf_len += len(text)
+        buf_rows += 1
+        if buf_len >= _PARA_CHARS:
+            flush()
+    flush()
+    return out
+
+
 def looks_like_media_surface(
     *,
     app_name: str = "",
@@ -532,9 +587,10 @@ def classify_learning_signal(
     3. **lecture audio** — a class is playing though the foreground is
        unrelated. Ranked below 2 so real courseware still wins, above 4 so the
        foreground app cannot bury it.
-    4. **IDE / title keywords** — weakest: describes activity, not subject.
+    4. **learning keyword in the window title** — weakest usable evidence.
 
-    ``problem`` is deliberately absent: see :func:`detect_problem_text`.
+    Editors and terminals are not on this list at all; see the note in the body.
+    ``problem`` is deliberately absent too: see :func:`detect_problem_text`.
     """
     app = _norm_app(app_name)
     title = window_name or ""
@@ -626,17 +682,21 @@ def classify_learning_signal(
             f"lecture audio while foreground is unrelated ({app or 'desktop'})",
         )
 
-    if app in _CODING_LEARN_PROCS:
-        # Title only — NOT the OCR dump. The rule is named for the title, but it
-        # used to test `title + text`, so any learning word anywhere on an IDE
-        # screen (a tutorial in a scratch file, a chat log, this very sentence)
-        # promoted plain coding to 0.8 and outranked weaker but truer signals.
-        if _TITLE_LEARN_RE.search(title):
-            return "code_edit", 0.8, "IDE/terminal with learning title"
-        if re.search(r"\.(py|c|cpp|h|js|ts|java|go|rs|md|ipynb)\b", title, re.I):
-            return "code_edit", 0.7, "IDE editing source file"
-        if app in {"cursor.exe", "code.exe", "pycharm64.exe", "idea64.exe"}:
-            return "code_edit", 0.65, "IDE foreground (study/practice coding)"
+    # NOTE: editors and terminals produce no learning signal at all.
+    #
+    # There used to be three tiers here — a learning word in the title (0.80), a
+    # source file open (0.70), an IDE merely in the foreground (0.65). All three
+    # sat above keep_confidence, so any of them kept a study session alive
+    # indefinitely, and every one of them is just as true on an ordinary workday
+    # as it is while studying. Nothing about "an editor is open" distinguishes
+    # practising from working.
+    #
+    # Judging it by content instead (does this code relate to the lecture?) was
+    # tried and abandoned: it hinges on the quality of extracted concepts, needs
+    # a stoplist of vocabulary common to both, and still misses whenever the
+    # learner renames things. The manual "start studying" control covers the
+    # real case directly and without guessing — if you are studying in an editor,
+    # say so, and the whole span counts.
 
     if _TITLE_LEARN_RE.search(title):
         return "study_other", 0.7, "learning keyword in window title"

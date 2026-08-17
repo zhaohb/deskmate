@@ -134,10 +134,32 @@ def test_lecture_audio_beats_foreground_ide() -> None:
     assert "lecture audio" in reason
 
 
-def test_ide_alone_is_still_code_edit() -> None:
-    """No lecture playing → unchanged behaviour."""
-    kind, _, _ = _classify("")
-    assert kind == "code_edit"
+def test_ide_alone_is_not_studying() -> None:
+    """An editor in the foreground says nothing about learning.
+
+    Three tiers used to fire here — learning word in the title, a source file
+    open, an IDE merely focused — and each sat above keep_confidence, so any of
+    them kept a study session alive for a whole workday. Deciding it by content
+    instead was tried and dropped as too fragile; the manual "start studying"
+    control covers the real case without guessing.
+    """
+    kind, conf, _ = _classify("")
+    assert kind is None
+    assert conf == 0.0
+
+
+@pytest.mark.parametrize("title", [
+    "hongbo - Visual Studio Code",
+    "daemon.py - hongbo - Visual Studio Code",
+    "store.py - work-project - Visual Studio Code",
+    "index.ts - company-backend - Visual Studio Code",
+])
+def test_ordinary_workday_never_sustains_a_session(title) -> None:
+    """Below keep_confidence, so an open session expires instead of lingering."""
+    _, conf, _ = classify_learning_signal(
+        app_name=IDE_APP, window_name=title, text="def handle_request(): pass",
+    )
+    assert conf < 0.60
 
 
 def test_audio_does_not_leak_into_on_screen_scoring() -> None:

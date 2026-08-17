@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260817-manual1" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260817-transcript1" />
     <style>
       /* Scoped styles for the Capture & Unified Timeline view */
       #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
@@ -301,6 +301,13 @@
       #view-learning .lrn-item .lrn-acts { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
       #view-learning .lrn-item .lrn-acts button { font-size: 12px; padding: 5px 12px; border-radius: 8px; }
       #view-learning .lrn-item.done { opacity: .5; }
+      /* spoken record of a session, expanded on demand */
+      #view-learning .lrn-transcript { margin-top: 10px; padding: 12px; border-radius: var(--radius); background: var(--surface-3); border: 1px solid var(--line); max-height: 340px; overflow: auto; }
+      #view-learning .lrn-transcript-head { font-size: 11.5px; color: var(--muted); margin-bottom: 9px; }
+      #view-learning .lrn-para { display: flex; gap: 10px; margin-bottom: 9px; font-size: 12.5px; line-height: 1.65; }
+      #view-learning .lrn-para:last-child { margin-bottom: 0; }
+      #view-learning .lrn-para-t { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--accent, #5b8cff); font-size: 11.5px; padding-top: 1px; }
+      #view-learning .lrn-para-x { flex: 1 1 auto; min-width: 0; color: var(--text); word-break: break-word; }
       /* "why was this detected as learning" — the detector's own reason string */
       #view-learning .lrn-why { font-size: 11.5px; color: var(--muted); margin-top: 6px; font-style: italic; word-break: break-word; }
       #view-learning .lrn-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--surface-3); color: var(--muted); }
@@ -1457,7 +1464,7 @@
       </article>
     </template>
 
-    <script src="/ui/assets/i18n.js?v=20260817-manual1" defer></script>
-    <script src="/ui/assets/app.js?v=20260817-manual1" defer></script>
+    <script src="/ui/assets/i18n.js?v=20260817-transcript1" defer></script>
+    <script src="/ui/assets/app.js?v=20260817-transcript1" defer></script>
   </body>
 </html>

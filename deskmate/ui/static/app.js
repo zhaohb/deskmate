@@ -1939,9 +1939,37 @@ async function loadLearningSessions() {
           ${topics.map((t) => `<span class="lrn-badge">${capEscape(t)}</span>`).join("")}
         </div>
         ${s.reason ? `<div class="lrn-why">${T("learning.why")}: ${capEscape(s.reason)}</div>` : ""}
+        <div class="lrn-acts">
+          <button type="button" class="ghost" data-transcript="${s.id}">${T("learning.transcript.show")}</button>
+        </div>
+        <div class="lrn-transcript" data-for="${s.id}" hidden></div>
       </div>
     </div>`;
   }).join("");
+}
+
+/** Load a session's spoken record on demand — a long class is a lot of DOM. */
+async function loadSessionTranscript(sessionId, host, btn) {
+  host.innerHTML = `<div class="muted">${T("learning.transcript.loading")}</div>`;
+  host.hidden = false;
+  try {
+    const j = await api(`/learning/sessions/${sessionId}/transcript`);
+    const rows = j.data || [];
+    if (!rows.length) {
+      host.innerHTML = `<div class="muted">${T("learning.transcript.empty")}</div>`;
+      return;
+    }
+    host.innerHTML = `
+      <div class="lrn-transcript-head">${T("learning.transcript.count", { n: j.rows })}</div>
+      ${rows.map((p) => `
+        <div class="lrn-para">
+          <span class="lrn-para-t">${capEscape(p.time)}</span>
+          <span class="lrn-para-x">${capEscape(p.text)}</span>
+        </div>`).join("")}`;
+    if (btn) btn.textContent = T("learning.transcript.hide");
+  } catch (err) {
+    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+  }
 }
 
 async function loadLearningConcepts() {
@@ -2094,6 +2122,27 @@ function bindLearningView() {
       showError(err);
       btn.disabled = false;
     }
+  });
+
+  // Transcript expand / collapse, delegated so re-rendered rows keep working.
+  $("#lrnSessions")?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-transcript]");
+    if (!btn) return;
+    const id = btn.dataset.transcript;
+    const host = document.querySelector(`.lrn-transcript[data-for="${id}"]`);
+    if (!host) return;
+    if (!host.hidden) {
+      host.hidden = true;
+      btn.textContent = T("learning.transcript.show");
+      return;
+    }
+    if (host.dataset.loaded === "1") {
+      host.hidden = false;
+      btn.textContent = T("learning.transcript.hide");
+      return;
+    }
+    host.dataset.loaded = "1";
+    loadSessionTranscript(id, host, btn);
   });
 
   $("#lrnProblems")?.addEventListener("click", async (ev) => {

@@ -36,6 +36,7 @@ from .learning_slice import (
     filter_learning_edited_files,
     filter_learning_key_texts,
     format_learning_bundle,
+    merge_transcript_paragraphs,
     select_spanning as _select_spanning,
 )
 from deskmate.learning_memory import build_learning_enrichment
@@ -1143,12 +1144,20 @@ def _do_user_profile_prefetch(start: str, end: str, verbose: bool = False) -> st
     return "\n\n".join(sections)
 
 
-# Lecture audio is the PRIMARY source for 讲解重点 / 理解要点, so it gets a real
-# budget rather than a token line count. ~24k chars of transcript still leaves
-# room for sessions/OCR/structure inside user-learning's 22k prompt cap (the
-# bundle is capped again by _cap_prefetch_text, which watermarks what it drops).
-_AUDIO_MAX_LINES = 260
-_AUDIO_MAX_CHARS = 24000
+# Lecture audio is the PRIMARY source for 讲解重点 / 理解要点, so it gets the
+# largest single share of user-learning's 22k prompt budget, leaving the rest for
+# sessions, courseware OCR, key texts and the pre-computed structure.
+#
+# The budget is in CHARACTERS. Lines are the wrong unit: Whisper emits ~14
+# characters per row for Chinese and 3-4x that for English, so a line cap tuned
+# on one language silently discards most of a lecture in the other. A measured
+# 35-minute talk ran 630 rows / 8,698 chars — an earlier 260-line cap dropped 59%
+# of it while using barely a third of the character budget.
+#
+# The line cap survives only as a runaway guard for pathological transcripts
+# (thousands of near-empty rows); it should never be what binds.
+_AUDIO_MAX_LINES = 2000
+_AUDIO_MAX_CHARS = 13000
 
 
 def _merge_manual_sessions(
@@ -1205,6 +1214,30 @@ def _merge_manual_sessions(
     return manual + kept
 
 
+def _full_transcript_text(start: str, end: str, *, verbose: bool = False) -> str:
+    """The entire transcript for a window, merged into readable paragraphs.
+
+    Unbudgeted on purpose. What reaches the prompt is bounded by what a local
+    model can read in one call; what gets kept should be bounded by nothing, so
+    the session stays fully searchable and quotable afterwards — and so a later
+    pass can summarize it in chunks rather than from a sample.
+    """
+    try:
+        from deskmate.db.manager import DatabaseManager  # noqa: PLC0415
+
+        rows = DatabaseManager().transcripts_in_range(start, end)
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            echo_stderr(f"  [user-learning] full transcript read failed: {exc}")
+        return ""
+
+    def _fmt(ts: str, text: str) -> str | None:
+        body = " ".join((text or "").split())
+        return f"{(ts or '')[11:19]}  {body}".strip() if body else None
+
+    return "\n\n".join(line for line, _ in merge_transcript_paragraphs(rows, _fmt))
+
+
 def _collect_learning_audio_bits(
     start: str,
     end: str,
@@ -1242,11 +1275,13 @@ def _collect_learning_audio_bits(
         if key in seen:
             return None
         seen.add(key)
-        prefix = ts or ""
+        # Clock time only. A full ISO stamp costs 25 characters against a row of
+        # speech averaging 14 — two thirds of the audio budget spent restating
+        # the date. HH:MM:SS still locates the moment in the session.
+        prefix = (ts or "")[11:19]
         if speaker:
             prefix = f"{prefix} [{speaker}]".strip()
-        # Keep longer lines so 讲解重点 can quote definitions / steps.
-        body = clean[:700]
+        body = clean[:1200]
         return f"{prefix}: {body}".strip(": ").strip() if prefix else body
 
     rows: list[dict[str, Any]] = []
@@ -1262,30 +1297,26 @@ def _collect_learning_audio_bits(
         rows = []
 
     if rows:
-        formatted = [
-            line
-            for line in (
-                _fmt(
-                    str(r.get("timestamp") or ""),
-                    str(r.get("redacted_transcription") or r.get("transcription") or ""),
-                )
-                for r in rows
-            )
-            if line
-        ]
-        # Two-stage budget: cap the line count, then the character total. Both
+        paragraphs = merge_transcript_paragraphs(rows, _fmt)
+        all_rows = sum(n for _, n in paragraphs)
+        # Character budget decides; the line cap is only a runaway guard. Both
         # keep the span (even sampling), never the head or tail alone.
-        kept = _select_spanning(formatted, _AUDIO_MAX_LINES)
-        while kept and sum(len(x) for x in kept) > _AUDIO_MAX_CHARS:
+        kept = _select_spanning(paragraphs, _AUDIO_MAX_LINES)
+        while kept and sum(len(x[0]) for x in kept) > _AUDIO_MAX_CHARS:
             kept = _select_spanning(kept, max(1, int(len(kept) * 0.8)))
-        bits = kept
-        stats["included"] = len(bits)
-        stats["total"] = max(stats["total"], len(formatted))
-        stats["truncated"] = len(bits) < len(formatted)
+
+        bits = [line for line, _ in kept]
+        kept_rows = sum(n for _, n in kept)
+        # Coverage is reported in transcript rows at both ends, so a lecture that
+        # fits entirely reads as complete however it was paragraphed.
+        stats["total"] = max(stats["total"], all_rows)
+        stats["included"] = kept_rows
+        stats["truncated"] = kept_rows < all_rows
         if verbose:
             echo_stderr(
-                f"  [user-learning] audio: {len(bits)}/{stats['total']} lines "
-                f"(chronological, {'sampled across span' if stats['truncated'] else 'complete'})"
+                f"  [user-learning] audio: {kept_rows}/{stats['total']} rows in "
+                f"{len(bits)} paragraphs (chronological, "
+                f"{'sampled across span' if stats['truncated'] else 'complete'})"
             )
         return bits, stats
 
@@ -1440,6 +1471,19 @@ def _do_user_learning_prefetch(start: str, end: str, verbose: bool = False) -> s
 
     # Concept extraction + lecture structure + SM-2 queue (persisted locally).
     G_LEARNING_ENRICHMENT.clear()
+
+    # Keep the COMPLETE transcript alongside the report, separate from the
+    # trimmed copy that went into the prompt. A local model cannot read three
+    # hours of speech in one call, but that is a limit on what can be summarized
+    # — not a reason to lose the material.
+    if audio_stats.get("total"):
+        G_LEARNING_ENRICHMENT["full_transcript"] = {
+            "range_start": start,
+            "range_end": end,
+            "rows": audio_stats.get("total", 0),
+            "rows_in_prompt": audio_stats.get("included", 0),
+            "text": _full_transcript_text(start, end, verbose=verbose),
+        }
     if sessions:
         key_blobs = [
             str(row.get("text") or "")

@@ -2333,6 +2333,49 @@ def create_app(
         )
         return {"data": rows, "total": len(rows)}
 
+    @app.get("/learning/sessions/{session_id}/transcript")
+    def learning_session_transcript(session_id: int) -> dict[str, Any]:
+        """Everything said during a session, as timestamped paragraphs.
+
+        Serves the whole span with no cap: the report is written from as much as
+        a local model can read at once, but the record itself should be readable
+        in full. An open session is served up to now.
+
+        Whisper rows are merged into paragraphs before returning — raw rows are
+        ~14 characters of sentence fragment, which is unreadable as a list.
+        """
+        from ..apps.learning_slice import merge_transcript_paragraphs  # noqa: PLC0415
+
+        row = _learning_store().get_session(session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="session not found")
+
+        start = str(row.get("started_at") or "")
+        end = str(row.get("ended_at") or "") or datetime.now().astimezone().replace(
+            microsecond=0
+        ).isoformat()
+        if not start:
+            return {"data": [], "rows": 0, "session_id": session_id}
+
+        def _fmt(ts: str, text: str) -> str | None:
+            body = " ".join((text or "").split())
+            return f"{(ts or '')[11:19]}|{body}" if body else None
+
+        rows = db.transcripts_in_range(start, end)
+        merged = merge_transcript_paragraphs(rows, _fmt)
+        data = [
+            {"time": line.split("|", 1)[0], "text": line.split("|", 1)[1]}
+            for line, _ in merged
+            if "|" in line
+        ]
+        return {
+            "session_id": session_id,
+            "started_at": start,
+            "ended_at": row.get("ended_at"),
+            "rows": sum(n for _, n in merged),
+            "data": data,
+        }
+
     @app.get("/learning/live")
     def learning_live() -> dict[str, Any]:
         """Frame-level detector status (open session + config)."""

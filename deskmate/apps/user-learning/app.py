@@ -46,6 +46,21 @@ def main() -> int:
 
     out = output_dir(APP_NAME)
     write_markdown(out / "user-learning.md", report)
+
+    # The complete lecture transcript, kept next to the report. The report is
+    # written from as much of it as a local model can read at once; this file is
+    # the whole session, so nothing said during it is lost to that budget.
+    full = (G_LEARNING_ENRICHMENT or {}).get("full_transcript") or {}
+    if full.get("text"):
+        write_markdown(
+            out / "transcript.md",
+            f"# Full transcript\n\n"
+            f"_{full.get('range_start')} → {full.get('range_end')}_\n\n"
+            f"_{full.get('rows')} transcript rows; "
+            f"{full.get('rows_in_prompt')} of them reached the report prompt._\n\n"
+            f"{full['text']}",
+        )
+
     if G_LEARNING_ENRICHMENT:
         side = {
             "extraction": G_LEARNING_ENRICHMENT.get("extraction"),
