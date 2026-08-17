@@ -431,6 +431,26 @@ def merge_transcript_paragraphs(
     return out
 
 
+_SELF_UI_HOSTS = ("127.0.0.1:3030", "localhost:3030")
+_SELF_UI_TITLE_RE = re.compile(r"\bdeskmate\b", re.I)
+
+
+def _is_self_ui(*, app_name: str = "", window_name: str = "", browser_url: str = "") -> bool:
+    """Is this DeskMate looking at its own interface?
+
+    Its pages describe studying, so they read as study material: the Learning
+    page alone contains 学习 / 课件 / 复习 / 知识点 / 讲解重点. Observing them
+    produced sessions titled "DeskMate - Google Chrome" whose extracted concepts
+    were the page's own button labels.
+    """
+    url = (browser_url or "").lower()
+    if any(h in url for h in _SELF_UI_HOSTS):
+        return True
+    if "/ui/assets" in url:
+        return True
+    return bool(_SELF_UI_TITLE_RE.search(window_name or ""))
+
+
 def looks_like_media_surface(
     *,
     app_name: str = "",
@@ -458,19 +478,53 @@ def looks_like_media_surface(
     return bool(_VIDEO_FILE_RE.search(title))
 
 
-def detect_problem_text(*parts: str) -> str:
-    """Return the error/exception marker found in on-screen text, else ''.
+# Window furniture. Present in every OCR dump, meaningless as evidence, and the
+# reason a "problem" could be reported as `Minimize / Maximize / Restore / Close`.
+_PROSE_PUNCT_RE = re.compile(r"[，、。；！？]")
 
-    Split out of :func:`classify_learning_signal` on purpose. An error on screen
-    says "something broke", not "this is what the user is studying" — treating
-    it as a session *kind* meant one stray word ("失败" in a comment, a chat log,
-    a page of release notes) relabelled the whole session and outranked every
-    real learning signal, because the check ran first. The detector now records
-    it as a `learning_events(kind='problem')` inside whatever session is open.
+_CHROME_LINE_RE = re.compile(
+    r"^(minimize|maximize|restore|close|back|forward|reload|new tab|"
+    r"最小化|最大化|还原|关闭|后退|前进|刷新|新建标签页|开始|任务栏|"
+    r"desktopwindowxamlsource|运行中的应用程序|已固定)\b",
+    re.I,
+)
+
+
+def detect_problem_text(*parts: str) -> tuple[str, str]:
+    """Find an error on screen. Returns ``(matched_line, marker)``, else ``("","")``.
+
+    Split out of :func:`classify_learning_signal` on purpose: an error says
+    "something broke", not "this is what the user is studying". Treating it as a
+    session *kind* let one stray word relabel a whole session, because the check
+    ran first and outranked every real learning signal.
+
+    Two properties this returns rather than a bare marker:
+
+    * **The line, not the dump.** The caller needs something to store. Passing the
+      head of the OCR instead produced problem records reading "hongbo - Visual
+      Studio Code / Minimize / Maximize / Restore / Close" — the match itself was
+      hundreds of characters further down and never made it into the record.
+    * **Line-isolated matching.** A stack trace occupies its own line; the word
+      "failed" inside a sentence on a docs page, a chat log or these very notes
+      does not. Matching the whole blob is why unrelated screens became problems.
     """
-    blob = " ".join(p for p in parts if p)
-    m = _PROBLEM_RE.search(blob) if blob else None
-    return m.group(0) if m else ""
+    for part in parts:
+        for raw in (part or "").splitlines():
+            line = raw.strip()
+            if len(line) < 6 or _CHROME_LINE_RE.match(line):
+                continue
+            if len(line) > 300 or _PROSE_PUNCT_RE.search(line):
+                # Prose that merely mentions failure — a lecture explaining error
+                # handling, a note about a past bug, these very sentences. Real
+                # diagnostics do not carry narrative punctuation; a full-width
+                # comma or period is the clearest sign this is someone talking
+                # about an error rather than an error being reported.
+                continue
+            m = _PROBLEM_RE.search(line)
+            if not m:
+                continue
+            return line[:300], m.group(0)
+    return "", ""
 
 
 def lecture_audio_score(
@@ -613,6 +667,15 @@ def classify_learning_signal(
         # rule so the decision stays auditable in learning_sessions.reason.
         kind = "material_query" if extract_search_query(url) else "courseware_view"
         return kind, 0.95, f"always-learning rule: {matched}"
+
+    # DeskMate's own windows are never coursework. Its Learning page is written
+    # in exactly the vocabulary the detector looks for — 学习 / 课件 / 复习 /
+    # 知识点 / 讲解重点 — so reading one's own dashboard scored as a lecture and
+    # then fed the UI's copy back in as "concepts" ("正在记录", "直到你点结束",
+    # "接下来该复习什么"). Placed after the whitelist so a user who really does
+    # want it counted can say so explicitly.
+    if _is_self_ui(app_name=app_name, window_name=window_name, browser_url=url):
+        return None, 0.0, ""
 
     if url:
         q = extract_search_query(url)
@@ -1073,11 +1136,11 @@ def format_learning_bundle(
         if s.get("reason"):
             lines.append(f"  why_learning: {s['reason']}")
 
-    # Lecture audio first — primary source for 讲解重点 / 理解要点.
+    # Lecture audio first — primary source for course content and key points.
     lines.append("")
     if audio_bits:
         lines.append(
-            "### Audio transcripts (lecture) — PRIMARY source for 讲解重点 / 理解要点"
+            "### Audio transcripts (lecture) — PRIMARY source for 讲了什么 / 课程重点"
         )
         if stats.get("ordered", True):
             lines.append(
@@ -1106,7 +1169,7 @@ def format_learning_bundle(
         lines.append("### Audio transcripts (lecture)")
         lines.append(
             "NO_AUDIO_TRANSCRIPT: No usable lecture audio in this range. "
-            "讲解重点/理解要点 must rely on 课件OCR only, or state material is insufficient."
+            "讲了什么/课程重点 must rely on 课件OCR only, or state material is insufficient."
         )
 
     ocr_lines = courseware_ocr_lines or []

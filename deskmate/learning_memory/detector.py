@@ -14,12 +14,11 @@ from typing import Any
 
 from ..apps.learning_slice import (
     classify_learning_signal,
-    detect_problem_text,
     extract_search_query,
 )
 from ..logger import get
 from .extract import extract_concepts_from_texts
-from .store import LearningStore, problem_dedup_key
+from .store import LearningStore
 
 logger = get("learning_memory.detector")
 
@@ -82,6 +81,7 @@ class LearningSessionDetector:
         auto_recap_on_end: bool = True,
         auto_recap_hours: float = 8.0,
         enabled: bool = True,
+        auto_detect: bool = False,
         always_learning: tuple[str, ...] | list[str] = (),
     ) -> None:
         from ..apps.learning_slice import normalize_always_rules  # noqa: PLC0415
@@ -93,6 +93,10 @@ class LearningSessionDetector:
         self.auto_recap_on_end = bool(auto_recap_on_end)
         self.auto_recap_hours = float(auto_recap_hours)
         self.enabled = bool(enabled)
+        # Automatic detection is opt-in; see LearningConfig.auto_detect for why.
+        # `force_open` / `force_close` bypass this entirely, so user-declared
+        # sessions work exactly the same either way.
+        self.auto_detect = bool(auto_detect)
         # User's always-learning whitelist; see LearningConfig.always_learning.
         self.always_learning = normalize_always_rules(always_learning)
 
@@ -147,6 +151,25 @@ class LearningSessionDetector:
         """True while a user-started session is running (never auto-expires)."""
         return self._manual
 
+    @property
+    def session_started_at(self) -> float:
+        """Wall-clock start of the open session as a UNIX timestamp, else 0.
+
+        Read from the stored row rather than tracked in memory so it survives a
+        daemon restart — a session the user is still running should report its
+        real age, not the time the process happened to come back up.
+        """
+        if self._session_id is None:
+            return 0.0
+        try:
+            from .store import _parse_iso  # noqa: PLC0415
+
+            row = self.store.get_session(self._session_id) or {}
+            dt = _parse_iso(str(row.get("started_at") or ""))
+            return dt.timestamp() if dt else 0.0
+        except Exception:  # noqa: BLE001
+            return 0.0
+
 
     def observe(
         self,
@@ -167,18 +190,29 @@ class LearningSessionDetector:
         recognised on its own evidence instead of being attributed to whatever
         application happens to be in the foreground.
         """
-        if not self.enabled or skip:
+        if not self.enabled or not self.auto_detect or skip:
+            # With auto-detection off nothing is classified: no session is opened,
+            # and an open one is left alone. A user-declared session already
+            # short-circuits idle expiry, so this path cannot end one either.
+            reason = (
+                "disabled" if not self.enabled
+                else "manual-only" if not self.auto_detect
+                else "skipped"
+            )
             obs = LearningObservation(
                 in_learning=False,
                 kind=None,
                 confidence=0.0,
-                reason="disabled" if not self.enabled else "skipped",
+                reason=reason,
                 app_name=app_name or "",
                 window_title=window_title or "",
                 browser_url=browser_url,
                 topics=(),
                 concepts=(),
             )
+            # Expiry still runs: it retires an automatic session left open from
+            # before auto-detection was turned off, and it is a no-op for a
+            # user-declared one.
             if self._session_id is not None and not skip:
                 self.expire_if_idle()
             elif skip:
@@ -216,15 +250,18 @@ class LearningSessionDetector:
         )
         active = False
 
-        # An error on screen is an EVENT inside a study session, never the kind
-        # of the session. Recorded only while a session is open: an exception
-        # during ordinary work is not a learning moment, and letting one open a
-        # session was how a stray "失败" hijacked whole sittings.
-        problem = detect_problem_text(window_title or "", text or "")
-        if problem and self._session_id is not None:
-            self._note_problem(
-                (text or window_title or problem)[:300], app_name=app_name or "",
-            )
+        # NOTE: on-screen errors are no longer auto-queued as problems.
+        #
+        # A regex cannot tell an error being *reported* from an error being
+        # *discussed* — a docs page on failure handling, a lecture explaining
+        # exceptions, and a chat log about a past bug all match. Even restricted
+        # to line-isolated matches it produced records whose summaries were window
+        # furniture, and a "queue" implies grooming nobody was going to do.
+        #
+        # The recap covers this properly: the model reads the transcript and the
+        # screen and writes up what went wrong, with judgement a pattern lacks.
+        # `learning_events(kind='ask_later')` stays for what the USER flags via
+        # POST /learning/ask-later — zero false positives by construction.
 
         # Name the session after its subject, not after the window that happened
         # to be in front — for an audio-driven session those are different things.
@@ -468,22 +505,6 @@ class LearningSessionDetector:
             trigger_recap=bool(trigger_recap),
             hours=self.auto_recap_hours,
         )
-
-    def _note_problem(self, summary: str, *, app_name: str) -> None:
-        text = (summary or "").strip()
-        if not text or self._session_id is None:
-            return
-        try:
-            self.store.insert_event(
-                kind="problem",
-                summary=text[:200],
-                session_id=self._session_id,
-                app_name=app_name,
-                evidence=text[:300],
-                dedup_key=problem_dedup_key(text),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("problem event insert failed: %s", exc)
 
     @staticmethod
     def _tag(

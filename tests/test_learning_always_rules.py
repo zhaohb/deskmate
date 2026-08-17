@@ -158,7 +158,8 @@ def test_error_on_screen_does_not_override_a_whitelisted_source() -> None:
     assert kind == "courseware_view"
     assert "always-learning rule" in reason
     # …and the error is still visible to the caller, just on its own channel.
-    assert detect_problem_text("OpenVINO Docs", text)
+    line, _marker = detect_problem_text(text, "OpenVINO Docs")
+    assert line
 
 
 # ── normalization guards ─────────────────────────────────────────────────────

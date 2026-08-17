@@ -807,6 +807,34 @@ class LearningStore:
             ).fetchone()
         return self._decode_session(row) if row else None
 
+    def set_session_meta(self, session_id: int, patch: dict[str, Any]) -> bool:
+        """Merge keys into a session's ``meta_json``, preserving what is there.
+
+        Merge rather than replace: ``meta`` already carries the detection source
+        that marks a manual session, and losing it would let idle expiry end a
+        session the user still considers running.
+        """
+        if not patch:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT meta_json FROM learning_sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not row:
+                return False
+            try:
+                meta = json.loads(row["meta_json"] or "{}")
+            except json.JSONDecodeError:
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            meta.update(patch)
+            self._conn.execute(
+                "UPDATE learning_sessions SET meta_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(meta, ensure_ascii=False), _now_iso(), session_id),
+            )
+        return True
+
     def list_sessions(self, *, limit: int = 40, status: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
             if status:
@@ -1033,28 +1061,3 @@ class LearningStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def ingest_problem_sessions(
-        self,
-        sessions: list[dict[str, Any]],
-        session_db_ids: list[int],
-    ) -> int:
-        """Create learning_events(kind=problem) from detector problem sessions."""
-        n = 0
-        for s, sid in zip(sessions, session_db_ids):
-            if s.get("kind") != "problem":
-                continue
-            text = (s.get("sample_text") or s.get("title") or "problem").strip()
-            seen_at = str(s.get("ended_at") or s.get("started_at") or _now_iso())
-            eid = self.insert_event(
-                kind="problem",
-                summary=text[:200],
-                session_id=sid,
-                app_name=(s.get("apps") or [""])[0] if s.get("apps") else "",
-                evidence=text[:300],
-                payload={"slice_ref": f"[{s.get('id')}]", "concepts": s.get("concepts") or []},
-                dedup_key=problem_dedup_key(text, seen_at=seen_at),
-                seen_at=seen_at,
-            )
-            if eid:
-                n += 1
-        return n

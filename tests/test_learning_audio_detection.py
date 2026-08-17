@@ -224,9 +224,36 @@ def test_problem_is_never_a_session_kind() -> None:
 
 
 def test_error_text_is_still_detected_separately() -> None:
-    assert detect_problem_text("", "Traceback (most recent call last)")
-    assert detect_problem_text("build failed", "")
-    assert detect_problem_text("", "一切正常") == ""
+    """Returns the matched LINE, so the caller has something worth storing."""
+    line, marker = detect_problem_text("Traceback (most recent call last):")
+    assert line == "Traceback (most recent call last):"
+    assert marker
+
+    # Buried in an OCR dump, the diagnostic is still what comes back — not the
+    # window furniture at the top of the screen, which is what used to be stored.
+    dump = "hongbo - Visual Studio Code\nMinimize\nMaximize\nClose\nRuntimeError: compile failed"
+    line, _ = detect_problem_text(dump)
+    assert line == "RuntimeError: compile failed"
+
+    assert detect_problem_text("一切正常") == ("", "")
+
+
+@pytest.mark.parametrize("prose", [
+    "这一节讲了失败案例的分析方法，我们来看为什么会失败",
+    "接下来我们讲错误处理，如果推理失败应该怎么排查。",
+])
+def test_prose_about_errors_is_not_a_problem(prose) -> None:
+    """A lecture explaining failure is not a failure.
+
+    Narrative punctuation is the tell: real diagnostics do not carry full-width
+    commas or periods. Matching anywhere in the OCR blob is why a docs page or a
+    set of notes discussing errors registered as one.
+    """
+    assert detect_problem_text(prose) == ("", "")
+
+
+def test_window_furniture_is_never_a_problem() -> None:
+    assert detect_problem_text("Minimize\nMaximize\nRestore\nClose") == ("", "")
 
 
 def test_error_on_screen_does_not_disturb_the_lecture_verdict() -> None:

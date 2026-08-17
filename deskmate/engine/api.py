@@ -2333,6 +2333,97 @@ def create_app(
         )
         return {"data": rows, "total": len(rows)}
 
+    @app.get("/learning/sessions/{session_id}/recap")
+    def learning_session_recap(session_id: int) -> dict[str, Any]:
+        """The study report generated when this session ended, if there is one.
+
+        Only sessions whose close triggered a recap carry a link (see
+        `flush._link_recap_to_session`). An automatic session covers a fuzzy
+        window, so no attempt is made to guess which report belongs to one that
+        did not trigger it — 404 is the honest answer.
+        """
+        row = _learning_store().get_session(session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="session not found")
+        recap_dir = str((row.get("meta") or {}).get("recap_path") or "")
+        if not recap_dir:
+            raise HTTPException(status_code=404, detail="no recap linked to this session")
+        md = Path(recap_dir) / "user-learning.md"
+        if not md.is_file():
+            raise HTTPException(status_code=404, detail="recap file is gone")
+        graph: dict[str, list[dict[str, str]]] = {"nodes": [], "edges": []}
+        sidecar = Path(recap_dir) / "learning-enrichment.json"
+        if sidecar.is_file():
+            try:
+                enrichment = json.loads(sidecar.read_text(encoding="utf-8"))
+                topic_names: set[str] = set()
+                for topic in enrichment.get("topics") or []:
+                    name = str((topic or {}).get("name") or "").strip()
+                    if name:
+                        topic_names.add(name)
+                    for subtopic in (topic or {}).get("subtopics") or []:
+                        subtopic_name = str((subtopic or {}).get("name") or "").strip()
+                        if subtopic_name:
+                            topic_names.add(subtopic_name)
+                node_kinds: dict[str, str] = {}
+                for edge in enrichment.get("edges") or []:
+                    source = str((edge or {}).get("src_name") or "").strip()
+                    target = str((edge or {}).get("dst_name") or "").strip()
+                    if not source or not target:
+                        continue
+                    node_kinds[source] = "topic" if source in topic_names else "concept"
+                    node_kinds[target] = "topic" if target in topic_names else "concept"
+                    graph["edges"].append({
+                        "source": source,
+                        "target": target,
+                        "relation": str(edge.get("rel") or "related"),
+                        "evidence": str(edge.get("evidence") or ""),
+                    })
+                graph["nodes"] = [
+                    {"id": name, "kind": kind} for name, kind in node_kinds.items()
+                ]
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                pass
+        return {
+            "session_id": session_id,
+            "path": str(md),
+            "markdown": md.read_text(encoding="utf-8", errors="replace"),
+            "graph": graph,
+        }
+
+    @app.post("/learning/sessions/{session_id}/recap")
+    async def generate_learning_session_recap(session_id: int) -> dict[str, Any]:
+        """Generate and link a report scoped to one learning session."""
+        row = _learning_store().get_session(session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="session not found")
+        start_time = str(row.get("started_at") or "").strip()
+        end_time = str(row.get("ended_at") or "").strip()
+        if not start_time:
+            raise HTTPException(status_code=400, detail="session has no start time")
+        if not end_time:
+            end_time = datetime.now().astimezone().replace(microsecond=0).isoformat()
+
+        from anyio import to_thread  # noqa: PLC0415
+
+        from ..learning_memory.flush import trigger_user_learning_recap  # noqa: PLC0415
+
+        result = await to_thread.run_sync(
+            lambda: trigger_user_learning_recap(
+                verbose=True,
+                background=False,
+                session_id=session_id,
+                start_time=start_time,
+                end_time=end_time,
+            )
+        )
+        if not result.get("ok"):
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("error") or "recap generation failed",
+            )
+        return {"ok": True, "session_id": session_id, "recap": result}
+
     @app.get("/learning/sessions/{session_id}/transcript")
     def learning_session_transcript(session_id: int) -> dict[str, Any]:
         """Everything said during a session, as timestamped paragraphs.
@@ -2391,6 +2482,9 @@ def create_app(
             manual = str(meta.get("detection_source") or "") == "manual"
         return {
             "enabled": bool(cfg.learning.enabled),
+            "auto_detect": bool(getattr(cfg.learning, "auto_detect", False)),
+            # Surfaced so the UI can state the real cadence instead of hardcoding it.
+            "nudge_minutes": int(getattr(cfg.learning, "nudge_minutes", 0) or 0),
             "open_session": open_row,
             "manual": manual,
             "active_session_id": getattr(det, "active_session_id", None) if det else (
@@ -2422,6 +2516,62 @@ def create_app(
         row = det.force_open(**kwargs) if det else _learning_store().start_session(**kwargs)
         return {"ok": True, "data": row}
 
+    @app.post("/learning/sessions/backfill")
+    async def learning_sessions_backfill(request: Request) -> dict[str, Any]:
+        """Record a study session for a span that already happened.
+
+        The counterpart to forgetting to press start. Capture never stopped —
+        audio, OCR and input for that window are all in the database — so all a
+        backfill needs is a session row to declare the span studied. Marked
+        ``detection_source: manual`` so it gets every treatment a live declared
+        session does: the whole span counts as evidence, and the recap scopes to it.
+
+        Overlap is handled by `upsert_slice_sessions`, which merges into an
+        existing session rather than writing a second row for the same time.
+        """
+        # Reuses the store's lenient parser, which tolerates the several ISO
+        # shapes callers produce (with/without offset, 'T' or space separator) and
+        # always returns an aware datetime.
+        from ..learning_memory.store import _parse_iso  # noqa: PLC0415
+
+        body = await _safe_json(request)
+        started = str(body.get("started_at") or "").strip()
+        ended = str(body.get("ended_at") or "").strip()
+        title = str(body.get("title") or "").strip() or "Study session"
+
+        lo, hi = _parse_iso(started), _parse_iso(ended)
+        if lo is None or hi is None:
+            raise HTTPException(
+                status_code=400, detail="started_at and ended_at must be ISO timestamps",
+            )
+        if hi <= lo:
+            raise HTTPException(status_code=400, detail="ended_at must be after started_at")
+        # A slip of the finger could otherwise mark a whole month as one sitting,
+        # and every later recap would drag that span in.
+        if (hi - lo) > timedelta(hours=24):
+            raise HTTPException(status_code=400, detail="a session cannot exceed 24 hours")
+
+        store = _learning_store()
+        ids = store.upsert_slice_sessions(
+            [{
+                "kind": "study_other",
+                "title": title[:200],
+                "started_at": lo.replace(microsecond=0).isoformat(),
+                "ended_at": hi.replace(microsecond=0).isoformat(),
+                "duration_min": round((hi - lo).total_seconds() / 60.0, 1),
+                "confidence": 1.0,
+                "reason": "user-declared study session (backfilled)",
+                "meta": {"detection_source": "manual", "backfilled": True},
+            }],
+            status="closed",
+        )
+        if not ids:
+            raise HTTPException(status_code=500, detail="could not record the session")
+        # upsert_slice_sessions may have merged into an existing row, whose meta
+        # would keep its own source — stamp it so the span is honoured as declared.
+        store.set_session_meta(ids[0], {"detection_source": "manual", "backfilled": True})
+        return {"ok": True, "session_id": ids[0], "data": store.get_session(ids[0])}
+
     @app.post("/learning/sessions/end")
     async def learning_sessions_end(request: Request) -> dict[str, Any]:
         """study-agent style /end-session — close session and optionally flush recap."""
@@ -2450,7 +2600,10 @@ def create_app(
             except (TypeError, ValueError):
                 hours = 8.0
             flush_info = trigger_user_learning_recap(
-                hours=hours, verbose=bool(body.get("verbose")), background=True
+                hours=hours,
+                verbose=bool(body.get("verbose")),
+                background=True,
+                session_id=int(row.get("id")) if row.get("id") else None,
             )
         return {"ok": True, "data": row, "recap": flush_info}
 
@@ -2473,6 +2626,7 @@ def create_app(
                 hours=float(body.get("hours") or 8),
                 verbose=bool(body.get("verbose")),
                 background=True,
+                session_id=session_id,
             )
         return {"ok": True, "data": row, "recap": flush_info}
 

@@ -1412,9 +1412,14 @@ def _collect_courseware_ocr_lines(
                     app_names.append(a)
 
     lines: list[str] = []
-    for app in app_names[:4]:
+    # Backfilled/manual sessions may only carry a declared time span and title,
+    # with no detected app metadata. Search the exact span without an app filter
+    # so their screen OCR is not silently omitted from the recap.
+    search_apps: list[str | None] = app_names[:4] or [None]
+    for app in search_apps:
+        search_limit = 12 if app else 35
         items = _do_content_search(
-            start, end, limit=12, app_name=app, content_type="ocr", verbose=verbose,
+            start, end, limit=search_limit, app_name=app, content_type="ocr", verbose=verbose,
         )
         formatted = format_search_items(items, max_text=550)
         for fl in formatted:
@@ -2935,13 +2940,22 @@ def run_agent(
                 "Use ONLY Learning sessions, Audio transcripts, Courseware OCR, key texts, "
                 "and the Pre-computed learning structure / SM-2 review queue blocks. "
                 "If NO_LEARNING_SESSION: state that under 是否在学习 and write a minimal "
-                "数据说明 — do NOT invent coursework; keep 下一步学习计划 to ≤1 gentle tip. "
-                "讲解重点: prefer LLM topics/subtopics (主题:…) then 结构:定义/步骤/关系, "
-                "then audio/OCR; each bullet cite 主题:* / 结构:* and/or 录音 / 课件OCR / "
-                "[session]; do not invent topics/structure absent from the pre-computed "
-                "block; if thin, say 材料不足以还原完整讲解. "
-                "理解要点: explain those same subjects (intuition, pitfalls, code errors) — "
-                "no invented textbook chapters. "
+                "数据说明 — do NOT invent coursework; keep all other sections minimal and "
+                "下一步学习计划 to ≤1 gentle tip. "
+                "SYNTHESIS: this is a learning recap, NOT a transcript digest. Silently "
+                "cluster and deduplicate transcript/OCR evidence by concept; never retell "
+                "it chronologically or paraphrase utterances one by one. Use at most two "
+                "one-sentence direct quotes in the whole report. COURSE CONTENT is primary: "
+                "课程总结 gives the overall problem/approach/conclusion; 主要内容 gives a "
+                "topic map; 讲了什么 explains definitions, mechanisms, steps, examples and "
+                "contrasts; 课程重点 extracts the definitions/distinctions/constraints worth "
+                "remembering; 知识图谱 lists this session's nodes and directed edges. Use "
+                "ONLY Current-session concept graph edges for graph relations; never mix "
+                "global or other-session edges, and never invent a missing relation. These "
+                "course sections must contain most of the report's detail. "
+                "Lecture exposure alone is NOT evidence of mastery; under 掌握状态 mark "
+                "it 待确认 unless practice, a correct explanation, or a resolved problem "
+                "supports 已掌握. "
                 "复习重点 + 下一步学习计划: prefer OVERDUE / WEAK / exposure-tier "
                 "复习队列 and open 问题队列; use 图谱:先决 for ordering; "
                 "make next steps executable and trackable. "

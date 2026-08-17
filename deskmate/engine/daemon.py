@@ -68,6 +68,7 @@ class Daemon:
             auto_recap_on_end=lcfg.auto_recap_on_end,
             auto_recap_hours=lcfg.auto_recap_hours,
             enabled=lcfg.enabled,
+            auto_detect=getattr(lcfg, "auto_detect", False),
             always_learning=getattr(lcfg, "always_learning", []),
         )
         # Last foreground context for audio-driven learning cues.
@@ -293,6 +294,10 @@ class Daemon:
             threading.Thread(target=self._audio_loop, name="daemon-audio", daemon=True),
             threading.Thread(target=self._retention_loop, name="daemon-retention", daemon=True),
         ]
+        if self.cfg.learning.enabled and int(getattr(self.cfg.learning, "nudge_minutes", 0) or 0) > 0:
+            self._threads.append(
+                threading.Thread(target=self._study_nudge_loop, name="daemon-study-nudge", daemon=True),
+            )
         if self.cfg.search.semantic_enabled and self.cfg.search.auto_index:
             self._threads.append(
                 threading.Thread(target=self._semantic_index_loop, name="daemon-semantic-index", daemon=True),
@@ -574,7 +579,14 @@ class Daemon:
                 "auto user-learning recap queued session=%s hours=%s",
                 session_id, hours,
             )
-            trigger_user_learning_recap(hours=hours, verbose=False, background=True)
+            trigger_user_learning_recap(
+                hours=hours,
+                verbose=False,
+                background=True,
+                # Link the finished report back to the session that ended, so the
+                # UI can show a session's own recap.
+                session_id=int(session_id) if session_id else None,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("auto user-learning recap failed: %s", exc)
 
@@ -761,6 +773,63 @@ class Daemon:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("translate worker err for transcript %s: %s", tid, exc)
+
+    def _study_nudge_loop(self) -> None:
+        """Remind the user that a session they started is still running.
+
+        A declared session never times out — that is the point — so the one
+        failure mode left is forgetting to end one, after which the next recap
+        sweeps in everything that happened since. This never closes a session:
+        deciding on the user's behalf is exactly what was removed.
+
+        Wording escalates. Eight identical toasts teach the user to ignore the
+        ninth, so the first is a neutral duration report and later ones get
+        progressively more explicit about ending the session.
+        """
+        from ..habits.notifier import _try_windows_toast, in_quiet_hours  # noqa: PLC0415
+
+        last_nudge = 0.0
+        nudges = 0
+        while not self._stop.is_set():
+            self._stop.wait(60.0)
+            if self._stop.is_set():
+                break
+            try:
+                every = int(getattr(self.cfg.learning, "nudge_minutes", 0) or 0)
+                det = self.learning_detector
+                if every <= 0 or not det.is_manual or det.active_session_id is None:
+                    # Reset so the next session starts its own cadence rather than
+                    # inheriting a stale timer.
+                    last_nudge, nudges = 0.0, 0
+                    continue
+
+                now = time.time()
+                if last_nudge and (now - last_nudge) < every * 60:
+                    continue
+                if in_quiet_hours(datetime.now().astimezone(), self.cfg.habits.quiet_hours):
+                    continue
+
+                started = det.session_started_at
+                mins = int((now - started) / 60) if started else 0
+                if last_nudge == 0.0 and mins < every:
+                    # Freshly restored session: wait a full interval first.
+                    last_nudge = now
+                    continue
+
+                nudges += 1
+                if nudges == 1:
+                    msg = f"学习会话已进行 {mins} 分钟。"
+                elif nudges == 2:
+                    msg = f"学习会话已进行 {mins} 分钟 — 还在学习吗?"
+                else:
+                    msg = (
+                        f"学习会话已进行 {mins} 分钟,一直没有结束。"
+                        "学完记得点「结束本次学习」,否则这段时间都会算进复盘。"
+                    )
+                _try_windows_toast("DeskMate 学习中", msg)
+                last_nudge = now
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("study nudge err: %s", exc)
 
     def _retention_loop(self) -> None:
         while not self._stop.is_set():

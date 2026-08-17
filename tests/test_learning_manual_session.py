@@ -40,6 +40,10 @@ def _detector(store, **kw):
     # A grace of ~0 makes idle expiry fire on the very next check, so the
     # "never expires" assertions cannot pass by simply being fast.
     kw.setdefault("end_grace_seconds", 0.01)
+    # Auto-detection ships off (see LearningConfig.auto_detect), but this file
+    # contrasts declared sessions AGAINST detected ones, so it needs both halves.
+    # Declared sessions go through force_open, which ignores the flag either way.
+    kw.setdefault("auto_detect", True)
     return LearningSessionDetector(store, **kw)
 
 

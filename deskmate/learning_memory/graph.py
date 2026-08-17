@@ -6,20 +6,21 @@ import re
 from dataclasses import dataclass
 
 from .extract import LectureItem, normalize_name
+from .topics_llm import TopicHit
 
 
 @dataclass
 class ConceptEdge:
     src_name: str
     dst_name: str
-    rel: str  # prerequisite | related | contrasts | leads_to
+    rel: str  # prerequisite | related | contrasts | leads_to | contains
     evidence: str = ""
     weight: float = 1.0
 
 
 _CONTRAST = re.compile(r"\b(vs\.?|versus|不同于|compared)\b", re.I)
 _PREREQ = re.compile(r"\b(depends on|based on|derived from|基于|依赖于|来自于|建立在)\b", re.I)
-_LEADS = re.compile(r"(→|->|=>|导致|产生|用于)")
+_LEADS = re.compile(r"(\bleads?\s+to\b|→|->|=>|导致|产生|用于)", re.I)
 
 
 def classify_relation(evidence: str, subject: str, content: str) -> str:
@@ -33,24 +34,39 @@ def classify_relation(evidence: str, subject: str, content: str) -> str:
     return "related"
 
 
-def edges_from_lecture_items(items: list[LectureItem]) -> list[ConceptEdge]:
-    """Turn relation lecture items into directed concept edges."""
+def _has_substantive_evidence(value: str) -> bool:
+    meaningful = re.sub(r"[^\w\u3400-\u9fff]", "", value or "")
+    return len(meaningful) >= 8
+
+
+def edges_from_lecture_items(
+    items: list[LectureItem], *, allowed_nodes: set[str] | None = None
+) -> list[ConceptEdge]:
+    """Turn model-confirmed relations between known session concepts into edges."""
     out: list[ConceptEdge] = []
     seen: set[str] = set()
+    allowed = (
+        {normalize_name(name) for name in allowed_nodes}
+        if allowed_nodes is not None
+        else None
+    )
     for it in items:
         if it.kind != "relation":
             continue
         src = (it.subject or "").strip()
         dst = (it.content or "").strip()
-        # content may be longer phrase — keep first token-ish chunk
-        if " " in dst and len(dst) > 40:
-            dst = dst.split(",")[0].split("，")[0].strip()[:40]
         if len(src) < 2 or len(dst) < 2:
             continue
-        if normalize_name(src) == normalize_name(dst):
+        src_key = normalize_name(src)
+        dst_key = normalize_name(dst)
+        if src_key == dst_key:
+            continue
+        if allowed is not None and (src_key not in allowed or dst_key not in allowed):
+            continue
+        if not _has_substantive_evidence(it.evidence):
             continue
         rel = classify_relation(it.evidence, src, dst)
-        key = f"{normalize_name(src)}|{normalize_name(dst)}|{rel}"
+        key = f"{src_key}|{dst_key}|{rel}"
         if key in seen:
             continue
         seen.add(key)
@@ -63,4 +79,34 @@ def edges_from_lecture_items(items: list[LectureItem]) -> list[ConceptEdge]:
                 weight=1.0,
             )
         )
+    return out
+
+
+def hierarchy_edges(topics: list[TopicHit], concepts: list[object]) -> list[ConceptEdge]:
+    """Build the stable topic → subtopic → concept backbone for one session."""
+    out: list[ConceptEdge] = []
+    parents: dict[str, str] = {}
+    seen: set[tuple[str, str]] = set()
+
+    def add(parent: str, child: str, evidence: str = "") -> None:
+        key = (normalize_name(parent), normalize_name(child))
+        if not all(key) or key[0] == key[1] or key in seen:
+            return
+        seen.add(key)
+        out.append(ConceptEdge(parent, child, "contains", evidence=evidence))
+
+    for topic in topics:
+        topic_evidence = topic.evidence[0] if topic.evidence else ""
+        parents[normalize_name(topic.name)] = topic.name
+        for subtopic in topic.subtopics:
+            parents[normalize_name(subtopic.name)] = subtopic.name
+            add(topic.name, subtopic.name, topic_evidence)
+
+    for concept in concepts:
+        name = str(getattr(concept, "name", "") or "").strip()
+        topic_name = str(getattr(concept, "topic", "") or "").strip()
+        parent = parents.get(normalize_name(topic_name))
+        if parent and name:
+            evidence = next(iter(getattr(concept, "evidence", []) or []), "")
+            add(parent, name, evidence)
     return out
