@@ -1071,6 +1071,71 @@ class DatabaseManager:
                 "SELECT * FROM audio_transcriptions ORDER BY timestamp DESC LIMIT ? OFFSET ?", (limit, offset)
             ).fetchall()
 
+    @staticmethod
+    def _ts_bounds(start_iso: str, end_iso: str) -> tuple[str, str]:
+        """Normalize a caller's time window to the stored timestamp form.
+
+        Timestamps are persisted as ISO-8601 with a ``T`` separator and an
+        offset (``2026-07-06T11:17:32+08:00``) and compared lexicographically,
+        but callers are not consistent: some pass ``isoformat()`` (``T``) and
+        some ``isoformat(sep=" ")``. Because ``'T' > ' '``, a space-separated
+        upper bound excludes EVERY row of that day — the window silently returns
+        nothing instead of erroring.
+
+        So: force the ``T`` separator, and pad the upper bound with a high
+        sentinel so a bare ``...T23:59:59`` still sorts above the same instant
+        carrying a ``+08:00`` suffix. Bounds stay plain string prefixes, so the
+        ``timestamp`` index is still usable.
+        """
+        def _norm(value: str) -> str:
+            v = (value or "").strip()
+            return f"{v[:10]}T{v[11:]}" if len(v) > 10 and v[10] == " " else v
+
+        return _norm(start_iso), _norm(end_iso) + "￿"
+
+    def transcripts_in_range(
+        self,
+        start_iso: str,
+        end_iso: str,
+        *,
+        limit: int = 2000,
+    ) -> list[dict[str, Any]]:
+        """Transcriptions inside a window, OLDEST FIRST.
+
+        Distinct from :meth:`recent_transcripts` and from the ``/search`` audio
+        path, both of which are ``ORDER BY timestamp DESC LIMIT n`` — i.e. they
+        return the *tail* of the window. For lecture evidence that is exactly
+        wrong: summarizing a class needs the whole span in teaching order, so a
+        capped DESC query silently hands the model only the last few minutes.
+
+        ``limit`` is a runaway guard, not a content budget; callers do their own
+        budget-aware selection and report what they dropped.
+        """
+        lo, hi = self._ts_bounds(start_iso, end_iso)
+        with self._lock:
+            return self._conn.execute(
+                """SELECT id, timestamp, transcription, redacted_transcription,
+                          speaker_id, language, text_length
+                     FROM audio_transcriptions
+                    WHERE timestamp >= ? AND timestamp <= ?
+                      AND TRIM(COALESCE(transcription, '')) <> ''
+                    ORDER BY timestamp ASC, id ASC
+                    LIMIT ?""",
+                (lo, hi, int(limit)),
+            ).fetchall()
+
+    def count_transcripts_in_range(self, start_iso: str, end_iso: str) -> int:
+        """How many non-empty transcriptions exist in a window (for coverage stats)."""
+        lo, hi = self._ts_bounds(start_iso, end_iso)
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT COUNT(*) AS n FROM audio_transcriptions
+                    WHERE timestamp >= ? AND timestamp <= ?
+                      AND TRIM(COALESCE(transcription, '')) <> ''""",
+                (lo, hi),
+            ).fetchone()
+        return int(row["n"] if row else 0)
+
     # ─── tags / memories ─────────────────────────────────────────────────────
     def set_frame_tags(self, frame_id: int, tags: list[str]) -> list[str]:
         clean = [t.strip() for t in tags if t and t.strip()]

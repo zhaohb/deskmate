@@ -51,6 +51,27 @@ or Bilibili/YouTube count when **title, on-screen OCR/subtitles, or recent
 audio transcripts** look like a lecture. Audio cues need `[audio] enabled`
 (with loopback) so system/video speech is transcribed.
 
+**Always-learning whitelist.** That lecture test keys on school-flavoured
+wording (课程 / 讲义 / tutorial / lecture / 深度学习), so a genuine technical
+talk can score 0 and be rejected — e.g. a conference session or release
+walkthrough whose title is just "2026.2版 OpenVINO™ 的新功能". Rather than
+loosening the keywords for everyone (which lets entertainment back in), name the
+sources you trust:
+
+```toml
+[learning]
+always_learning = ["OpenVINO中文社区", "docs.openvino.ai", "space.bilibili.com/123456"]
+```
+
+Each entry is matched case-insensitively against the **URL, host, window title,
+app name and on-screen text** — a channel name usually only appears in the page
+text, since a Bilibili window title is just `<video>_哔哩哔哩_bilibili`. A hit
+skips the lecture-score gate and opens a session at confidence 0.95; the rule
+that matched is recorded in `learning_sessions.reason`. Entries under 3
+characters are refused (they would match almost any page), and a whitelist never
+makes unrelated pages count. Editable live via
+`GET`/`POST /config/learning/always-learning` (persisted + hot-applied).
+
 Before the report LLM runs, prefetch builds a **learning memory** block:
 session topic/concept tags, lecture structure (definition / step / relation),
 **one Ollama call** for topics/subtopics, concept graph edges, problem /

@@ -62,6 +62,7 @@ const titles = {
   models: ["Model Service", "Download, configure, and run the local Ollama service"],
   doctor: ["Diagnostics", "Self-checks for common environment and backend issues"],
   reminders: ["Reminders", "Proactive nudges from your habits — give feedback and view your routine"],
+  learning: ["Learning", "Study sessions, what you still remember, and what to review next"],
   power: ["Battery Saver", "On battery, push background AI onto efficient cores — and pick apps to throttle"],
 };
 
@@ -430,6 +431,11 @@ function setView(name) {
   }
   if (name === "reminders") {
     refreshRemindersView();
+  }
+  if (name === "learning") {
+    refreshLearningView();
+  } else {
+    lrnStopManualTicker();
   }
   if (name === "translate") {
     refreshTranslateView();
@@ -1722,6 +1728,417 @@ function refreshRemindersView() {
     loadReminderSuggestions().catch((e) => console.error("[reminders]", e)),
     loadReminderProfile().catch((e) => console.error("[reminders]", e)),
   ]);
+}
+
+/* ── learning ──────────────────────────────────────────────────────────────
+ * Surfaces the learning-memory subsystem: what DeskMate decided was a study
+ * session (and WHY), what the SM-2/BKT model thinks you still remember, the
+ * problems you hit, and the user's always-learning whitelist.
+ */
+
+const LRN_KIND_ICON = {
+  courseware_view: "📖", material_query: "🔍",
+  code_edit: "⌨️", problem: "⚠️", study_other: "📚",
+};
+function lrnKindIcon(kind) {
+  return LRN_KIND_ICON[kind] || "📚";
+}
+function lrnKindLabel(kind) {
+  return TF(`learning.kind.${kind}`, kind || "study");
+}
+
+function lrnEmpty(icon, titleKey, bodyKey) {
+  return `
+    <div class="lrn-empty">
+      <div class="lrn-empty-ic">${icon}</div>
+      <div class="lrn-empty-title">${T(titleKey)}</div>
+      <p>${T(bodyKey)}</p>
+    </div>`;
+}
+
+/** Minutes → "1 h 12 m" / "12 m", tolerating missing values. */
+function lrnDuration(min) {
+  const m = Math.max(0, Math.round(Number(min) || 0));
+  if (m < 60) return `${m} ${T("learning.unit.min")}`;
+  return `${Math.floor(m / 60)} ${T("learning.unit.hour")} ${m % 60} ${T("learning.unit.min")}`;
+}
+
+// Ticker for the manual-session clock. Held module-level so switching views or
+// reloading the card never leaves a second interval running behind it.
+let lrnManualTimer = null;
+let lrnManualStartedAt = 0;
+
+function lrnStopManualTicker() {
+  if (lrnManualTimer) { clearInterval(lrnManualTimer); lrnManualTimer = null; }
+}
+
+function lrnRenderElapsed() {
+  const el = $("#lrnManualTimer");
+  if (!el || !lrnManualStartedAt) return;
+  const secs = Math.max(0, Math.floor((Date.now() - lrnManualStartedAt) / 1000));
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  el.textContent = h ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+/** Swap the manual block between "start" and "running" states. */
+function lrnRenderManual(live) {
+  const idle = $("#lrnManualIdle");
+  const active = $("#lrnManualActive");
+  if (!idle || !active) return;
+  const open = live.open_session;
+  const running = Boolean(live.manual && open);
+
+  idle.hidden = running;
+  active.hidden = !running;
+  lrnStopManualTicker();
+
+  if (!running) {
+    lrnManualStartedAt = 0;
+    return;
+  }
+  const name = $("#lrnManualName");
+  if (name) name.textContent = open.title || T("learning.manual.untitled");
+  const began = Date.parse(open.started_at || "");
+  lrnManualStartedAt = Number.isNaN(began) ? Date.now() : began;
+  lrnRenderElapsed();
+  lrnManualTimer = setInterval(lrnRenderElapsed, 1000);
+}
+
+async function loadLearningLive() {
+  const box = $("#lrnLive");
+  if (!box) return;
+  const j = await api("/learning/live");
+  lrnRenderManual(j);
+  const open = j.open_session;
+  const on = !!j.enabled;
+  const statusKey = !on ? "learning.live.disabled"
+    : (open && j.manual) ? "learning.live.manual"
+    : open ? "learning.live.active" : "learning.live.idle";
+  const detail = open
+    ? `${lrnKindIcon(open.kind)} ${capEscape(open.title || lrnKindLabel(open.kind))}`
+    : "";
+
+  // Audio is the PRIMARY evidence for lecture content, so a missing/disabled
+  // capture is called out here rather than silently producing thin recaps.
+  const audioMissing = on && j.use_audio_cues && !j.audio_enabled;
+  box.innerHTML = `
+    <div class="lrn-live">
+      <div class="lrn-ic">${on ? (open ? "📖" : "💤") : "⏸️"}</div>
+      <div class="lrn-body">
+        <div class="lrn-live-title"><span class="lrn-dot ${open ? "on" : "off"}"></span>${T(statusKey)}</div>
+        <div class="lrn-live-sub">
+          ${detail ? `${detail}<br>` : ""}
+          ${open && open.started_at ? `${T("learning.live.since")} ${capEscape(timeAgo(open.started_at))}` : ""}
+          ${open && open.reason ? `<div class="lrn-why">${T("learning.why")}: ${capEscape(open.reason)}</div>` : ""}
+        </div>
+      </div>
+    </div>
+    ${audioMissing ? `<div class="lrn-warn">${T("learning.warn.noAudio")}</div>` : ""}`;
+}
+
+async function loadLearningReviews() {
+  const box = $("#lrnReviews");
+  const countEl = $("#lrnReviewCount");
+  if (!box) return;
+  const j = await api("/learning/reviews?limit=20");
+  const rows = j.data || [];
+  if (countEl) {
+    if (rows.length) { countEl.textContent = rows.length; countEl.hidden = false; }
+    else { countEl.hidden = true; }
+  }
+  if (!rows.length) {
+    box.innerHTML = lrnEmpty("🧠", "learning.reviews.empty.title", "learning.reviews.empty.body");
+    return;
+  }
+  box.innerHTML = rows.map((r) => {
+    const pct = Math.round((Number(r.decayed_mastery) || 0) * 100);
+    const tier = r.mastery_tier || "exposure";
+    return `
+    <div class="lrn-item" data-concept="${r.concept_id}">
+      <div class="lrn-body">
+        <div class="lrn-name">${capEscape(r.name || "")}</div>
+        <div class="lrn-meta">
+          <span class="lrn-tier" data-tier="${capEscape(tier)}">${TF(`learning.tier.${tier}`, tier)}</span>
+          ${r.overdue ? `<span class="lrn-badge overdue">${T("learning.badge.overdue")}</span>` : ""}
+          ${!r.overdue && r.weak_mastery ? `<span class="lrn-badge weak">${T("learning.badge.weak")}</span>` : ""}
+          ${r.topic ? `<span class="lrn-badge">${capEscape(r.topic)}</span>` : ""}
+          <span>${T("learning.mastery")} ${pct}%</span>
+        </div>
+        <div class="lrn-bar"><span style="width:${pct}%"></span></div>
+        <div class="lrn-acts">
+          <button type="button" class="ghost" data-grade="1">${T("learning.grade.forgot")}</button>
+          <button type="button" class="ghost" data-grade="3">${T("learning.grade.hard")}</button>
+          <button type="button" class="ghost" data-grade="5">${T("learning.grade.easy")}</button>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function loadLearningProblems() {
+  const box = $("#lrnProblems");
+  const countEl = $("#lrnProblemCount");
+  if (!box) return;
+  const j = await api("/learning/events?status=open&limit=40");
+  const rows = j.data || [];
+  if (countEl) {
+    if (rows.length) { countEl.textContent = rows.length; countEl.hidden = false; }
+    else { countEl.hidden = true; }
+  }
+  if (!rows.length) {
+    box.innerHTML = lrnEmpty("✅", "learning.problems.empty.title", "learning.problems.empty.body");
+    return;
+  }
+  box.innerHTML = rows.map((e) => `
+    <div class="lrn-item" data-event="${e.id}">
+      <div class="lrn-body">
+        <div class="lrn-name">${capEscape(e.summary || "")}</div>
+        <div class="lrn-meta">
+          <span class="lrn-badge">${TF(`learning.event.${e.kind}`, e.kind || "")}</span>
+          ${e.app_name ? `<span>${capEscape(e.app_name)}</span>` : ""}
+          ${e.created_at ? `<span>${capEscape(timeAgo(e.created_at))}</span>` : ""}
+        </div>
+        ${e.evidence ? `<div class="lrn-why">${capEscape(String(e.evidence).slice(0, 200))}</div>` : ""}
+        <div class="lrn-acts">
+          <button type="button" class="ghost" data-status="done">${T("learning.problem.done")}</button>
+          <button type="button" class="ghost" data-status="dismissed">${T("learning.problem.dismiss")}</button>
+        </div>
+      </div>
+    </div>`).join("");
+}
+
+async function loadLearningSessions() {
+  const box = $("#lrnSessions");
+  const countEl = $("#lrnSessionCount");
+  if (!box) return;
+  const j = await api("/learning/sessions?limit=20");
+  const rows = j.data || [];
+  if (countEl) {
+    if (rows.length) { countEl.textContent = rows.length; countEl.hidden = false; }
+    else { countEl.hidden = true; }
+  }
+  if (!rows.length) {
+    box.innerHTML = lrnEmpty("📚", "learning.sessions.empty.title", "learning.sessions.empty.body");
+    return;
+  }
+  box.innerHTML = rows.map((s) => {
+    const topics = Array.isArray(s.topics) ? s.topics.slice(0, 4) : [];
+    return `
+    <div class="lrn-item">
+      <div class="lrn-ic">${lrnKindIcon(s.kind)}</div>
+      <div class="lrn-body">
+        <div class="lrn-name">${capEscape(s.title || lrnKindLabel(s.kind))}</div>
+        <div class="lrn-meta">
+          <span class="lrn-badge">${lrnKindLabel(s.kind)}</span>
+          ${s.status === "open" ? `<span class="lrn-badge open">${T("learning.badge.open")}</span>` : ""}
+          <span>${lrnDuration(s.duration_min)}</span>
+          ${s.started_at ? `<span>${capEscape(timeAgo(s.started_at))}</span>` : ""}
+          ${topics.map((t) => `<span class="lrn-badge">${capEscape(t)}</span>`).join("")}
+        </div>
+        ${s.reason ? `<div class="lrn-why">${T("learning.why")}: ${capEscape(s.reason)}</div>` : ""}
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function loadLearningConcepts() {
+  const box = $("#lrnConcepts");
+  const countEl = $("#lrnConceptCount");
+  if (!box) return;
+  const j = await api("/learning/concepts?limit=40");
+  const rows = j.data || [];
+  if (countEl) {
+    if (rows.length) { countEl.textContent = rows.length; countEl.hidden = false; }
+    else { countEl.hidden = true; }
+  }
+  if (!rows.length) {
+    box.innerHTML = lrnEmpty("🔖", "learning.concepts.empty.title", "learning.concepts.empty.body");
+    return;
+  }
+  box.innerHTML = `<div class="lrn-chips">${rows.map((c) => `
+    <span class="lrn-chip" title="${capEscape(c.topic || "")}">
+      ${capEscape(c.name || "")}
+      ${c.hit_count > 1 ? `<span class="lrn-badge">${c.hit_count}</span>` : ""}
+    </span>`).join("")}</div>`;
+}
+
+async function loadLearningAlways() {
+  const box = $("#lrnAlwaysChips");
+  if (!box) return;
+  const j = await api("/config/learning/always-learning");
+  const rows = j.always_learning || [];
+  if (!rows.length) {
+    box.innerHTML = `<span class="muted" style="font-size:12.5px">${T("learning.always.empty")}</span>`;
+    return;
+  }
+  box.innerHTML = rows.map((r) => `
+    <span class="lrn-chip">${capEscape(r)}
+      <button type="button" data-remove="${capEscape(r)}" title="${T("learning.always.remove")}">×</button>
+    </span>`).join("");
+}
+
+/** Persist the whitelist, surfacing any entries the server refused. */
+async function saveLearningAlways(rules) {
+  const msg = $("#lrnAlwaysMsg");
+  const res = await api("/config/learning/always-learning", {
+    method: "POST",
+    body: JSON.stringify({ always_learning: rules }),
+  });
+  if (msg) {
+    // Entries under 3 chars are rejected server-side (they would match almost
+    // any page) — say so instead of letting them vanish silently.
+    msg.textContent = (res.rejected || []).length
+      ? T("learning.always.rejected", { list: res.rejected.join(", ") })
+      : T("learning.always.saved");
+    setTimeout(() => { if (msg) msg.textContent = ""; }, 4000);
+  }
+  await loadLearningAlways();
+}
+
+function refreshLearningView() {
+  return Promise.all([
+    loadLearningLive().catch((e) => console.error("[learning]", e)),
+    loadLearningReviews().catch((e) => console.error("[learning]", e)),
+    loadLearningProblems().catch((e) => console.error("[learning]", e)),
+    loadLearningSessions().catch((e) => console.error("[learning]", e)),
+    loadLearningConcepts().catch((e) => console.error("[learning]", e)),
+    loadLearningAlways().catch((e) => console.error("[learning]", e)),
+  ]);
+}
+
+function bindLearningView() {
+  $("#lrnRefreshBtn")?.addEventListener("click", () => refreshLearningView());
+
+  // ── manual start / stop ────────────────────────────────────────────────
+  const startManual = async () => {
+    const input = $("#lrnManualTitle");
+    const btn = $("#lrnManualStart");
+    if (btn) btn.disabled = true;
+    try {
+      await api("/learning/sessions/start", {
+        method: "POST",
+        body: JSON.stringify({ title: (input?.value || "").trim() }),
+      });
+      if (input) input.value = "";
+      await refreshLearningView();
+    } catch (err) {
+      showError(err);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  };
+  $("#lrnManualStart")?.addEventListener("click", () => startManual());
+  $("#lrnManualTitle")?.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); startManual(); }
+  });
+
+  $("#lrnManualStop")?.addEventListener("click", async () => {
+    const btn = $("#lrnManualStop");
+    if (btn) btn.disabled = true;
+    try {
+      // Ending a declared session is the natural moment to summarize it. Scope
+      // the recap to how long the session actually ran instead of the default
+      // 8-hour window, so the report is built from this sitting's evidence
+      // rather than everything else that happened today.
+      const ranMs = lrnManualStartedAt ? Date.now() - lrnManualStartedAt : 0;
+      const hours = Math.max(0.5, Math.ceil((ranMs / 3600000) * 10) / 10);
+      await api("/learning/sessions/end", {
+        method: "POST",
+        body: JSON.stringify({ trigger_recap: true, hours }),
+      });
+      await refreshLearningView();
+    } catch (err) {
+      showError(err);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  $("#lrnRecapBtn")?.addEventListener("click", async () => {
+    const btn = $("#lrnRecapBtn");
+    const msg = $("#lrnRecapMsg");
+    if (btn) btn.disabled = true;
+    if (msg) msg.textContent = T("learning.recap.running");
+    try {
+      await api("/apps/user-learning/run", {
+        method: "POST",
+        body: JSON.stringify({ hours: 8 }),
+      });
+      if (msg) msg.textContent = T("learning.recap.done");
+      await refreshLearningView();
+    } catch (err) {
+      if (msg) msg.textContent = String(err.message || err);
+    } finally {
+      if (btn) btn.disabled = false;
+      setTimeout(() => { if (msg) msg.textContent = ""; }, 6000);
+    }
+  });
+
+  // Grade a concept → SM-2 reschedules it, so reload the queue.
+  $("#lrnReviews")?.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("button[data-grade]");
+    if (!btn) return;
+    const row = btn.closest("[data-concept]");
+    if (!row) return;
+    btn.disabled = true;
+    try {
+      await api(`/learning/reviews/${row.dataset.concept}/grade`, {
+        method: "POST",
+        body: JSON.stringify({ quality: Number(btn.dataset.grade) }),
+      });
+      await loadLearningReviews();
+    } catch (err) {
+      showError(err);
+      btn.disabled = false;
+    }
+  });
+
+  $("#lrnProblems")?.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("button[data-status]");
+    if (!btn) return;
+    const row = btn.closest("[data-event]");
+    if (!row) return;
+    btn.disabled = true;
+    try {
+      await api(`/learning/events/${row.dataset.event}/status`, {
+        method: "POST",
+        body: JSON.stringify({ status: btn.dataset.status }),
+      });
+      row.classList.add("done");
+      await loadLearningProblems();
+    } catch (err) {
+      showError(err);
+      btn.disabled = false;
+    }
+  });
+
+  const addAlways = async () => {
+    const input = $("#lrnAlwaysInput");
+    const value = (input?.value || "").trim();
+    if (!value) return;
+    const current = (await api("/config/learning/always-learning")).always_learning || [];
+    if (current.some((r) => r.toLowerCase() === value.toLowerCase())) {
+      if (input) input.value = "";
+      return;
+    }
+    await saveLearningAlways([...current, value]);
+    if (input) input.value = "";
+  };
+  $("#lrnAlwaysAddBtn")?.addEventListener("click", () => addAlways().catch(showError));
+  $("#lrnAlwaysInput")?.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); addAlways().catch(showError); }
+  });
+
+  $("#lrnAlwaysChips")?.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("button[data-remove]");
+    if (!btn) return;
+    const target = btn.dataset.remove;
+    const current = (await api("/config/learning/always-learning")).always_learning || [];
+    await saveLearningAlways(current.filter((r) => r !== target));
+  });
 }
 
 async function refreshEmail() {
@@ -4545,6 +4962,9 @@ function wireEvents() {
   $("#msOffSvcLogRefresh")?.addEventListener("click", () => loadBackendLog("official", "#msOffSvcLog").catch(showError));
   // ─── Diagnostics ──────────────────────────────────────────────────────
   $("#docRefreshBtn")?.addEventListener("click", () => runDoctor().catch(showError));
+
+  // ─── Learning ─────────────────────────────────────────────────────────
+  bindLearningView();
 
   // ─── Reminders ────────────────────────────────────────────────────────
   $("#remRefreshBtn")?.addEventListener("click", () => refreshRemindersView());

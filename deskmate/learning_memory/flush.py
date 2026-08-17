@@ -33,8 +33,13 @@ def trigger_user_learning_recap(
             report = run_agent(
                 pipe,
                 verbose=verbose,
-                start_time=start.replace(microsecond=0).isoformat(sep=" "),
-                end_time=end.replace(microsecond=0).isoformat(sep=" "),
+                # ISO with the default 'T' separator: stored timestamps are
+                # 'YYYY-MM-DDTHH:MM:SS+TZ' and every time filter compares them
+                # as strings. A ' ' separator sorts BELOW 'T', so a space-form
+                # upper bound silently matched nothing and this auto-recap ran
+                # with no audio/OCR evidence at all.
+                start_time=start.replace(microsecond=0).isoformat(),
+                end_time=end.replace(microsecond=0).isoformat(),
             )
             out = output_dir("user-learning")
             write_markdown(out / "user-learning.md", report)

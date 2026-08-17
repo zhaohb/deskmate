@@ -36,6 +36,7 @@ from .learning_slice import (
     filter_learning_edited_files,
     filter_learning_key_texts,
     format_learning_bundle,
+    select_spanning as _select_spanning,
 )
 from deskmate.learning_memory import build_learning_enrichment
 
@@ -1142,60 +1143,206 @@ def _do_user_profile_prefetch(start: str, end: str, verbose: bool = False) -> st
     return "\n\n".join(sections)
 
 
+# Lecture audio is the PRIMARY source for 讲解重点 / 理解要点, so it gets a real
+# budget rather than a token line count. ~24k chars of transcript still leaves
+# room for sessions/OCR/structure inside user-learning's 22k prompt cap (the
+# bundle is capped again by _cap_prefetch_text, which watermarks what it drops).
+_AUDIO_MAX_LINES = 260
+_AUDIO_MAX_CHARS = 24000
+
+
+def _merge_manual_sessions(
+    derived: list[dict[str, Any]],
+    start: str,
+    end: str,
+    *,
+    verbose: bool = False,
+) -> list[dict[str, Any]]:
+    """Let user-declared sessions override the heuristics for their own span.
+
+    ``build_learning_sessions`` re-derives sessions from the activity summary by
+    running the same classifier the live detector uses. That is the right default
+    for automatic detection, but it is wrong for a session the user started by
+    hand: the whole declared span is study time by definition, including the
+    parts where nothing on screen looked like studying (reading on paper,
+    thinking, taking notes elsewhere). Re-deriving would report a fraction of it.
+
+    Manual spans therefore replace any derived session falling inside them, and
+    the derived ones outside are kept as-is.
+    """
+    try:
+        from deskmate.learning_memory.store import LearningStore  # noqa: PLC0415
+
+        manual = LearningStore().list_manual_sessions(start, end)
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            echo_stderr(f"  [user-learning] manual-session lookup failed: {exc}")
+        return derived
+    if not manual:
+        return derived
+
+    spans = [
+        (str(m.get("started_at") or ""), str(m.get("ended_at") or "") or end)
+        for m in manual
+    ]
+
+    def _inside(row: dict[str, Any]) -> bool:
+        began = str(row.get("started_at") or "")
+        return any(lo <= began <= hi for lo, hi in spans if lo)
+
+    kept = [row for row in derived if not _inside(row)]
+    for m in manual:
+        # Say plainly that this span is the user's word, not an inference — the
+        # report cites `why_learning`, and "the user marked it" is the strongest
+        # reason available.
+        m.setdefault("reason", "")
+        m["reason"] = "user-declared study session (manual start/end)"
+    if verbose:
+        echo_stderr(
+            f"  [user-learning] manual sessions: {len(manual)} "
+            f"(replaced {len(derived) - len(kept)} derived)"
+        )
+    return manual + kept
+
+
 def _collect_learning_audio_bits(
     start: str,
     end: str,
     summary: dict[str, Any],
     *,
     verbose: bool = False,
-) -> list[str]:
-    """Pull lecture audio: dedicated /search content_type=audio + summary tops."""
+) -> tuple[list[str], dict[str, Any]]:
+    """Pull lecture audio for the window, OLDEST FIRST and span-complete.
+
+    Returns ``(lines, stats)``; ``stats`` feeds the coverage disclosure in
+    ``format_learning_bundle`` so a partial transcript is never presented as a
+    complete one.
+
+    Why not ``/search``: that path is ``ORDER BY timestamp DESC LIMIT n``, so a
+    capped audio query returns the *most recent* n utterances — for an 8-hour
+    default window over a 1-hour class that is the tail of the class (or of
+    whatever was spoken afterwards), not the lecture. Reading the transcript
+    table directly in ascending time order gives the whole span in teaching
+    order, which is what 讲解重点 and ``learning_lecture_items.ordinal`` need.
+    The old search path stays as a fallback for callers without DB access.
+    """
     bits: list[str] = []
     seen: set[str] = set()
+    # total=0 means "unknown" (the /search fallback cannot count the window).
+    stats: dict[str, Any] = {
+        "total": 0, "included": 0, "truncated": False,
+        "source": "db", "ordered": True,
+    }
 
-    def _add(ts: str, text: str, speaker: str = "") -> None:
+    def _fmt(ts: str, text: str, speaker: str = "") -> str | None:
         clean = " ".join((text or "").split())
         if len(clean) < 8:
-            return
+            return None
         key = clean[:160].lower()
         if key in seen:
-            return
+            return None
         seen.add(key)
         prefix = ts or ""
         if speaker:
             prefix = f"{prefix} [{speaker}]".strip()
         # Keep longer lines so 讲解重点 can quote definitions / steps.
         body = clean[:700]
-        bits.append(f"{prefix}: {body}".strip(": ").strip() if prefix else body)
+        return f"{prefix}: {body}".strip(": ").strip() if prefix else body
 
-    audio_items = _do_content_search(
-        start, end, limit=40, content_type="audio", verbose=verbose,
-    )
-    for item in audio_items:
+    rows: list[dict[str, Any]] = []
+    try:
+        from deskmate.db.manager import DatabaseManager  # noqa: PLC0415
+
+        db = DatabaseManager()
+        rows = db.transcripts_in_range(start, end)
+        stats["total"] = db.count_transcripts_in_range(start, end)
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            echo_stderr(f"  [user-learning] transcript DB read failed ({exc}); using /search")
+        rows = []
+
+    if rows:
+        formatted = [
+            line
+            for line in (
+                _fmt(
+                    str(r.get("timestamp") or ""),
+                    str(r.get("redacted_transcription") or r.get("transcription") or ""),
+                )
+                for r in rows
+            )
+            if line
+        ]
+        # Two-stage budget: cap the line count, then the character total. Both
+        # keep the span (even sampling), never the head or tail alone.
+        kept = _select_spanning(formatted, _AUDIO_MAX_LINES)
+        while kept and sum(len(x) for x in kept) > _AUDIO_MAX_CHARS:
+            kept = _select_spanning(kept, max(1, int(len(kept) * 0.8)))
+        bits = kept
+        stats["included"] = len(bits)
+        stats["total"] = max(stats["total"], len(formatted))
+        stats["truncated"] = len(bits) < len(formatted)
+        if verbose:
+            echo_stderr(
+                f"  [user-learning] audio: {len(bits)}/{stats['total']} lines "
+                f"(chronological, {'sampled across span' if stats['truncated'] else 'complete'})"
+            )
+        return bits, stats
+
+    # ── fallback: original /search + summary path ────────────────────────────
+    # Reached only when the DB is unreachable. This path is recency-ordered and
+    # cannot count the window, so it reports total=0 ("unknown") and
+    # ordered=False rather than implying complete, in-order coverage.
+    stats["source"] = "search"
+    stats["ordered"] = False
+    collected: list[tuple[str, str]] = []   # (sort_ts, line)
+
+    for item in _do_content_search(
+        start, end, limit=_AUDIO_MAX_LINES, content_type="audio", verbose=verbose,
+    ):
         c = item.get("content") or {}
-        _add(
-            str(c.get("timestamp") or ""),
+        ts = str(c.get("timestamp") or "")
+        line = _fmt(
+            ts,
             str(c.get("transcription") or c.get("text") or ""),
             str(c.get("speaker") or c.get("speaker_name") or ""),
         )
+        if line:
+            collected.append((ts, line))
 
     audio = summary.get("audio_summary") or {}
     for t in audio.get("top_transcriptions") or []:
         if isinstance(t, dict):
-            _add(
-                str(t.get("timestamp") or ""),
+            ts = str(t.get("timestamp") or "")
+            line = _fmt(
+                ts,
                 str(t.get("transcription") or t.get("text") or ""),
                 str(t.get("speaker") or ""),
             )
         elif isinstance(t, str):
-            _add("", t)
+            ts, line = "", _fmt("", t)
+        else:
+            ts, line = "", None
+        if line:
+            collected.append((ts, line))
 
     for snip in summary.get("snippets") or []:
         if (snip.get("source") or "") != "audio":
             continue
-        _add(str(snip.get("timestamp") or ""), str(snip.get("text") or ""))
+        ts = str(snip.get("timestamp") or "")
+        line = _fmt(ts, str(snip.get("text") or ""))
+        if line:
+            collected.append((ts, line))
 
-    return bits[:40]
+    # Best-effort chronological order: timestamped lines first (ISO sorts
+    # correctly), undated ones appended rather than interleaved arbitrarily.
+    dated = sorted((c for c in collected if c[0]), key=lambda c: c[0])
+    undated = [c for c in collected if not c[0]]
+    bits = [line for _, line in dated] + [line for _, line in undated]
+    bits = _select_spanning(bits, _AUDIO_MAX_LINES)
+    stats["included"] = len(bits)
+    stats["truncated"] = len(bits) >= _AUDIO_MAX_LINES
+    return bits, stats
 
 
 def _collect_courseware_ocr_lines(
@@ -1263,14 +1410,17 @@ def _do_user_learning_prefetch(start: str, end: str, verbose: bool = False) -> s
     if not summary:
         return "(Failed to fetch activity data from DeskMate API.)"
 
-    sessions = build_learning_sessions(summary)
+    sessions = _merge_manual_sessions(build_learning_sessions(summary), start, end, verbose=verbose)
     key_texts = filter_learning_key_texts(summary.get("key_texts") or [], limit=80)
     edited = filter_learning_edited_files(summary.get("edited_files") or [], limit=30)
 
     audio_bits: list[str] = []
+    audio_stats: dict[str, Any] = {}
     courseware_ocr: list[str] = []
     if sessions:
-        audio_bits = _collect_learning_audio_bits(start, end, summary, verbose=verbose)
+        audio_bits, audio_stats = _collect_learning_audio_bits(
+            start, end, summary, verbose=verbose,
+        )
         courseware_ocr = _collect_courseware_ocr_lines(
             start, end, sessions, verbose=verbose,
         )
@@ -1283,6 +1433,7 @@ def _do_user_learning_prefetch(start: str, end: str, verbose: bool = False) -> s
         range_start=start,
         range_end=end,
         courseware_ocr_lines=courseware_ocr,
+        audio_stats=audio_stats,
     )
 
     sections = [bundle]
@@ -2727,6 +2878,9 @@ def run_agent(
                 "复习重点 + 下一步学习计划: prefer OVERDUE / WEAK / exposure-tier "
                 "复习队列 and open 问题队列; use 图谱:先决 for ordering; "
                 "make next steps executable and trackable. "
+                "COVERAGE: if the audio/OCR blocks carry a ⚠️ PARTIAL or ⚠️ ORDER "
+                "NOT GUARANTEED notice, 数据说明 MUST report shown/total and must "
+                "not present 讲解重点 as a complete or ordered lecture outline. "
                 "Cite 复习队列 / 问题队列 / 主题:* / 图谱:* / [1]/[2] / 录音 / 课件OCR. "
                 "Ignore chat/shopping/random entertainment unless inside a session. "
                 "Use ONLY the section headings from the Report Instructions."

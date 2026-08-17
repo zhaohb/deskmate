@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from ..apps.learning_slice import classify_learning_signal, extract_search_query
+from ..apps.learning_slice import (
+    classify_learning_signal,
+    detect_problem_text,
+    extract_search_query,
+)
 from ..logger import get
 from .extract import extract_concepts_from_texts
 from .store import LearningStore, problem_dedup_key
@@ -27,6 +31,25 @@ def _emit(event_name: str, **data: object) -> None:
         bus.send(bus.EventType(event_name), **data)
     except Exception as exc:  # noqa: BLE001
         logger.debug("learning event %s emit skipped: %s", event_name, exc)
+
+
+# Evidence strength of each session kind, strongest first. A session's kind can
+# climb this ladder as better evidence arrives but never slides back down.
+KIND_RANK: dict[str, int] = {
+    "courseware_view": 4,
+    "material_query": 3,
+    "code_edit": 2,
+    "study_other": 1,
+}
+
+
+def _better_kind(current: str | None, candidate: str | None) -> str | None:
+    """The stronger of two session kinds (unknown kinds rank lowest)."""
+    if not candidate:
+        return current
+    if not current:
+        return candidate
+    return candidate if KIND_RANK.get(candidate, 0) > KIND_RANK.get(current, 0) else current
 
 
 def _now_iso() -> str:
@@ -59,7 +82,10 @@ class LearningSessionDetector:
         auto_recap_on_end: bool = True,
         auto_recap_hours: float = 8.0,
         enabled: bool = True,
+        always_learning: tuple[str, ...] | list[str] = (),
     ) -> None:
+        from ..apps.learning_slice import normalize_always_rules  # noqa: PLC0415
+
         self.store = store or LearningStore()
         self.end_grace_seconds = float(end_grace_seconds)
         self.start_confidence = float(start_confidence)
@@ -67,11 +93,16 @@ class LearningSessionDetector:
         self.auto_recap_on_end = bool(auto_recap_on_end)
         self.auto_recap_hours = float(auto_recap_hours)
         self.enabled = bool(enabled)
+        # User's always-learning whitelist; see LearningConfig.always_learning.
+        self.always_learning = normalize_always_rules(always_learning)
 
         self._session_id: int | None = None
         self._kind: str | None = None
         self._last_seen = 0.0
         self._title = ""
+        # True while the user is running a session they started by hand. Such a
+        # session ignores idle expiry and keeps the title they gave it.
+        self._manual = False
         self._restore_open()
 
     def _restore_open(self) -> None:
@@ -85,9 +116,17 @@ class LearningSessionDetector:
         self._session_id = int(row["id"])
         self._kind = str(row.get("kind") or "") or None
         self._title = str(row.get("title") or "")
+        # Manual-ness survives a restart: it lives in the stored row, not just in
+        # memory. Losing it would let idle expiry quietly end a session the user
+        # started and still considers running.
+        meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+        self._manual = str(meta.get("detection_source") or "") == "manual"
         # Treat restored session as recently seen so we don't instantly close.
         self._last_seen = time.time()
-        logger.info("restored open learning session id=%s kind=%s", self._session_id, self._kind)
+        logger.info(
+            "restored open learning session id=%s kind=%s manual=%s",
+            self._session_id, self._kind, self._manual,
+        )
 
     @property
     def active_session_id(self) -> int | None:
@@ -97,6 +136,11 @@ class LearningSessionDetector:
         self.expire_if_idle()
         return self._session_id is not None
 
+    @property
+    def is_manual(self) -> bool:
+        """True while a user-started session is running (never auto-expires)."""
+        return self._manual
+
     def observe(
         self,
         *,
@@ -104,9 +148,18 @@ class LearningSessionDetector:
         window_title: str,
         browser_url: str | None = None,
         text: str = "",
+        audio_text: str = "",
+        audio_lookback_seconds: float = 90.0,
+        media_title: str = "",
         skip: bool = False,
     ) -> LearningObservation:
-        """Observe one UI/frame sample. ``skip=True`` forces idle path (e.g. in meeting)."""
+        """Observe one UI/frame sample. ``skip=True`` forces idle path (e.g. in meeting).
+
+        ``text`` is on-screen content only; ``audio_text`` is recent speech. They
+        are kept apart so a lecture playing behind an unrelated window can be
+        recognised on its own evidence instead of being attributed to whatever
+        application happens to be in the foreground.
+        """
         if not self.enabled or skip:
             obs = LearningObservation(
                 in_learning=False,
@@ -131,17 +184,51 @@ class LearningSessionDetector:
             window_name=window_title or "",
             browser_url=browser_url or "",
             text=text or "",
+            always_rules=self.always_learning,
+            audio_text=audio_text,
+            audio_lookback_seconds=audio_lookback_seconds,
         )
-        topics, concepts = self._tag(window_title, browser_url or "", text, kind=kind or "")
+        # Concepts come from whichever source actually carried the learning
+        # signal. An audio-driven session must be described by the lecture, not
+        # by the unrelated window the user happened to be looking at — otherwise
+        # the knowledge graph fills up with fragments of that window's UI.
+        audio_driven = bool(reason.startswith("lecture audio"))
+        # For an audio-driven session the foreground title describes what the
+        # user is doing with their hands, not what they are listening to. The
+        # media window's own title does name the lecture, so use it when one was
+        # glimpsed recently; otherwise fall back to no title rather than mining
+        # an unrelated window and inventing concepts from its UI.
+        subject_title = (media_title or "") if audio_driven else (window_title or "")
+        topics, concepts = self._tag(
+            subject_title,
+            browser_url or "",
+            audio_text if audio_driven else text,
+            kind=kind or "",
+            title_is_relevant=bool(subject_title),
+        )
         now = time.time()
         active = False
+
+        # An error on screen is an EVENT inside a study session, never the kind
+        # of the session. Recorded only while a session is open: an exception
+        # during ordinary work is not a learning moment, and letting one open a
+        # session was how a stray "失败" hijacked whole sittings.
+        problem = detect_problem_text(window_title or "", text or "")
+        if problem and self._session_id is not None:
+            self._note_problem(
+                (text or window_title or problem)[:300], app_name=app_name or "",
+            )
+
+        # Name the session after its subject, not after the window that happened
+        # to be in front — for an audio-driven session those are different things.
+        session_title = subject_title or window_title or ""
 
         if kind and conf >= self.keep_confidence:
             if self._session_id is None:
                 if conf >= self.start_confidence:
                     self._open(
                         kind=kind,
-                        title=(window_title or app_name or kind)[:160],
+                        title=(session_title or app_name or kind)[:160],
                         app_name=app_name or "",
                         browser_url=browser_url or "",
                         topics=list(topics),
@@ -158,7 +245,7 @@ class LearningSessionDetector:
                 active = True
                 self._touch(
                     kind=kind,
-                    title=(window_title or self._title or kind)[:160],
+                    title=(session_title or self._title or kind)[:160],
                     app_name=app_name or "",
                     browser_url=browser_url or "",
                     topics=list(topics),
@@ -167,8 +254,6 @@ class LearningSessionDetector:
                     reason=reason,
                     sample_text=(text or "")[:400],
                 )
-                if kind == "problem":
-                    self._note_problem(text or window_title or "problem", app_name=app_name or "")
         else:
             self.expire_if_idle(now=now)
             active = self._session_id is not None
@@ -187,6 +272,14 @@ class LearningSessionDetector:
 
     def expire_if_idle(self, *, now: float | None = None) -> None:
         if self._session_id is None:
+            return
+        # A session the user started by hand ends only when they end it. Idle
+        # expiry exists to clean up after heuristics that can be wrong; an
+        # explicit "I am studying now" is not a guess, and silently closing it
+        # after three quiet minutes would lose exactly the stretches the user
+        # cared enough to mark — reading on paper, thinking, taking notes off
+        # screen.
+        if self._manual:
             return
         current = time.time() if now is None else now
         if current - self._last_seen < self.end_grace_seconds:
@@ -219,6 +312,7 @@ class LearningSessionDetector:
         self._session_id = int(row["id"])
         self._kind = kind or "study_other"
         self._title = str(row.get("title") or title or "")
+        self._manual = True
         self._last_seen = time.time()
         logger.info("learning session started (manual) id=%s kind=%s", self._session_id, self._kind)
         _emit(
@@ -287,8 +381,9 @@ class LearningSessionDetector:
             kind=kind,
             title=title,
         )
-        if kind == "problem":
-            self._note_problem(sample_text or title, app_name=app_name)
+        # A problem is no longer a session kind, so nothing is recorded here.
+        # `observe` notes problems against whatever session is open, which also
+        # catches the ones that appear after a session has already started.
 
     def _touch(
         self,
@@ -305,8 +400,22 @@ class LearningSessionDetector:
     ) -> None:
         if self._session_id is None:
             return
-        self._kind = kind or self._kind
-        self._title = title or self._title
+        # Kind may only be PROMOTED, never demoted (see KIND_RANK). A sitting is
+        # named for the strongest evidence it ever produced: glancing at the IDE
+        # mid-lecture must not rewrite "watching a class" into "coding", which is
+        # what froze sessions under whatever happened to be in front when they
+        # opened. Title follows the kind so the two never disagree.
+        promoted = _better_kind(self._kind, kind)
+        if promoted != self._kind:
+            self._kind = promoted
+            # A manual session keeps the name the user gave it — they described
+            # what they sat down to study, which no window title improves on.
+            # The kind may still climb, since that only sharpens the category.
+            if not self._manual:
+                self._title = title or self._title
+        elif not self._title:
+            self._title = title or self._title
+        kind, title = self._kind or kind, self._title or title
         try:
             self.store.touch_session(
                 self._session_id,
@@ -337,6 +446,7 @@ class LearningSessionDetector:
         self._session_id = None
         self._kind = None
         self._title = ""
+        self._manual = False
         self._last_seen = 0.0
         _emit(
             "learning_session_ended",
@@ -364,9 +474,14 @@ class LearningSessionDetector:
 
     @staticmethod
     def _tag(
-        title: str, url: str, text: str, *, kind: str
+        title: str, url: str, text: str, *, kind: str, title_is_relevant: bool = True
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        blobs = [title, text, extract_search_query(url) or ""]
+        # `title_is_relevant=False` for audio-driven sessions: the foreground
+        # window's title describes what the user is doing with their hands, not
+        # what they are listening to, so mining it yields nothing but noise.
+        blobs = [text, extract_search_query(url) or ""]
+        if title_is_relevant:
+            blobs.insert(0, title)
         try:
             hits = extract_concepts_from_texts(
                 [b for b in blobs if b and b.strip()], max_concepts=6

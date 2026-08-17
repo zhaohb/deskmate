@@ -165,7 +165,171 @@ _PROBLEM_RE = re.compile(
     re.I,
 )
 
+# ── spoken-lecture cues (audio channel) ──────────────────────────────────────
+# Calibrated against a real 35-minute recorded technical talk (630 transcript
+# rows, 9327 chars). An earlier version of this list was written from intuition
+# — 也就是说 / 换句话说 / 举例来说 — and scored that lecture at ZERO: people
+# giving talks do not speak in written-language connectives.
+#
+# What they actually do is ADDRESS AN AUDIENCE. In that recording 我们 appeared
+# 116 times and 大家 112 — together 2.4 per 100 characters. Nobody talking to
+# themselves, and nobody in a two-person conversation, says 大家; it presupposes
+# a room. That register, not any single phrase, is the usable signal.
+_AUDIO_AUDIENCE_RE = re.compile(
+    r"(大家|我们|咱们|各位|"
+    r"\bwe\b|\bour\b|\bus\b|\byou all\b|\beveryone\b|\bfolks\b)",
+    re.I,
+)
+
+# Structural moves through material — weaker individually but they confirm a
+# prepared talk rather than chat. Colloquial forms come from the observed
+# sample; the formal/written connectives are kept too, since a scripted talk, a
+# read-aloud paper or an English lecture leans on them even though the recorded
+# Chinese speaker did not.
+_AUDIO_LECTURE_RE = re.compile(
+    # observed in real speech
+    r"(首先|接下来|然后|前面讲|前面提到|刚才讲|我们来看|我们再看|大家可以看到|"
+    r"大家注意|这里要注意|需要注意|比如|例如|举个例子|总结|小结|"
+    r"第[一二三四五六]|这一讲|这一章|这节课|本节课|下一节|"
+    # formal / written register
+    r"也就是说|换句话说|举例来说|简单来说|具体来说|一般来说|所谓的|"
+    r"可以理解为|值得注意的是|由此可见|综上所述|回顾一下|定义为|"
+    r"其原理|本质上|从而|因此|此外|另外|最后|"
+    # English
+    r"let's look|let's take a look|first of all|next we|as you can see|"
+    r"for example|for instance|to summarize|in other words|that is to say|"
+    r"note that|keep in mind|moving on|in conclusion|it follows that|"
+    r"is defined as|in essence|therefore|furthermore|finally)",
+    re.I,
+)
+
+# Domain vocabulary. A talk that teaches something is dense in subject nouns —
+# the reference recording measured 4.2 hits per 100 characters, higher even than
+# its audience-address density. Casual conversation and entertainment are not.
+# Supporting evidence only: a work discussion is equally technical, so this
+# never carries a verdict on its own.
+_AUDIO_TECHNICAL_RE = re.compile(
+    r"(模型|推理|部署|优化|性能|硬件|平台|版本|生成|训练|算法|架构|框架|接口|"
+    r"参数|数据|内存|显存|加速|量化|精度|编译|运行时|插件|函数|变量|指针|"
+    r"神经网络|深度学习|机器学习|梯度|卷积|注意力|向量|矩阵|张量|"
+    r"数据库|服务器|分布式|并发|线程|进程|缓存|协议|架构师|"
+    r"定理|公式|推导|证明|方程|函数图|概率|统计|"
+    r"\bAPI\b|\bSDK\b|\bGPU\b|\bCPU\b|\bNPU\b|\bTPU\b|\bpipeline\b|\bruntime\b|"
+    r"\bmodel\b|\binference\b|\btraining\b|\bgradient\b|\btensor\b|\bkernel\b|"
+    r"\balgorithm\b|\bcompiler\b|\bthroughput\b|\blatency\b|\bquantiz)",
+    re.I,
+)
+
+# Sustained-speech thresholds over LearningConfig.audio_lookback_seconds (90s).
+# The reference talk ran ~18 transcript rows/minute at ~15 chars each, so a
+# populated 90-second window holds roughly 400 characters. A chime, a passing
+# remark or background music yields almost nothing. Continuity is the main
+# defence against "any audio counts as studying" — vocabulary alone is far too
+# weak, since a podcast says 大家 just as often as a lecture does.
+_AUDIO_MIN_CHARS = 150      # below this, speech is incidental, not a lecture
+_AUDIO_RICH_CHARS = 450     # sustained narration filling the lookback window
+# Densities (hits per 100 chars) at which each signal counts as fully present.
+# Set roughly half the measured values so an ordinary talk clears them without
+# the thresholds being trivially met by passing mentions.
+_AUDIO_AUDIENCE_DENSITY = 1.2    # reference lecture measured 2.4
+_AUDIO_TECHNICAL_DENSITY = 2.0   # reference lecture measured 4.2
+
 _GAP_SEC = 180  # merge learning samples within 3 minutes into one session
+
+# Courseware OCR is the secondary source for 讲解重点; budgeted like audio.
+_OCR_MAX_LINES = 60
+
+
+def select_spanning(items: list[Any], keep: int) -> list[Any]:
+    """Keep ``keep`` items spread EVENLY across ``items``, preserving order.
+
+    Used when lecture evidence exceeds the prompt budget. Head/tail truncation
+    would hand the model one contiguous slice of a class — the opening or the
+    closing — and every concept taught outside that slice becomes invisible.
+    Sampling across the whole span keeps coverage roughly uniform, so recall
+    degrades gracefully instead of falling off a cliff. First and last items are
+    always retained so the reported time range stays honest.
+    """
+    n = len(items)
+    if keep >= n or keep <= 0:
+        return list(items)
+    if keep == 1:
+        return [items[0]]
+    step = (n - 1) / (keep - 1)
+    picked = sorted({min(n - 1, int(round(i * step))) for i in range(keep)})
+    return [items[i] for i in picked]
+
+
+# Internal alias so this module's call sites read consistently with agent.py.
+_select_spanning = select_spanning
+
+
+def normalize_always_rules(rules: Any) -> tuple[str, ...]:
+    """Clean a user-supplied always-learning list into comparable tokens."""
+    if isinstance(rules, str):
+        rules = [rules]
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in rules or ():
+        token = str(raw or "").strip().lower()
+        # A 1-2 char rule would match almost any page; refuse rather than let a
+        # stray entry silently turn every window into a study session.
+        if len(token) < 3 or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return tuple(out)
+
+
+def load_always_rules() -> tuple[str, ...]:
+    """Read ``[learning] always_learning`` from config, tolerating its absence.
+
+    Callers that already hold a Config (the daemon detector) should pass their
+    own value; this is for the app-side paths that have no config handle. Reads
+    fresh each call so an edit through the API takes effect on the next recap
+    without a restart — the list is tiny and these paths run once per report.
+    """
+    try:
+        from ..config import load  # noqa: PLC0415
+
+        return normalize_always_rules(getattr(load().learning, "always_learning", []))
+    except Exception:  # noqa: BLE001
+        return ()
+
+
+def match_always_learning(
+    rules: tuple[str, ...] | list[str],
+    *,
+    app_name: str = "",
+    window_name: str = "",
+    browser_url: str = "",
+    text: str = "",
+) -> str:
+    """Return the first always-learning rule matching this observation, else ''.
+
+    Matched against URL, host, window title, app name and captured on-screen
+    text, because the identifying string lives in different places per source:
+    a domain is in the URL, but a channel/UP主 name usually appears only in the
+    page text (bilibili window titles are just ``<video>_哔哩哔哩_bilibili``).
+
+    On-screen text is capped before matching so a rule cannot be triggered by
+    something buried deep in a long OCR dump of an unrelated page.
+    """
+    cleaned = normalize_always_rules(rules)
+    if not cleaned:
+        return ""
+    haystacks = (
+        (browser_url or "").lower(),
+        _host(browser_url or ""),
+        (window_name or "").lower(),
+        _norm_app(app_name),
+        (text or "")[:2000].lower(),
+    )
+    for rule in cleaned:
+        for hay in haystacks:
+            if hay and rule in hay:
+                return rule
+    return ""
 
 
 def _norm_app(name: str) -> str:
@@ -212,6 +376,112 @@ def lecture_content_score(*, title: str = "", text: str = "", pathq: str = "") -
     return max(0.0, min(1.0, score))
 
 
+def looks_like_media_surface(
+    *,
+    app_name: str = "",
+    window_name: str = "",
+    browser_url: str = "",
+) -> bool:
+    """Is this window a video/lecture surface (a player, a video site, a file)?
+
+    Used to remember *which* window is the media one. Frame capture only sees
+    the foreground, so when a class plays in a background tab the only title
+    available at that moment belongs to an unrelated window. But the media
+    window's own title — which names the lecture — does get captured whenever the
+    user glances at it, so caching the last one seen recovers the subject that
+    audio alone cannot supply.
+    """
+    app = _norm_app(app_name)
+    host = _host(browser_url or "")
+    title = window_name or ""
+    if app in _VIDEO_PLAYER_PROCS:
+        return True
+    if host and any(x in host for x in _VIDEO_HOST_FRAGMENTS):
+        return True
+    if host and any(x in host for x in _COURSEWARE_HOST_FRAGMENTS):
+        return True
+    return bool(_VIDEO_FILE_RE.search(title))
+
+
+def detect_problem_text(*parts: str) -> str:
+    """Return the error/exception marker found in on-screen text, else ''.
+
+    Split out of :func:`classify_learning_signal` on purpose. An error on screen
+    says "something broke", not "this is what the user is studying" — treating
+    it as a session *kind* meant one stray word ("失败" in a comment, a chat log,
+    a page of release notes) relabelled the whole session and outranked every
+    real learning signal, because the check ran first. The detector now records
+    it as a `learning_events(kind='problem')` inside whatever session is open.
+    """
+    blob = " ".join(p for p in parts if p)
+    m = _PROBLEM_RE.search(blob) if blob else None
+    return m.group(0) if m else ""
+
+
+def lecture_audio_score(
+    audio_text: str,
+    *,
+    lookback_seconds: float = 90.0,
+) -> float:
+    """How much the recent AUDIO sounds like someone teaching (0..1).
+
+    Separate from :func:`lecture_content_score`, which scores what is *on the
+    screen*. The two answer different questions, and conflating them is why a
+    lecture playing in the background could never be detected: when a video is
+    fullscreen there is almost no on-screen text to score, and when the user is
+    working in another window the screen describes the work, not the lecture.
+
+    Four factors, weighted:
+
+    * **Sustained narration** — enough speech in the lookback window that this
+      cannot be a passing remark. Keeps chimes and one-liners out.
+    * **Audience address** — density of 大家 / 我们 / we / everyone. Speech aimed
+      at a room, which is what teaching is. The most reliable single signal.
+    * **Structural moves** — 首先 / 接下来 / 也就是说 / to summarize: a prepared
+      walk through material rather than conversation.
+    * **Domain vocabulary** — subject nouns, dense in any talk that teaches
+      something. Supporting evidence only; a work discussion is just as
+      technical, so it never carries the verdict alone.
+
+    Honest limit: this cannot separate a technical *podcast* from a technical
+    *lecture* — linguistically they are the same thing. Callers treat an
+    audio-only verdict as provisional rather than certain, and users can name
+    specific sources via the always-learning whitelist.
+    """
+    text = (audio_text or "").strip()
+    if not text:
+        return 0.0
+    chars = len(text)
+    if chars < _AUDIO_MIN_CHARS:
+        return 0.0
+
+    # Volume: ramps from 0 at _AUDIO_MIN_CHARS to 1 at _AUDIO_RICH_CHARS.
+    span = max(1.0, float(_AUDIO_RICH_CHARS - _AUDIO_MIN_CHARS))
+    volume = min(1.0, (chars - _AUDIO_MIN_CHARS) / span)
+    # A longer lookback needs proportionally more speech to mean the same thing.
+    if lookback_seconds > 0:
+        volume *= min(1.0, 90.0 / float(lookback_seconds))
+
+    def _density(rx: re.Pattern[str], per_100: float) -> float:
+        return min(1.0, (100.0 * len(rx.findall(text)) / max(1, chars)) / per_100)
+
+    audience = _density(_AUDIO_AUDIENCE_RE, _AUDIO_AUDIENCE_DENSITY)
+    technical = _density(_AUDIO_TECHNICAL_RE, _AUDIO_TECHNICAL_DENSITY)
+
+    markers = {m.lower() for m in _AUDIO_LECTURE_RE.findall(text)}
+    marker_score = min(1.0, 0.25 * len(markers))
+
+    # Audience address carries the most weight; volume alone must never be
+    # enough, or any long stretch of speech would register as a class.
+    score = 0.20 * volume + 0.35 * audience + 0.25 * marker_score + 0.20 * technical
+    if not markers and audience < 0.5:
+        # Dense speech that neither addresses a room nor walks through material:
+        # a film, a call, music with lyrics. Hard-capped below the gate even if
+        # the vocabulary happens to be technical.
+        score = min(score, 0.35)
+    return max(0.0, min(1.0, score))
+
+
 def extract_search_query(url: str) -> str:
     """Best-effort query string from a search / docs URL."""
     if not url:
@@ -233,13 +503,38 @@ def classify_learning_signal(
     window_name: str = "",
     browser_url: str = "",
     text: str = "",
+    always_rules: tuple[str, ...] | list[str] = (),
+    audio_text: str = "",
+    audio_lookback_seconds: float = 90.0,
 ) -> tuple[str | None, float, str]:
     """Return (kind, confidence, reason) or (None, 0, '') if not learning.
 
-    kind ∈ {courseware_view, material_query, code_edit, problem, study_other}
+    kind ∈ {courseware_view, material_query, code_edit, study_other}
 
     Video path (adaptive-learning-agent inspired):
       player/site is only a *candidate*; title + OCR lecture cues decide.
+
+    ``always_rules`` is the user's always-learning whitelist (``[learning]
+    always_learning``). A hit bypasses the lecture-score gate, which otherwise
+    rejects real technical talks whose titles don't read like coursework.
+
+    ``audio_text`` is recent speech, kept OUT of ``text`` on purpose. Merging it
+    into the on-screen blob (the old behaviour) meant a lecture's transcript
+    could only ever nudge the score of whatever window happened to be in front,
+    so listening to a class while working was filed under the foreground app.
+    Scored separately it can carry its own verdict.
+
+    Precedence, and why:
+
+    1. **whitelist** — the user said so explicitly; nothing should override it.
+    2. **foreground courseware** — the user is *looking at* material; direct
+       evidence beats inferred.
+    3. **lecture audio** — a class is playing though the foreground is
+       unrelated. Ranked below 2 so real courseware still wins, above 4 so the
+       foreground app cannot bury it.
+    4. **IDE / title keywords** — weakest: describes activity, not subject.
+
+    ``problem`` is deliberately absent: see :func:`detect_problem_text`.
     """
     app = _norm_app(app_name)
     title = window_name or ""
@@ -249,8 +544,19 @@ def classify_learning_signal(
     blob = f"{title} {text}".strip()
     lec = lecture_content_score(title=title, text=text or "", pathq=pathq)
 
-    if blob and _PROBLEM_RE.search(blob):
-        return "problem", 0.85, "error/exception pattern in on-screen text"
+    matched = match_always_learning(
+        always_rules,
+        app_name=app_name,
+        window_name=window_name,
+        browser_url=url,
+        text=text,
+    )
+    if matched:
+        # Confidence is pinned above any configured start_confidence so an
+        # explicitly trusted source always opens a session; the reason names the
+        # rule so the decision stays auditable in learning_sessions.reason.
+        kind = "material_query" if extract_search_query(url) else "courseware_view"
+        return kind, 0.95, f"always-learning rule: {matched}"
 
     if url:
         q = extract_search_query(url)
@@ -304,8 +610,28 @@ def classify_learning_signal(
     if lec >= 0.7 and len(text or "") >= 40:
         return "courseware_view", min(0.88, 0.65 + 0.25 * lec), "on-screen lecture OCR/slides"
 
+    # Lecture playing while the foreground is something else — the audio-only
+    # study case. Placed after every on-screen courseware signal (looking at
+    # material is stronger evidence) but before the IDE/title rules, which would
+    # otherwise file "listening to a class while coding" as plain coding.
+    #
+    # Capped below the on-screen paths: this is an inference from sound alone
+    # and cannot tell a lecture from a technical podcast, so it stays reviewable
+    # rather than authoritative.
+    aud = lecture_audio_score(audio_text, lookback_seconds=audio_lookback_seconds)
+    if aud >= 0.55:
+        return (
+            "courseware_view",
+            min(0.82, 0.55 + 0.3 * aud),
+            f"lecture audio while foreground is unrelated ({app or 'desktop'})",
+        )
+
     if app in _CODING_LEARN_PROCS:
-        if _TITLE_LEARN_RE.search(title) or _TITLE_LEARN_RE.search(blob):
+        # Title only — NOT the OCR dump. The rule is named for the title, but it
+        # used to test `title + text`, so any learning word anywhere on an IDE
+        # screen (a tutorial in a scratch file, a chat log, this very sentence)
+        # promoted plain coding to 0.8 and outranked weaker but truer signals.
+        if _TITLE_LEARN_RE.search(title):
             return "code_edit", 0.8, "IDE/terminal with learning title"
         if re.search(r"\.(py|c|cpp|h|js|ts|java|go|rs|md|ipynb)\b", title, re.I):
             return "code_edit", 0.7, "IDE editing source file"
@@ -336,9 +662,16 @@ def _fmt_ts(dt: datetime | None) -> str:
     return local.strftime("%Y-%m-%d %H:%M")
 
 
-def build_learning_sessions(summary: dict[str, Any]) -> list[dict[str, Any]]:
+def build_learning_sessions(
+    summary: dict[str, Any],
+    *,
+    always_rules: tuple[str, ...] | list[str] | None = None,
+) -> list[dict[str, Any]]:
     """Project activity-summary timeline/windows into merged learning sessions."""
     samples: list[dict[str, Any]] = []
+    rules = normalize_always_rules(
+        always_rules if always_rules is not None else load_always_rules()
+    )
 
     for row in summary.get("timeline") or []:
         kind, conf, reason = classify_learning_signal(
@@ -346,6 +679,7 @@ def build_learning_sessions(summary: dict[str, Any]) -> list[dict[str, Any]]:
             window_name=str(row.get("window_name") or ""),
             browser_url=str(row.get("browser_url") or ""),
             text=str(row.get("text") or ""),
+            always_rules=rules,
         )
         if not kind:
             continue
@@ -370,6 +704,7 @@ def build_learning_sessions(summary: dict[str, Any]) -> list[dict[str, Any]]:
             app_name=str(row.get("app_name") or ""),
             window_name=str(row.get("window_name") or ""),
             browser_url=str(row.get("browser_url") or ""),
+            always_rules=rules,
         )
         if not kind:
             continue
@@ -578,8 +913,17 @@ def format_learning_bundle(
     range_start: str,
     range_end: str,
     courseware_ocr_lines: list[str] | None = None,
+    audio_stats: dict[str, Any] | None = None,
 ) -> str:
-    """Deterministic context block for the user-learning LLM prompt."""
+    """Deterministic context block for the user-learning LLM prompt.
+
+    ``audio_stats`` (from ``_collect_learning_audio_bits``) carries coverage
+    facts — how many transcript lines exist vs. how many are shown, and whether
+    they are in teaching order. Without it a partial transcript reads to the
+    model as a complete one, and it reports confident 讲解重点 for a class it
+    only saw part of. Mirrors the top-level ``_cap_prefetch_text`` watermark,
+    but per source.
+    """
     lines: list[str] = [
         "### Learning detection (pre-computed — trust this over raw browsing noise)",
         f"Window analyzed: {range_start} → {range_end}",
@@ -600,8 +944,18 @@ def format_learning_bundle(
     for s in sessions:
         by_kind[s["kind"]] = by_kind.get(s["kind"], 0.0) + float(s.get("duration_min") or 0)
 
+    stats = audio_stats or {}
+    a_total = int(stats.get("total") or 0)
+    a_shown = int(stats.get("included") or len(audio_bits))
+    if a_total > a_shown:
+        coverage = f"{a_shown} of {a_total} (sampled evenly across the session)"
+    elif a_total:
+        coverage = f"{a_shown} of {a_total} (complete)"
+    else:
+        coverage = f"{a_shown} (total in window unknown)"
+
     lines.append(f"Total learning dwell (approx): {total_min:.1f} min")
-    lines.append(f"Audio transcript lines available: {len(audio_bits)}")
+    lines.append(f"Audio transcript lines available: {coverage}")
     lines.append("By kind:")
     for k, m in sorted(by_kind.items(), key=lambda x: -x[1]):
         lines.append(f"- {k}: {m:.1f} min")
@@ -634,11 +988,29 @@ def format_learning_bundle(
         lines.append(
             "### Audio transcripts (lecture) — PRIMARY source for 讲解重点 / 理解要点"
         )
+        if stats.get("ordered", True):
+            lines.append(
+                "Lines are in CHRONOLOGICAL order (oldest first) — treat their "
+                "sequence as the teaching order when reconstructing 定义 → 步骤 → 关系."
+            )
+        else:
+            lines.append(
+                "⚠️ ORDER NOT GUARANTEED: these lines were retrieved by relevance, "
+                "not by time. Do NOT infer teaching order from their sequence."
+            )
+        if a_total > a_shown:
+            lines.append(
+                f"⚠️ PARTIAL TRANSCRIPT: {a_shown} of {a_total} lines are shown, "
+                "sampled evenly across the session to fit the model budget. "
+                "Gaps between consecutive lines are NOT silence — content was "
+                "skipped. You MUST say in 数据说明 that transcript coverage was "
+                "partial, and you MUST NOT claim the lecture outline is complete."
+            )
         lines.append(
             "Summarize what the speaker taught from these lines. Quote key phrases. "
             "Cite as 录音. Do not invent content absent here."
         )
-        lines.extend(f"- {a}" for a in audio_bits[:40])
+        lines.extend(f"- {a}" for a in audio_bits)
     else:
         lines.append("### Audio transcripts (lecture)")
         lines.append(
@@ -648,11 +1020,19 @@ def format_learning_bundle(
 
     ocr_lines = courseware_ocr_lines or []
     if ocr_lines:
+        # Same silent-truncation hazard as audio: sample across the span rather
+        # than keeping the first N slides, and say so when lines were dropped.
+        shown_ocr = _select_spanning(ocr_lines, _OCR_MAX_LINES)
         lines.append("")
         lines.append(
             "### Courseware OCR / slides — secondary source for 讲解重点 (cite as 课件OCR)"
         )
-        lines.extend(ocr_lines[:35])
+        if len(shown_ocr) < len(ocr_lines):
+            lines.append(
+                f"⚠️ PARTIAL SLIDES: {len(shown_ocr)} of {len(ocr_lines)} OCR lines "
+                "are shown, sampled evenly across the session. Say so in 数据说明."
+            )
+        lines.extend(shown_ocr)
 
     if key_texts:
         lines.append("")

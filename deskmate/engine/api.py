@@ -1344,6 +1344,65 @@ def create_app(
             applied = True
         return {"languages": languages, "hot_applied": applied}
 
+    @app.get("/config/learning/always-learning")
+    def get_always_learning() -> dict[str, Any]:
+        """The user's always-learning whitelist (sources that skip the heuristics)."""
+        return {"always_learning": list(getattr(cfg.learning, "always_learning", []) or [])}
+
+    @app.post("/config/learning/always-learning")
+    async def set_always_learning(request: Request) -> dict[str, Any]:
+        """Replace the always-learning whitelist.
+
+        Entries are matched case-insensitively against a page's URL, host,
+        window title, app name and on-screen text, so a domain, a creator's
+        space URL, or a channel name as it appears on screen all work. A match
+        bypasses the lecture-score gate that otherwise rejects technical talks
+        whose titles don't read like coursework.
+
+        Persisted to config.toml and hot-applied to the running detector, so a
+        source added mid-session takes effect on the next observation.
+        """
+        from ..apps.learning_slice import normalize_always_rules  # noqa: PLC0415
+        from ..config import set_config_value  # noqa: PLC0415
+
+        body = await request.json()
+        raw = body.get("always_learning", [])
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            raise HTTPException(
+                status_code=400, detail="always_learning must be a list of strings",
+            )
+        # Keep the user's original casing in the file (it is theirs to read),
+        # but validate through the same normalizer the matcher uses so a too
+        # short entry is rejected here rather than silently ignored later.
+        accepted = normalize_always_rules(raw)
+        rejected = [
+            str(x).strip() for x in raw
+            if str(x).strip() and str(x).strip().lower() not in accepted
+        ]
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in raw:
+            token = str(item).strip()
+            if token.lower() in accepted and token.lower() not in seen:
+                seen.add(token.lower())
+                cleaned.append(token)
+
+        set_config_value("learning", "always_learning", cleaned)
+        cfg.learning.always_learning = cleaned
+
+        hot_applied = False
+        detector = getattr(app.state.daemon, "learning_detector", None)
+        if detector is not None:
+            detector.always_learning = accepted
+            hot_applied = True
+        return {
+            "always_learning": cleaned,
+            "rejected": rejected,   # entries shorter than 3 chars are refused
+            "hot_applied": hot_applied,
+        }
+
     @app.get("/config/audio/translate")
     def get_audio_translate() -> dict[str, Any]:
         """Return the current live-translation settings for the UI controls."""
@@ -2279,9 +2338,18 @@ def create_app(
         """Frame-level detector status (open session + config)."""
         open_rows = _learning_store().list_sessions(status="open", limit=1)
         det = getattr(getattr(app.state, "daemon", None), "learning_detector", None)
+        open_row = open_rows[0] if open_rows else None
+        # Manual-ness comes from the detector when one is running, else from the
+        # stored row, so a split API/daemon deployment still reports it.
+        if det is not None:
+            manual = bool(getattr(det, "is_manual", False))
+        else:
+            meta = (open_row or {}).get("meta") or {}
+            manual = str(meta.get("detection_source") or "") == "manual"
         return {
             "enabled": bool(cfg.learning.enabled),
-            "open_session": open_rows[0] if open_rows else None,
+            "open_session": open_row,
+            "manual": manual,
             "active_session_id": getattr(det, "active_session_id", None) if det else (
                 open_rows[0]["id"] if open_rows else None
             ),

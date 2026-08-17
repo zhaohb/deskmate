@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260623-power-i18n1" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260817-manual1" />
     <style>
       /* Scoped styles for the Capture & Unified Timeline view */
       #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
@@ -263,6 +263,70 @@
       #view-reminders .rem-routine .rt-time { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); flex: 0 0 52px; }
       #view-reminders .rem-routine .rt-text { color: var(--text); flex: 1 1 auto; }
       #view-reminders .rem-routine .rt-freq { color: var(--muted); font-size: 12px; }
+      /* ── learning ─────────────────────────────────────────────────────── */
+      #view-learning .lrn-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
+      #view-learning .lrn-card h3 { font-size: 15px; margin: 0 0 6px; color: var(--text); display: flex; align-items: center; gap: 8px; }
+      #view-learning .lrn-card h3 .lrn-count { font-size: 12px; font-weight: 600; color: var(--accent, #5b8cff); background: color-mix(in srgb, var(--accent, #5b8cff) 14%, transparent); padding: 1px 9px; border-radius: 999px; }
+      #view-learning .lrn-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      /* live status strip */
+      #view-learning .lrn-live { display: flex; gap: 12px; align-items: flex-start; padding: 14px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); }
+      #view-learning .lrn-ic { flex: 0 0 36px; width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; background: color-mix(in srgb, var(--accent, #5b8cff) 16%, transparent); }
+      #view-learning .lrn-live .lrn-live-title { font-size: 14px; color: var(--text); font-weight: 600; }
+      #view-learning .lrn-live .lrn-live-sub { font-size: 12px; color: var(--muted); margin-top: 5px; line-height: 1.6; }
+      #view-learning .lrn-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+      #view-learning .lrn-dot.on { background: var(--online, #5fb878); }
+      #view-learning .lrn-dot.off { background: var(--muted); }
+      /* a warning that the PRIMARY evidence source is unavailable */
+      #view-learning .lrn-warn { margin-top: 12px; padding: 11px 13px; border-radius: var(--radius); font-size: 12.5px; line-height: 1.6; background: color-mix(in srgb, #e0a03c 12%, transparent); border: 1px solid color-mix(in srgb, #e0a03c 40%, var(--line)); color: var(--text); }
+      /* manual start / stop — user-declared study sessions */
+      #view-learning .lrn-manual { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
+      #view-learning .lrn-manual-idle { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      #view-learning .lrn-manual-idle input { flex: 1 1 300px; min-width: 220px; }
+      #view-learning .lrn-manual-go { background: var(--accent, #5b8cff); border-color: var(--accent, #5b8cff); color: #fff; font-weight: 600; }
+      #view-learning .lrn-manual-go:hover { filter: brightness(1.08); }
+      #view-learning .lrn-manual-active { display: flex; gap: 12px; align-items: center; padding: 13px 14px; border-radius: var(--radius); background: color-mix(in srgb, var(--online, #5fb878) 12%, transparent); border: 1px solid color-mix(in srgb, var(--online, #5fb878) 42%, var(--line)); }
+      #view-learning .lrn-manual-active .lrn-manual-body { flex: 1 1 auto; min-width: 0; }
+      #view-learning .lrn-manual-name { font-size: 14px; font-weight: 600; color: var(--text); word-break: break-word; }
+      #view-learning .lrn-manual-meta { display: flex; gap: 10px; align-items: baseline; margin-top: 5px; font-size: 12px; flex-wrap: wrap; }
+      #view-learning .lrn-manual-timer { font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 700; color: var(--online, #5fb878); }
+      #view-learning .lrn-manual-stop { flex: 0 0 auto; border-color: color-mix(in srgb, #e06c75 55%, var(--line)); color: #e06c75; font-weight: 600; }
+      #view-learning .lrn-manual-stop:hover { background: color-mix(in srgb, #e06c75 14%, transparent); }
+      #view-learning .lrn-manual-note { margin: 10px 0 0; font-size: 12px; line-height: 1.6; }
+      /* generic list rows shared by sessions / reviews / problems / concepts */
+      #view-learning .lrn-item { display: flex; gap: 12px; padding: 12px 14px; margin-bottom: 10px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); transition: border-color .15s; }
+      #view-learning .lrn-item:hover { border-color: color-mix(in srgb, var(--accent, #5b8cff) 45%, var(--line)); }
+      #view-learning .lrn-item .lrn-body { flex: 1 1 auto; min-width: 0; }
+      #view-learning .lrn-item .lrn-name { font-size: 13.5px; color: var(--text); font-weight: 600; word-break: break-word; }
+      #view-learning .lrn-item .lrn-meta { font-size: 12px; color: var(--muted); margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      #view-learning .lrn-item .lrn-acts { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+      #view-learning .lrn-item .lrn-acts button { font-size: 12px; padding: 5px 12px; border-radius: 8px; }
+      #view-learning .lrn-item.done { opacity: .5; }
+      /* "why was this detected as learning" — the detector's own reason string */
+      #view-learning .lrn-why { font-size: 11.5px; color: var(--muted); margin-top: 6px; font-style: italic; word-break: break-word; }
+      #view-learning .lrn-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--surface-3); color: var(--muted); }
+      #view-learning .lrn-badge.overdue { background: color-mix(in srgb, #e06c75 18%, transparent); color: #e06c75; }
+      #view-learning .lrn-badge.weak { background: color-mix(in srgb, #e0a03c 18%, transparent); color: #e0a03c; }
+      #view-learning .lrn-badge.open { background: color-mix(in srgb, var(--online, #5fb878) 18%, transparent); color: var(--online, #5fb878); }
+      /* mastery ladder: exposure < recognition < recall < fluent */
+      #view-learning .lrn-tier { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px; }
+      #view-learning .lrn-tier[data-tier="exposure"] { background: color-mix(in srgb, #8a8f98 20%, transparent); color: var(--muted); }
+      #view-learning .lrn-tier[data-tier="recognition"] { background: color-mix(in srgb, #e0a03c 18%, transparent); color: #e0a03c; }
+      #view-learning .lrn-tier[data-tier="recall"] { background: color-mix(in srgb, var(--accent, #5b8cff) 18%, transparent); color: var(--accent, #5b8cff); }
+      #view-learning .lrn-tier[data-tier="fluent"] { background: color-mix(in srgb, var(--online, #5fb878) 20%, transparent); color: var(--online, #5fb878); }
+      #view-learning .lrn-bar { height: 5px; border-radius: 999px; background: var(--surface-3); overflow: hidden; margin-top: 8px; max-width: 220px; }
+      #view-learning .lrn-bar > span { display: block; height: 100%; border-radius: 999px; background: var(--accent, #5b8cff); }
+      /* whitelist editor */
+      #view-learning .lrn-chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; }
+      #view-learning .lrn-chip { display: inline-flex; align-items: center; gap: 7px; padding: 5px 8px 5px 12px; border-radius: 999px; font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--line); color: var(--text); }
+      #view-learning .lrn-chip button { border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+      #view-learning .lrn-chip button:hover { color: #e06c75; }
+      #view-learning .lrn-add { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+      #view-learning .lrn-add input { flex: 1 1 260px; min-width: 200px; }
+      /* empty states */
+      #view-learning .lrn-empty { padding: 24px 20px; text-align: center; color: var(--muted); }
+      #view-learning .lrn-empty .lrn-empty-ic { font-size: 30px; }
+      #view-learning .lrn-empty .lrn-empty-title { font-size: 14.5px; color: var(--text); font-weight: 600; margin: 9px 0 6px; }
+      #view-learning .lrn-empty p { margin: 0 auto 6px; max-width: 460px; line-height: 1.6; font-size: 12.5px; }
       /* heatmap (secondary, collapsible) */
       #view-reminders .heat { border-collapse: separate; border-spacing: 2px; }
       #view-reminders .heat td, #view-reminders .heat th { width: 30px; height: 22px; text-align: center; font-size: 10px; }
@@ -324,6 +388,7 @@
           <button class="nav-item" data-view="models" type="button"><span data-i18n="nav.models">Model Service</span></button>
           <button class="nav-item" data-view="doctor" type="button"><span data-i18n="nav.doctor">Diagnostics</span></button>
           <button class="nav-item" data-view="reminders" type="button"><span data-i18n="nav.reminders">Reminders</span></button>
+          <button class="nav-item" data-view="learning" type="button"><span data-i18n="nav.learning">Learning</span></button>
           <button class="nav-item" data-view="power" type="button"><span data-i18n="nav.power">续航管家</span></button>
           <button class="nav-item nav-item--settings" data-view="settings" type="button">
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9 4a7 7 0 0 0-.1-1.1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.9-1.1L16.3 2h-4.6l-.4 2.7a7 7 0 0 0-1.9 1.1l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 3 12a7 7 0 0 0 .1 1.1l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.9 1.1l.4 2.8h4.6l.4-2.7a7 7 0 0 0 1.9-1.1l2.4 1 2-3.4-2-1.6c.06-.36.1-.73.1-1.1Z" fill="currentColor"/></svg>
@@ -1100,6 +1165,77 @@
           </div>
         </section>
 
+        <section id="view-learning" class="view">
+          <div class="lrn-card">
+            <h3><span data-i18n="learning.live.title">Study status</span></h3>
+            <p class="muted" style="margin-top:0" data-i18n="learning.live.intro">DeskMate detects study sessions automatically from courseware, lecture audio, material searches and on-screen errors. Start one by hand when you want a whole stretch counted, including the parts that happen away from the screen.</p>
+            <div class="lrn-row" style="margin-bottom:12px">
+              <button id="lrnRefreshBtn" type="button" data-i18n="learning.refresh">Refresh</button>
+              <button id="lrnRecapBtn" type="button" data-i18n="learning.recap">Generate study recap</button>
+              <span id="lrnRecapMsg" class="muted"></span>
+            </div>
+            <div id="lrnLive"></div>
+
+            <div id="lrnManual" class="lrn-manual">
+              <div id="lrnManualIdle" class="lrn-manual-idle">
+                <input id="lrnManualTitle" type="text" maxlength="120"
+                       data-i18n-attr="placeholder:learning.manual.placeholder"
+                       placeholder="What are you studying? e.g. OpenVINO inference optimization">
+                <button id="lrnManualStart" type="button" class="lrn-manual-go" data-i18n="learning.manual.start">Start studying</button>
+              </div>
+              <div id="lrnManualActive" class="lrn-manual-active" hidden>
+                <div class="lrn-manual-body">
+                  <div class="lrn-manual-name" id="lrnManualName"></div>
+                  <div class="lrn-manual-meta">
+                    <span class="lrn-manual-timer" id="lrnManualTimer">00:00</span>
+                    <span class="muted" data-i18n="learning.manual.running">recording everything until you stop</span>
+                  </div>
+                </div>
+                <button id="lrnManualStop" type="button" class="lrn-manual-stop" data-i18n="learning.manual.stop">End session</button>
+              </div>
+              <p class="muted lrn-manual-note" data-i18n="learning.manual.note">A session you start by hand never times out, keeps the name you gave it, and counts its whole span as study time — even the minutes nothing on screen looks like studying.</p>
+            </div>
+          </div>
+
+          <div class="lrn-card">
+            <h3><span data-i18n="learning.reviews.title">Review queue</span> <span id="lrnReviewCount" class="lrn-count" hidden></span></h3>
+            <p class="muted" style="margin-top:0" data-i18n="learning.reviews.intro">Ranked by SM-2 due date and a decayed estimate of what you still remember. Grading a concept reschedules it.</p>
+            <div id="lrnReviews"></div>
+          </div>
+
+          <div class="lrn-card">
+            <h3><span data-i18n="learning.problems.title">Open problems</span> <span id="lrnProblemCount" class="lrn-count" hidden></span></h3>
+            <p class="muted" style="margin-top:0" data-i18n="learning.problems.intro">Errors and questions captured while you were studying, kept until you close them.</p>
+            <div id="lrnProblems"></div>
+          </div>
+
+          <div class="lrn-card">
+            <h3><span data-i18n="learning.sessions.title">Study sessions</span> <span id="lrnSessionCount" class="lrn-count" hidden></span></h3>
+            <p class="muted" style="margin-top:0" data-i18n="learning.sessions.intro">Each session shows why it was counted as studying, so a wrong detection is easy to spot.</p>
+            <div id="lrnSessions"></div>
+          </div>
+
+          <div class="lrn-card">
+            <h3 data-i18n="learning.always.title">Always count as studying</h3>
+            <p class="muted" style="margin-top:0" data-i18n="learning.always.intro">Video sites only count when the title or on-screen text looks like a lecture, so a real technical talk can be missed. List channels, domains or URLs you trust and they always count.</p>
+            <div id="lrnAlwaysChips" class="lrn-chips"></div>
+            <div class="lrn-add">
+              <input id="lrnAlwaysInput" type="text"
+                     data-i18n-attr="placeholder:learning.always.placeholder"
+                     placeholder="e.g. OpenVINO中文社区 or docs.openvino.ai">
+              <button id="lrnAlwaysAddBtn" type="button" data-i18n="learning.always.add">Add</button>
+              <span id="lrnAlwaysMsg" class="muted"></span>
+            </div>
+            <p class="muted" style="margin-top:12px;font-size:12px" data-i18n="learning.always.help">Matched case-insensitively against the URL, host, window title, app name and on-screen text. A channel name usually only appears in the page text.</p>
+          </div>
+
+          <div class="lrn-card">
+            <h3><span data-i18n="learning.concepts.title">Concepts seen</span> <span id="lrnConceptCount" class="lrn-count" hidden></span></h3>
+            <p class="muted" style="margin-top:0" data-i18n="learning.concepts.intro">Concepts extracted from lecture audio and courseware, newest first.</p>
+            <div id="lrnConcepts"></div>
+          </div>
+        </section>
+
         <section id="view-power" class="view">
           <div class="pw-card">
             <div class="pw-capsule">
@@ -1321,7 +1457,7 @@
       </article>
     </template>
 
-    <script src="/ui/assets/i18n.js?v=20260623-power-i18n1" defer></script>
-    <script src="/ui/assets/app.js?v=20260623-power-i18n1" defer></script>
+    <script src="/ui/assets/i18n.js?v=20260817-manual1" defer></script>
+    <script src="/ui/assets/app.js?v=20260817-manual1" defer></script>
   </body>
 </html>

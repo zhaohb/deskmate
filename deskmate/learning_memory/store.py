@@ -823,6 +823,48 @@ class LearningStore:
                 ).fetchall()
         return [self._decode_session(r) for r in rows]
 
+    def list_manual_sessions(
+        self,
+        start_iso: str,
+        end_iso: str,
+        *,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """User-declared sessions overlapping ``[start_iso, end_iso]``.
+
+        Sessions the user started by hand are ground truth about what counts as
+        studying, so a recap must honour their whole span rather than re-deriving
+        one from heuristics — that is the difference between "I studied for an
+        hour" and "the classifier recognised eleven scattered minutes of it".
+
+        Overlap is computed in Python from parsed timestamps rather than by
+        string comparison in SQL: session rows are few, and the stored formats
+        vary enough ('T' vs ' ' separators, offsets present or not) that
+        lexicographic bounds silently drop whole days.
+        """
+        lo, hi = _parse_iso(start_iso), _parse_iso(end_iso)
+        if lo is None or hi is None:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM learning_sessions ORDER BY started_at DESC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+
+        out: list[dict[str, Any]] = []
+        for raw in rows:
+            item = self._decode_session(raw)
+            if str((item.get("meta") or {}).get("detection_source") or "") != "manual":
+                continue
+            began = _parse_iso(str(item.get("started_at") or ""))
+            if began is None:
+                continue
+            # An open session runs up to "now"; a closed one to its end stamp.
+            finished = _parse_iso(str(item.get("ended_at") or "")) or hi
+            if began <= hi and finished >= lo:
+                out.append(item)
+        return out
+
     def _decode_session(self, row: dict[str, Any] | None) -> dict[str, Any]:
         if not row:
             return {}

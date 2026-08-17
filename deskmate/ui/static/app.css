@@ -422,9 +422,14 @@ a:hover {
   min-height: 0;
 }
 
+/* Long, card-stacked views scroll their own body. `.view.active` is
+   `overflow: hidden` by default (so table/timeline views can manage their own
+   inner scroll), so a new page of stacked cards must opt in here or its content
+   is simply clipped at the viewport. */
 #view-settings.active,
 #view-training.active,
 #view-reminders.active,
+#view-learning.active,
 #view-models.active,
 #view-doctor.active,
 #view-capture.active,

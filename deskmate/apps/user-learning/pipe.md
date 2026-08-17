@@ -67,6 +67,13 @@ Mention whether audio transcripts were available.
 ## 数据说明
 - Time window, session count, whether audio was used for 讲解重点, and any gap
   (no audio, OCR-only slides, coding without courseware, detector found nothing).
+- **Transcript coverage is mandatory here.** Read `Audio transcript lines
+  available:` in the context and state it. If it says `sampled evenly` or a
+  `⚠️ PARTIAL TRANSCRIPT` / `⚠️ PARTIAL SLIDES` block is present, you MUST say
+  coverage was partial (give shown/total) and MUST NOT claim the lecture outline
+  is complete — the un-shown lines are skipped content, not silence.
+- If `⚠️ ORDER NOT GUARANTEED` is present, say the teaching order could not be
+  established and do not present 讲解重点 as a sequence.
 
 Only report what the data supports. Write in the user's language (Chinese).
 Maximize concrete courseware/lecture content when evidence exists.

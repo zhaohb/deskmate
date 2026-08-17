@@ -339,6 +339,25 @@ class LearningConfig(BaseModel):
     use_audio_cues: bool = True
     audio_lookback_seconds: float = 90.0
 
+    # User-curated "this is always studying" list — the escape hatch for the
+    # keyword heuristics.
+    #
+    # Video sites (bilibili / YouTube) are only *candidates*: they need a
+    # lecture-like title or on-screen text to open a session, because otherwise
+    # every entertainment video would become a study log. That gate is tuned for
+    # school-flavoured wording (课程/讲义/tutorial/lecture), so a genuine
+    # technical talk — a conference session, a release walkthrough, a vendor
+    # channel — scores 0 and is silently rejected.
+    #
+    # No keyword list fixes that in general, so the user names the sources they
+    # trust instead. Each entry is matched case-insensitively against the URL,
+    # the URL host, the window title, and captured on-screen text; a hit means
+    # "learning", skipping the lecture-score gate entirely. Examples:
+    #   "docs.openvino.ai"          → a whole documentation domain
+    #   "space.bilibili.com/123456" → one creator's space URL
+    #   "OpenVINO中文社区"           → a channel name as it appears on screen
+    always_learning: list[str] = []
+
 
 class FusionConfig(BaseModel):
     """Additive context-fusion + capture-control module.

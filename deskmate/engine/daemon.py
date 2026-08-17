@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 from .. import events as bus
@@ -32,6 +33,10 @@ from ..redact import OnnxRedactor, RedactReconciler
 from .app_scheduler import AppScheduler
 
 logger = get("engine.daemon")
+
+# How long a glimpsed media-window title stays usable as the subject of an
+# audio-driven learning session.
+_MEDIA_HINT_MAX_AGE_SEC = 1800.0
 
 # Maps the user-facing latency/quality preset onto the endpoint silence gap (ms).
 # Larger gap => waits for a fuller sentence => higher latency, better translation.
@@ -63,6 +68,7 @@ class Daemon:
             auto_recap_on_end=lcfg.auto_recap_on_end,
             auto_recap_hours=lcfg.auto_recap_hours,
             enabled=lcfg.enabled,
+            always_learning=getattr(lcfg, "always_learning", []),
         )
         # Last foreground context for audio-driven learning cues.
         self._last_fg: dict[str, str | None] = {
@@ -70,6 +76,10 @@ class Daemon:
             "window_title": "",
             "browser_url": None,
         }
+        # Last window that looked like a video/lecture surface, with the time it
+        # was seen. Supplies the subject for audio-driven sessions, whose only
+        # other candidate title belongs to an unrelated foreground window.
+        self._last_media: dict[str, object] = {}
 
         self._trigger_queue: queue.Queue = queue.Queue(maxsize=4096)
         self._linker = FrameLinkerActor(self.db)
@@ -427,27 +437,68 @@ class Daemon:
                 "window_title": window_title or "",
                 "browser_url": browser_url,
             }
+            # Remember the last window that looked like a video/lecture surface.
+            # Capture is foreground-only, so while a class plays in a background
+            # tab no frame carries its title — but one does every time the user
+            # glances at that tab, and that title names the lecture. Without it
+            # an audio-driven session has no subject at all: the only title on
+            # hand belongs to whatever unrelated window is in front.
+            from ..apps.learning_slice import looks_like_media_surface  # noqa: PLC0415
 
-        merged = text or ""
+            if looks_like_media_surface(
+                app_name=app_name or "",
+                window_name=window_title or "",
+                browser_url=browser_url or "",
+            ):
+                self._last_media = {
+                    "app_name": app_name or "",
+                    "window_title": window_title or "",
+                    "browser_url": browser_url or "",
+                    "seen_at": time.time(),
+                }
+
+        # Screen text and speech travel as SEPARATE channels. They used to be
+        # concatenated, which destroyed the provenance the classifier needs: a
+        # lecture's transcript became indistinguishable from words on screen, so
+        # it could only tint the verdict for whatever window was in front. Kept
+        # apart, a class playing in the background can be recognised as a class.
         if self.cfg.learning.use_audio_cues and self.cfg.audio.enabled:
             try:
                 audio_bits = self.db.recent_transcript_text(
                     within_seconds=float(self.cfg.learning.audio_lookback_seconds),
-                    limit=10,
-                    max_chars=1000,
+                    # Whisper emits short rows (~15 chars), so the old limit of
+                    # 10 capped a 90-second window at ~150 characters — far too
+                    # little to judge whether someone is teaching, and the real
+                    # reason continuous lecture audio still scored as silence.
+                    # Sized to hold the whole lookback: ~18 rows/min observed.
+                    limit=48,
+                    max_chars=2000,
                 )
             except Exception:  # noqa: BLE001
                 audio_bits = ""
             if extra_audio:
                 audio_bits = (extra_audio + "\n" + audio_bits).strip()
-            if audio_bits:
-                merged = f"{merged}\n{audio_bits}".strip() if merged else audio_bits
+        else:
+            audio_bits = ""
+
+        # Offer the cached media title only while it is plausibly still playing.
+        # Half an hour is generous next to the 90-second audio window, but the
+        # title is only glimpsed when the user happens to focus that tab — in the
+        # recorded session it appeared roughly every ten minutes — so a tight
+        # bound would discard it almost always.
+        media_title = ""
+        seen_at = float(self._last_media.get("seen_at") or 0)
+        if seen_at and (time.time() - seen_at) <= _MEDIA_HINT_MAX_AGE_SEC:
+            media_title = str(self._last_media.get("window_title") or "")
 
         self.learning_detector.observe(
             app_name=app_name,
             window_title=window_title,
             browser_url=browser_url,
-            text=merged,
+            text=text or "",
+            audio_text=audio_bits,
+            audio_lookback_seconds=float(self.cfg.learning.audio_lookback_seconds),
+            media_title=media_title,
             skip=skip,
         )
 
