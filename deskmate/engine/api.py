@@ -2595,6 +2595,81 @@ def create_app(
             raise HTTPException(status_code=404, detail="no video built for this session")
         return FileResponse(path, media_type="video/mp4", filename=f"session-{session_id}.mp4")
 
+    def _session_ocr_rows(start: str, end: str) -> list[dict[str, Any]]:
+        with db._lock:  # noqa: SLF001
+            rows = db._conn.execute(  # noqa: SLF001
+                """SELECT f.timestamp AS ts, f.app_name AS app, COALESCE(o.text,'') AS text
+                     FROM frames f LEFT JOIN ocr_text o ON o.frame_id = f.id
+                    WHERE f.timestamp >= ? AND f.timestamp <= ? AND COALESCE(o.text,'') != ''
+                    ORDER BY f.timestamp ASC LIMIT 4000""",
+                (start, end),
+            ).fetchall()
+        return [{"ts": r["ts"], "app": r["app"] or "", "text": r["text"]} for r in rows]
+
+    def _journey_path(session_id: int) -> Path:
+        return paths.root() / "exports" / f"learning-session-{session_id}" / "journey.json"
+
+    @app.post("/learning/sessions/{session_id}/journey")
+    async def build_learning_session_journey(session_id: int) -> dict[str, Any]:
+        """Reconstruct how the session was spent + on-screen errors and fixes."""
+        row = _learning_store().get_session(session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="session not found")
+        start = str(row.get("started_at") or "").strip()
+        end = str(row.get("ended_at") or "").strip() or datetime.now().astimezone().replace(
+            microsecond=0
+        ).isoformat()
+        if not start:
+            raise HTTPException(status_code=400, detail="session has no start time")
+
+        with db._lock:  # noqa: SLF001
+            frame_rows = db._conn.execute(  # noqa: SLF001
+                """SELECT timestamp AS ts, app_name AS app, window_name AS window, browser_url AS url
+                     FROM frames WHERE timestamp >= ? AND timestamp <= ?
+                    ORDER BY timestamp ASC LIMIT 6000""",
+                (start, end),
+            ).fetchall()
+        frames = [dict(r) for r in frame_rows]
+        ocr_rows = _session_ocr_rows(start, end)
+        audio_rows = [
+            {"ts": r.get("timestamp"),
+             "text": r.get("redacted_transcription") or r.get("transcription") or ""}
+            for r in db.transcripts_in_range(start, end)
+        ]
+
+        from anyio import to_thread  # noqa: PLC0415
+
+        from ..learning_memory.journey import build_journey  # noqa: PLC0415
+
+        result = await to_thread.run_sync(
+            lambda: build_journey(
+                frames=frames, ocr_rows=ocr_rows, audio_rows=audio_rows,
+                started_at=start, ended_at=end,
+            )
+        )
+        out = {"session_id": session_id, **result}
+        try:
+            path = _journey_path(session_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as exc:
+            logger.debug("journey cache write failed: %s", exc)
+        return out
+
+    @app.get("/learning/sessions/{session_id}/journey")
+    def learning_session_journey(session_id: int) -> dict[str, Any]:
+        """Return the cached journey (process + problems), if it was built."""
+        row = _learning_store().get_session(session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="session not found")
+        path = _journey_path(session_id)
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="no journey built for this session")
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=500, detail=f"journey unreadable: {exc}") from exc
+
     @app.get("/learning/live")
     def learning_live() -> dict[str, Any]:
         """Frame-level detector status (open session + config)."""

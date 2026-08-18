@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260818-3" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260818-4" />
     <style>
       /* Scoped styles for the Capture & Unified Timeline view */
       #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
@@ -322,6 +322,20 @@
       #view-learning .lrn-para-t { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--accent, #5b8cff); font-size: 11.5px; padding-top: 1px; }
       #view-learning .lrn-para-x { flex: 1 1 auto; min-width: 0; color: var(--text); word-break: break-word; }
       #view-learning .lrn-video { width: 100%; max-height: 460px; border-radius: 6px; background: #000; display: block; }
+      #view-learning .lrn-jn-section { margin-bottom: 10px; }
+      #view-learning .lrn-jn-subhead { font-size: 11.5px; font-weight: 700; color: var(--muted); margin: 12px 0 8px; }
+      #view-learning .lrn-jn-alloc { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; }
+      #view-learning .lrn-jn-alloc-label { flex: 0 0 96px; color: var(--text); }
+      #view-learning .lrn-jn-bar { flex: 1 1 auto; height: 8px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+      #view-learning .lrn-jn-bar > span { display: block; height: 100%; border-radius: 999px; background: var(--accent, #5b8cff); }
+      #view-learning .lrn-jn-min { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--muted); }
+      #view-learning .lrn-jn-problem { padding: 9px 11px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+      #view-learning .lrn-jn-problem-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+      #view-learning .lrn-jn-when { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+      #view-learning .lrn-jn-err { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text); word-break: break-word; margin-bottom: 5px; }
+      #view-learning .lrn-jn-line { font-size: 12.5px; line-height: 1.6; color: var(--text); }
+      #view-learning .lrn-jn-line b { color: var(--muted); font-weight: 600; }
+      #view-learning .lrn-badge.lrn-jn-ok { background: color-mix(in srgb, var(--online, #5fb878) 18%, transparent); color: var(--online, #5fb878); }
       #view-learning .lrn-recap { margin: 0; font-family: inherit; font-size: 12.5px; line-height: 1.7; color: var(--text); white-space: pre-wrap; word-break: break-word; }
       #view-learning .lrn-recap-box { max-height: 680px; }
       #view-learning .lrn-graph { margin-bottom: 14px; border: 1px solid var(--line); background: color-mix(in srgb, var(--surface-2) 82%, transparent); border-radius: 6px; overflow: hidden; }
@@ -1513,7 +1527,7 @@
       </article>
     </template>
 
-    <script src="/ui/assets/i18n.js?v=20260818-3" defer></script>
-    <script src="/ui/assets/app.js?v=20260818-3" defer></script>
+    <script src="/ui/assets/i18n.js?v=20260818-4" defer></script>
+    <script src="/ui/assets/app.js?v=20260818-4" defer></script>
   </body>
 </html>

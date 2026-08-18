@@ -1944,12 +1944,14 @@ async function loadLearningSessions() {
           <button type="button" class="ghost" data-transcript="${s.id}">${T("learning.transcript.show")}</button>
           <button type="button" class="ghost" data-ocr="${s.id}">${T("learning.ocr.show")}</button>
           <button type="button" class="ghost" data-video="${s.id}">${T("learning.video.show")}</button>
+          <button type="button" class="ghost" data-journey="${s.id}">${T("learning.journey.show")}</button>
           <button type="button" class="ghost" data-generate-recap="${s.id}">${T((s.meta || {}).recap_path ? "learning.recap.regenerate" : "learning.recap.generate")}</button>
           <button type="button" class="ghost" data-recap="${s.id}">${T("learning.recap.show")}</button>
         </div>
         <div class="lrn-transcript" data-for="${s.id}" hidden></div>
         <div class="lrn-transcript lrn-ocr-box" data-ocr-for="${s.id}" hidden></div>
         <div class="lrn-transcript lrn-video-box" data-video-for="${s.id}" hidden></div>
+        <div class="lrn-transcript lrn-journey-box" data-journey-for="${s.id}" hidden></div>
         <div class="lrn-transcript lrn-recap-box" data-recap-for="${s.id}" hidden></div>
       </div>
     </div>`;
@@ -2318,6 +2320,71 @@ async function loadSessionVideo(sessionId, host, btn) {
   }
 }
 
+/** Build (once) and render the learning process + errors/resolutions. */
+async function loadSessionJourney(sessionId, host, btn) {
+  host.innerHTML = `<div class="muted">${T("learning.journey.building")}</div>`;
+  host.hidden = false;
+  try {
+    const j = await api(`/learning/sessions/${sessionId}/journey`, { method: "POST" });
+    host.innerHTML = renderJourney(j);
+    if (btn) btn.textContent = T("learning.journey.hide");
+  } catch (err) {
+    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+  }
+}
+
+function renderJourney(j) {
+  const proc = j.process || {};
+  const alloc = proc.allocation || [];
+  const segs = proc.segments || [];
+  const problems = j.problems || [];
+  const total = (j.summary || {}).total_min || proc.total_min || 0;
+
+  const allocBars = alloc.map((a) => {
+    const pct = total > 0 ? Math.round((a.minutes / total) * 100) : 0;
+    return `<div class="lrn-jn-alloc">
+      <span class="lrn-jn-alloc-label">${capEscape(a.label)}</span>
+      <span class="lrn-jn-bar"><span style="width:${pct}%"></span></span>
+      <span class="lrn-jn-min">${a.minutes}m</span>
+    </div>`;
+  }).join("");
+
+  const timeline = segs.map((s) => `
+    <div class="lrn-para">
+      <span class="lrn-para-t">${capEscape(s.start)}</span>
+      <span class="lrn-para-x">${capEscape(s.label)}${s.app ? ` · ${capEscape(s.app)}` : ""} <span class="muted">(${s.minutes}m)</span></span>
+    </div>`).join("");
+
+  const probList = problems.length ? problems.map((p) => {
+    const status = p.status || (p.resolved ? "likely_resolved" : "unresolved");
+    const badge = status === "resolved"
+      ? `<span class="lrn-badge lrn-jn-ok">${T("learning.journey.resolved")}</span>`
+      : status === "likely_resolved"
+        ? `<span class="lrn-badge weak">${T("learning.journey.likelyResolved")}</span>`
+        : `<span class="lrn-badge overdue">${T("learning.journey.unresolved")}</span>`;
+    const where = p.app ? `<span class="lrn-jn-when">${capEscape(p.app)}</span>` : "";
+    return `<div class="lrn-jn-problem">
+      <div class="lrn-jn-problem-head">${badge}<span class="lrn-jn-when">${capEscape(p.first_seen)}${p.occurrences > 1 ? ` ·×${p.occurrences}` : ""}</span>${where}</div>
+      <div class="lrn-jn-err">${capEscape(p.error)}</div>
+      ${p.attempts ? `<div class="lrn-jn-line"><b>${T("learning.journey.attempts")}</b> ${capEscape(p.attempts)}</div>` : ""}
+      ${p.fix ? `<div class="lrn-jn-line"><b>${T("learning.journey.fix")}</b> ${capEscape(p.fix)}</div>` : ""}
+      ${p.success_at ? `<div class="lrn-jn-line"><b>${T("learning.journey.successAt")}</b> ${capEscape(p.success_at)}</div>` : ""}
+    </div>`;
+  }).join("") : `<div class="muted">${T("learning.journey.noProblems")}</div>`;
+
+  const sum = j.summary || {};
+  return `
+    <div class="lrn-transcript-head">${T("learning.journey.summary", {
+      total, wall: sum.wall_min || total, n: problems.length,
+      ok: sum.resolved_count || 0, maybe: sum.likely_resolved_count || 0,
+      bad: sum.unresolved_count || 0,
+    })}</div>
+    ${alloc.length ? `<div class="lrn-jn-section">${allocBars}</div>` : ""}
+    ${segs.length ? `<div class="lrn-jn-subhead">${T("learning.journey.timeline")}</div>${timeline}` : ""}
+    <div class="lrn-jn-subhead">${T("learning.journey.problems")}</div>
+    ${probList}`;
+}
+
 function refreshLearningView() {
   return Promise.all([
     loadLearningLive().catch((e) => console.error("[learning]", e)),
@@ -2517,6 +2584,27 @@ function bindLearningView() {
     }
     host.dataset.loaded = "1";
     loadSessionVideo(id, host, btn);
+  });
+
+  // Learning process + errors toggle — builds once, then reuses the cache.
+  $("#lrnSessions")?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-journey]");
+    if (!btn) return;
+    const id = btn.dataset.journey;
+    const host = document.querySelector(`.lrn-journey-box[data-journey-for="${id}"]`);
+    if (!host) return;
+    if (!host.hidden) {
+      host.hidden = true;
+      btn.textContent = T("learning.journey.show");
+      return;
+    }
+    if (host.dataset.loaded === "1") {
+      host.hidden = false;
+      btn.textContent = T("learning.journey.hide");
+      return;
+    }
+    host.dataset.loaded = "1";
+    loadSessionJourney(id, host, btn);
   });
 
   // Recap expand / collapse, same shape as the transcript toggle above.
