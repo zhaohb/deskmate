@@ -16,6 +16,7 @@ not produce (it forbids chronological retelling):
 from __future__ import annotations
 
 import re
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -101,6 +102,30 @@ def _hhmm(ts: str) -> str:
     return (str(ts) or "")[11:16]
 
 
+# Window titles carry the app as a suffix ("… - Google Chrome"); stripping it
+# keeps the part that says what was actually open.
+_TITLE_SUFFIX = re.compile(
+    r"\s*[-—|]\s*(Google Chrome|Microsoft.?Edge|Mozilla Firefox|Firefox|Brave|Vivaldi|Opera"
+    r"|Visual Studio Code|Cursor|PyCharm|WebStorm|IntelliJ IDEA|Sublime Text)\s*$",
+    re.I,
+)
+
+
+def clean_title(window_name: str) -> str:
+    title = " ".join((window_name or "").split())
+    for _ in range(2):  # some titles carry two suffixes ("… - VS Code - Cursor")
+        title = _TITLE_SUFFIX.sub("", title)
+    return title.strip()[:120]
+
+
+def _dominant_title(titles: Counter[str]) -> str:
+    """The title the learner spent most of the segment on, ignoring blanks."""
+    for name, _ in titles.most_common():
+        if name:
+            return name
+    return ""
+
+
 def build_process(frames: list[dict[str, Any]], *, idle_cap_s: float = 150.0, min_segment_s: float = 45.0) -> dict[str, Any]:
     """Deterministic activity timeline + per-activity time allocation.
 
@@ -111,7 +136,7 @@ def build_process(frames: list[dict[str, Any]], *, idle_cap_s: float = 150.0, mi
     """
     rows = sorted(
         ({"dt": _parse(f.get("ts")), "key": classify_activity(f.get("app", ""), f.get("window", ""), f.get("url", "")),
-          "ts": f.get("ts"), "app": f.get("app", "")} for f in frames if _parse(f.get("ts"))),
+          "ts": f.get("ts"), "app": f.get("app", ""), "window": f.get("window", "")} for f in frames if _parse(f.get("ts"))),
         key=lambda r: r["dt"],
     )
     if not rows:
@@ -129,8 +154,12 @@ def build_process(frames: list[dict[str, Any]], *, idle_cap_s: float = 150.0, mi
     for r in rows:
         if segments and segments[-1]["key"] == r["key"]:
             segments[-1]["_last"] = r["dt"]
+            segments[-1]["_titles"][clean_title(r["window"])] += 1
         else:
-            segments.append({"key": r["key"], "_start": r["dt"], "_last": r["dt"], "app": r["app"], "start_ts": r["ts"]})
+            segments.append({
+                "key": r["key"], "_start": r["dt"], "_last": r["dt"], "app": r["app"],
+                "start_ts": r["ts"], "_titles": Counter({clean_title(r["window"]): 1}),
+            })
     # A segment runs until the next one starts (capped), not until its own last
     # frame — otherwise every segment loses the tail before the switch.
     for i, s in enumerate(segments):
@@ -148,6 +177,8 @@ def build_process(frames: list[dict[str, Any]], *, idle_cap_s: float = 150.0, mi
     for s in kept:
         if merged and merged[-1]["key"] == s["key"]:
             merged[-1]["_seconds"] += s["_seconds"]
+            merged[-1]["_last"] = s["_last"]
+            merged[-1]["_titles"].update(s["_titles"])
         else:
             merged.append(dict(s))
 
@@ -156,7 +187,10 @@ def build_process(frames: list[dict[str, Any]], *, idle_cap_s: float = 150.0, mi
         "key": s["key"],
         "label": _ACTIVITY_LABELS.get(s["key"], s["key"]),
         "app": s["app"],
+        "title": _dominant_title(s["_titles"]),
         "minutes": round(max(s["_seconds"], 30.0) / 60, 1),
+        "start_ts": s["start_ts"],
+        "end_ts": s["_last"].isoformat(),
     } for s in merged]
     allocation = sorted(
         ({"key": k, "label": _ACTIVITY_LABELS.get(k, k), "minutes": round(v / 60, 1)} for k, v in alloc.items()),
@@ -331,6 +365,104 @@ def _window_text(
     return "\n".join(parts[:60])
 
 
+_SEGMENT_SYSTEM = (
+    "You label stretches of a study session. For each numbered stretch you get the "
+    "activity kind, the window title, and sampled on-screen text and speech from "
+    "that exact time range. Return ONLY JSON: "
+    '{"segments":[{"i":0,"detail":"one short clause","points":["concrete thing covered"]}]}. '
+    "`detail` names what was being learned or done — never repeat the activity kind, "
+    "and never just restate the title. `points` lists the specific things the "
+    "evidence shows were actually covered (techniques, APIs, numbers, files, "
+    "commands), 0 for a short stretch and up to 4 for a long one; each under 40 "
+    "characters. Use only the evidence — no points is better than invented ones. "
+    "Write in the SAME language as the evidence: if the evidence is Chinese, every "
+    "detail and point must be Chinese. Keep product and API names in their original form."
+)
+
+
+def _segment_evidence(seg: dict[str, Any], ocr_rows: list[dict], audio_rows: list[dict]) -> str:
+    """Sampled speech + screen text from a segment's own time range.
+
+    The sample scales with the stretch: summarizing 25 minutes from the same
+    handful of lines as 2 minutes is what makes a long segment read as a vague
+    restatement of its title.
+    """
+    lo, hi = _parse(seg.get("start_ts")), _parse(seg.get("end_ts"))
+    if lo is None or hi is None:
+        return ""
+    minutes = max(1.0, float(seg.get("minutes") or 1))
+    speech_n = int(min(18, 6 + minutes / 2))
+    budget = int(min(2200, 700 + minutes * 45))
+    speech = [str(r.get("text") or "") for r in audio_rows if (d := _parse(r.get("ts"))) and lo <= d <= hi]
+    screen = [str(r.get("text") or "") for r in ocr_rows if (d := _parse(r.get("ts"))) and lo <= d <= hi]
+    parts: list[str] = []
+    used = 0
+    # Speech first: during a lecture it says what is being taught, while OCR is
+    # mostly player chrome and page furniture.
+    for chunk in _spread(speech, speech_n) + _spread(screen, 3):
+        piece = " ".join(chunk.split())[:220]
+        if len(piece) < 8 or used + len(piece) > budget:
+            continue
+        parts.append(piece)
+        used += len(piece)
+    return " / ".join(parts)
+
+
+def _spread(rows: list[str], n: int) -> list[str]:
+    """Evenly sample ``n`` rows so a long stretch isn't summarized from its head."""
+    if len(rows) <= n:
+        return rows
+    step = len(rows) / n
+    return [rows[int(i * step)] for i in range(n)]
+
+
+def summarize_segments(
+    segments: list[dict[str, Any]], ocr_rows: list[dict], audio_rows: list[dict],
+    *, base: str, model: str, timeout: int,
+) -> dict[int, dict[str, Any]]:
+    """One call for the whole timeline — per-segment calls would cost a round trip each."""
+    from ..engine.llm import chat_ollama  # noqa: PLC0415
+    from .topics_llm import _load_json_object  # noqa: PLC0415
+
+    blocks: list[str] = []
+    for i, seg in enumerate(segments):
+        evidence = _segment_evidence(seg, ocr_rows, audio_rows)
+        if not evidence and not seg.get("title"):
+            continue
+        blocks.append(
+            f"#{i} kind={seg.get('label')} minutes={seg.get('minutes')} title={seg.get('title') or '-'}\nevidence: {evidence or '-'}"
+        )
+    if not blocks:
+        return {}
+    try:
+        msg = chat_ollama(
+            [{"role": "system", "content": _SEGMENT_SYSTEM},
+             {"role": "user", "content": "\n\n".join(blocks)[:9000] + "\n\nReturn the JSON now."}],
+            base=base, model=model, num_predict=900, timeout=timeout,
+        )
+        obj = _load_json_object(msg.get("content") or "")
+    except Exception as exc:  # noqa: BLE001 — labels are a nicety, never a blocker
+        logger.debug("segment summary failed: %s", exc)
+        return {}
+    out: dict[int, dict[str, Any]] = {}
+    for row in obj.get("segments") or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            idx = int(row.get("i"))
+        except (TypeError, ValueError):
+            continue
+        detail = " ".join(str(row.get("detail") or "").split())[:90]
+        points = [
+            " ".join(str(p).split())[:40]
+            for p in (row.get("points") or [])[:4]
+            if isinstance(p, (str, int, float)) and str(p).strip()
+        ]
+        if detail or points:
+            out[idx] = {"detail": detail, "points": points}
+    return out
+
+
 def build_journey(
     *,
     frames: list[dict[str, Any]],
@@ -359,7 +491,8 @@ def build_journey(
 
     base = model = None
     timeout = 120
-    if use_llm and problems:
+    llm_reason = ""
+    if use_llm and (problems or process["segments"]):
         try:
             from ..engine.llm import resolve_ollama_settings  # noqa: PLC0415
 
@@ -367,6 +500,23 @@ def build_journey(
         except Exception as exc:  # noqa: BLE001
             logger.debug("ollama settings unavailable: %s", exc)
             base = model = None
+            llm_reason = "unavailable"
+
+    if base and model and process["segments"]:
+        details = summarize_segments(
+            process["segments"], ocr_rows, audio_rows,
+            base=base, model=model, timeout=min(timeout, 180),
+        )
+        # No details at all means the model never answered (not running, or it
+        # returned nothing parseable) — say so rather than show blank rows.
+        if not details:
+            llm_reason = "unavailable"
+        for i, seg in enumerate(process["segments"]):
+            got = details.get(i) or {}
+            seg["detail"] = got.get("detail", "")
+            seg["points"] = got.get("points", [])
+    elif not use_llm:
+        llm_reason = "disabled"
 
     out_problems: list[dict[str, Any]] = []
     for p in problems:
@@ -397,6 +547,7 @@ def build_journey(
         "ended_at": ended_at,
         "process": process,
         "problems": out_problems,
+        "llm_note": llm_reason,
         "summary": {
             "total_min": process["total_min"],
             "wall_min": wall_min,

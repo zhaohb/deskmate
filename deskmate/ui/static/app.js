@@ -2352,7 +2352,13 @@ function renderJourney(j) {
   const timeline = segs.map((s) => `
     <div class="lrn-para">
       <span class="lrn-para-t">${capEscape(s.start)}</span>
-      <span class="lrn-para-x">${capEscape(s.label)}${s.app ? ` · ${capEscape(s.app)}` : ""} <span class="muted">(${s.minutes}m)</span></span>
+      <span class="lrn-para-x">
+        <span class="lrn-jn-act">${capEscape(s.label)}</span>
+        <span class="muted">${s.minutes}m${s.app ? ` · ${capEscape(s.app)}` : ""}</span>
+        ${s.title ? `<div class="lrn-jn-title">${capEscape(s.title)}</div>` : ""}
+        ${s.detail ? `<div class="lrn-jn-detail">${capEscape(s.detail)}</div>` : ""}
+        ${(s.points || []).length ? `<div class="lrn-jn-points">${s.points.map((p) => `<span>${capEscape(p)}</span>`).join("")}</div>` : ""}
+      </span>
     </div>`).join("");
 
   const probList = problems.length ? problems.map((p) => {
@@ -2373,12 +2379,14 @@ function renderJourney(j) {
   }).join("") : `<div class="muted">${T("learning.journey.noProblems")}</div>`;
 
   const sum = j.summary || {};
+  const note = j.llm_note ? `<div class="muted" style="margin-bottom:8px;font-size:12px">${T("learning.journey.noModel")}</div>` : "";
   return `
     <div class="lrn-transcript-head">${T("learning.journey.summary", {
       total, wall: sum.wall_min || total, n: problems.length,
       ok: sum.resolved_count || 0, maybe: sum.likely_resolved_count || 0,
       bad: sum.unresolved_count || 0,
     })}</div>
+    ${note}
     ${alloc.length ? `<div class="lrn-jn-section">${allocBars}</div>` : ""}
     ${segs.length ? `<div class="lrn-jn-subhead">${T("learning.journey.timeline")}</div>${timeline}` : ""}
     <div class="lrn-jn-subhead">${T("learning.journey.problems")}</div>
