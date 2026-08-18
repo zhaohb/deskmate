@@ -1167,6 +1167,56 @@ def create_app(
     def meetings(limit: int = 50) -> list[dict[str, Any]]:
         return db.list_meetings(limit=limit)
 
+    def _ocr_rows_between(start: str, end: str, *, limit: int = 4000) -> list[dict[str, Any]]:
+        """Screen text captured in a window, consecutive duplicates removed.
+
+        A static screen produces the same OCR on every frame, so the raw rows are
+        mostly repeats of whatever was left open.
+        """
+        with db._lock:  # noqa: SLF001
+            rows = db._conn.execute(  # noqa: SLF001
+                """SELECT f.timestamp AS ts, f.app_name AS app, COALESCE(o.text,'') AS text
+                     FROM frames f LEFT JOIN ocr_text o ON o.frame_id = f.id
+                    WHERE f.timestamp >= ? AND f.timestamp <= ? AND COALESCE(o.text,'') != ''
+                    ORDER BY f.timestamp ASC LIMIT ?""",
+                (start, end, limit),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        prev = ""
+        for r in rows:
+            text = " ".join((r["text"] or "").split())
+            if not text or text == prev:
+                continue
+            prev = text
+            out.append({"ts": r["ts"], "time": str(r["ts"] or "")[11:19],
+                        "app": r["app"] or "", "text": text[:1500]})
+        return out
+
+    def _meeting_span(meeting: dict[str, Any]) -> tuple[str, str]:
+        start = str(meeting.get("started_at") or "")
+        end = str(meeting.get("ended_at") or "") or datetime.now().astimezone().replace(
+            microsecond=0
+        ).isoformat()
+        return start, end
+
+    def _meeting_transcript_rows(meeting: dict[str, Any]) -> list[dict[str, Any]]:
+        """Speech during the meeting, by time window.
+
+        Linked segments only exist for meetings the detector followed; one the
+        user declared by hand has none, so the window is the reliable source.
+        """
+        start, end = _meeting_span(meeting)
+        if not start:
+            return []
+        return [
+            {"ts": r.get("timestamp"), "time": str(r.get("timestamp") or "")[11:19],
+             "text": r.get("redacted_transcription") or r.get("transcription") or ""}
+            for r in db.transcripts_in_range(start, end)
+        ]
+
+    def _meeting_summary_path(meeting_id: int) -> Path:
+        return paths.root() / "exports" / f"meeting-{meeting_id}" / "summary.json"
+
     @app.get("/meetings/status")
     def meeting_status() -> dict[str, Any]:
         active = db.active_meeting()
@@ -1188,25 +1238,156 @@ def create_app(
         if not meeting:
             raise HTTPException(status_code=404, detail="meeting not found")
         segments = db.list_meeting_segments(meeting_id)
+        if segments:
+            return {
+                "meeting_id": meeting_id,
+                "text": "\n".join(s.get("text") or "" for s in segments),
+                "segments": segments,
+            }
+        # A hand-declared meeting has nothing linked; serve its window instead.
+        rows = _meeting_transcript_rows(meeting)
         return {
             "meeting_id": meeting_id,
-            "text": "\n".join(s.get("text") or "" for s in segments),
-            "segments": segments,
+            "text": "\n".join(r["text"] for r in rows),
+            "segments": [],
+            "data": rows,
+            "rows": len(rows),
+            "source": "window",
         }
+
+    @app.get("/meetings/{meeting_id}/ocr")
+    def meeting_ocr(meeting_id: int) -> dict[str, Any]:
+        """On-screen text captured while the meeting was running."""
+        meeting = db.meeting_by_id(meeting_id)
+        if not meeting:
+            raise HTTPException(status_code=404, detail="meeting not found")
+        start, end = _meeting_span(meeting)
+        rows = _ocr_rows_between(start, end) if start else []
+        return {"meeting_id": meeting_id, "rows": len(rows), "data": rows}
+
+    @app.get("/meetings/{meeting_id}/todos")
+    def meeting_todos(meeting_id: int) -> dict[str, Any]:
+        """Follow-ups recorded against this meeting."""
+        if not db.meeting_by_id(meeting_id):
+            raise HTTPException(status_code=404, detail="meeting not found")
+        with db._lock:  # noqa: SLF001
+            rows = db._conn.execute(  # noqa: SLF001
+                "SELECT * FROM todos WHERE meeting_id = ? ORDER BY (status='done'), id",
+                (meeting_id,),
+            ).fetchall()
+        return {"meeting_id": meeting_id, "data": [dict(r) for r in rows], "total": len(rows)}
+
+    @app.post("/meetings/{meeting_id}/summary")
+    async def build_meeting_summary_route(meeting_id: int) -> dict[str, Any]:
+        """Summarize the meeting from its own span (speech + screen) and save it."""
+        meeting = db.meeting_by_id(meeting_id)
+        if not meeting:
+            raise HTTPException(status_code=404, detail="meeting not found")
+        start, end = _meeting_span(meeting)
+        if not start:
+            raise HTTPException(status_code=400, detail="meeting has no start time")
+
+        transcript_rows = _meeting_transcript_rows(meeting)
+        ocr_rows = _ocr_rows_between(start, end)
+
+        from anyio import to_thread  # noqa: PLC0415
+
+        from ..meeting.summary import build_meeting_summary, dedup_key  # noqa: PLC0415
+
+        result = await to_thread.run_sync(
+            lambda: build_meeting_summary(
+                transcript_rows=transcript_rows, ocr_rows=ocr_rows,
+                started_at=start, ended_at=end, name=str(meeting.get("name") or ""),
+            )
+        )
+        # Follow-ups become real todos so they reach the Todos page, keyed so a
+        # regenerated summary updates them instead of duplicating.
+        saved = 0
+        for todo in result.get("todos") or []:
+            try:
+                db.upsert_todo(
+                    text=todo["text"], source="meeting",
+                    source_ref=str(meeting.get("name") or f"meeting {meeting_id}"),
+                    source_detail=f"meeting:{meeting_id}", meeting_id=meeting_id,
+                    due=todo.get("due", ""), origin_app="meeting-summary",
+                    evidence_start=start, evidence_end=end,
+                    dedup_key=dedup_key(meeting_id, todo["text"]),
+                )
+                saved += 1
+            except Exception as exc:  # noqa: BLE001 — one bad row must not lose the summary
+                logger.debug("meeting todo save failed: %s", exc)
+        result["todos_saved"] = saved
+
+        out = {"meeting_id": meeting_id, **result}
+        try:
+            path = _meeting_summary_path(meeting_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as exc:
+            logger.debug("meeting summary cache write failed: %s", exc)
+        if result.get("title") and not str(meeting.get("name") or "").strip():
+            db.update_meeting(meeting_id, name=result["title"])
+        return out
+
+    @app.get("/meetings/{meeting_id}/summary")
+    def meeting_summary(meeting_id: int) -> dict[str, Any]:
+        """Return the saved summary, if one was generated."""
+        if not db.meeting_by_id(meeting_id):
+            raise HTTPException(status_code=404, detail="meeting not found")
+        path = _meeting_summary_path(meeting_id)
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="no summary built for this meeting")
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=500, detail=f"summary unreadable: {exc}") from exc
+
+    def _meeting_video_path(meeting_id: int) -> Path:
+        return paths.root() / "exports" / f"meeting-{meeting_id}" / "screen.mp4"
+
+    @app.post("/meetings/{meeting_id}/video")
+    async def build_meeting_video(meeting_id: int) -> dict[str, Any]:
+        """Render a screen timelapse for the meeting span so the user can review it."""
+        meeting = db.meeting_by_id(meeting_id)
+        if not meeting:
+            raise HTTPException(status_code=404, detail="meeting not found")
+        start, end = _meeting_span(meeting)
+        if not start:
+            raise HTTPException(status_code=400, detail="meeting has no start time")
+        from anyio import to_thread  # noqa: PLC0415
+
+        out_dir = paths.root() / "exports" / f"meeting-{meeting_id}"
+        result = await to_thread.run_sync(
+            lambda: _render_frames_to_mp4(db, start_time=start, end_time=end, out_dir=out_dir)
+        )
+        return {**result, "meeting_id": meeting_id}
+
+    @app.get("/meetings/{meeting_id}/video")
+    def meeting_video(meeting_id: int) -> Response:
+        """Stream the rendered meeting timelapse for in-page <video> playback."""
+        if not db.meeting_by_id(meeting_id):
+            raise HTTPException(status_code=404, detail="meeting not found")
+        path = _meeting_video_path(meeting_id)
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="no video built for this meeting")
+        return FileResponse(path, media_type="video/mp4", filename=f"meeting-{meeting_id}.mp4")
 
     @app.post("/meetings/start")
     async def start_meeting(request: Request) -> dict[str, Any]:
-        body = await request.json()
+        body = await _safe_json(request)
+        # A meeting the user declares by hand outranks detection: never let idle
+        # expiry close it, and keep the name they typed.
+        name = str(body.get("name") or body.get("title") or "").strip()
         meeting_id = db.insert_meeting(
-            name=str(body.get("name") or "Manual meeting"),
+            name=name or "Manual meeting",
             note=str(body.get("note") or ""),
-            metadata={"detection_source": "manual", **(body.get("metadata") or {})},
+            metadata={"detection_source": "manual", "manual": True, **(body.get("metadata") or {})},
         )
-        return {"id": meeting_id}
+        return {"id": meeting_id, "meeting": db.meeting_by_id(meeting_id)}
 
     @app.post("/meetings/stop")
     async def stop_meeting(request: Request) -> dict[str, Any]:
-        body = await request.json()
+        body = await _safe_json(request)
         meeting_id = body.get("id") or body.get("meeting_id")
         if meeting_id is None:
             active = db.active_meeting()

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260818-5" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260818-9" />
     <style>
       /* Scoped styles for the Capture & Unified Timeline view */
       #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
@@ -265,8 +265,58 @@
       #view-reminders .rem-routine .rt-time { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); flex: 0 0 52px; }
       #view-reminders .rem-routine .rt-text { color: var(--text); flex: 1 1 auto; }
       #view-reminders .rem-routine .rt-freq { color: var(--muted); font-size: 12px; }
-      /* ── learning ─────────────────────────────────────────────────────── */
-      #view-learning .lrn-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
+      /* ── meetings ─────────────────────────────────────────────────────── */
+      #view-meetings .mtg-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
+      #view-meetings .mtg-card h3 { font-size: 15px; margin: 0 0 6px; color: var(--text); display: flex; align-items: center; gap: 8px; }
+      #view-meetings .mtg-count { font-size: 12px; font-weight: 600; color: var(--accent, #5b8cff); background: color-mix(in srgb, var(--accent, #5b8cff) 14%, transparent); padding: 1px 9px; border-radius: 999px; }
+      #view-meetings .mtg-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+      #view-meetings .mtg-live { display: flex; gap: 12px; align-items: flex-start; padding: 14px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); }
+      #view-meetings .mtg-ic { flex: 0 0 36px; width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; background: color-mix(in srgb, var(--accent, #5b8cff) 16%, transparent); }
+      #view-meetings .mtg-live-title { font-size: 14px; color: var(--text); font-weight: 600; }
+      #view-meetings .mtg-live-sub { font-size: 12px; color: var(--muted); margin-top: 5px; line-height: 1.6; }
+      #view-meetings .mtg-manual { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
+      #view-meetings .mtg-manual-idle:not([hidden]) { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      #view-meetings .mtg-manual-idle input { flex: 1 1 300px; min-width: 220px; }
+      #view-meetings .mtg-go { background: #000; border-color: var(--line-strong, #3a3a3a); color: #fff; font-weight: 600; }
+      #view-meetings .mtg-go:hover { background: #111; border-color: var(--accent, #fff); }
+      #view-meetings .mtg-manual-active:not([hidden]) { display: flex; gap: 12px; align-items: center; padding: 13px 14px; border-radius: var(--radius); background: color-mix(in srgb, var(--online, #5fb878) 12%, transparent); border: 1px solid color-mix(in srgb, var(--online, #5fb878) 42%, var(--line)); }
+      #view-meetings .mtg-manual-body { flex: 1 1 auto; min-width: 0; }
+      #view-meetings .mtg-manual-name { font-size: 14px; font-weight: 600; color: var(--text); word-break: break-word; }
+      #view-meetings .mtg-manual-meta { display: flex; gap: 10px; align-items: baseline; margin-top: 5px; font-size: 12px; flex-wrap: wrap; }
+      #view-meetings .mtg-timer { font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 700; color: var(--online, #5fb878); }
+      #view-meetings .mtg-stop { flex: 0 0 auto; border-color: color-mix(in srgb, #e06c75 55%, var(--line)); color: #e06c75; font-weight: 600; }
+      #view-meetings .mtg-stop:hover { background: color-mix(in srgb, #e06c75 14%, transparent); }
+      #view-meetings .mtg-note { margin: 10px 0 0; font-size: 12px; line-height: 1.6; }
+      #view-meetings .mtg-item { display: flex; gap: 12px; padding: 12px 14px; margin-bottom: 10px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); }
+      #view-meetings .mtg-item .mtg-body { flex: 1 1 auto; min-width: 0; }
+      #view-meetings .mtg-name { font-size: 13.5px; color: var(--text); font-weight: 600; word-break: break-word; }
+      #view-meetings .mtg-meta { font-size: 12px; color: var(--muted); margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      #view-meetings .mtg-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--surface-3); color: var(--muted); }
+      #view-meetings .mtg-badge.open { background: color-mix(in srgb, var(--online, #5fb878) 18%, transparent); color: var(--online, #5fb878); }
+      #view-meetings .mtg-item .mtg-row-acts { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+      #view-meetings .mtg-item .mtg-row-acts button { font-size: 12px; padding: 5px 12px; border-radius: 8px; }
+      #view-meetings .mtg-panel { margin-top: 10px; padding: 12px; border-radius: var(--radius); background: var(--surface-3); border: 1px solid var(--line); max-height: 420px; overflow: auto; }
+      #view-meetings .mtg-video { width: 100%; max-height: 460px; border-radius: 6px; background: #000; display: block; }
+      #view-meetings .mtg-panel-head { font-size: 11.5px; color: var(--muted); margin-bottom: 9px; }
+      #view-meetings .mtg-para { display: flex; gap: 10px; margin-bottom: 9px; font-size: 12.5px; line-height: 1.65; }
+      #view-meetings .mtg-para-t { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--accent, #5b8cff); font-size: 11.5px; padding-top: 1px; }
+      #view-meetings .mtg-para-x { flex: 1 1 auto; min-width: 0; color: var(--text); word-break: break-word; }
+      #view-meetings .mtg-sum-title { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+      #view-meetings .mtg-sum-body { font-size: 12.5px; line-height: 1.7; color: var(--text); white-space: pre-wrap; }
+      #view-meetings .mtg-sub { font-size: 11.5px; font-weight: 700; color: var(--muted); margin: 12px 0 6px; }
+      #view-meetings .mtg-list { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.7; color: var(--text); }
+      #view-meetings .mtg-todo { display: flex; gap: 8px; align-items: baseline; padding: 7px 10px; margin-bottom: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); font-size: 12.5px; }
+      #view-meetings .mtg-todo .mtg-owner { color: var(--muted); font-size: 11.5px; }
+      #view-meetings .mtg-empty { padding: 22px 14px; text-align: center; color: var(--muted); font-size: 12.5px; }
+      #view-meetings .mtg-trans-bar { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      #view-meetings .mtg-trans-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text); }
+      /* Fallback panel for browsers without Document Picture-in-Picture: pinned
+         inside the page, which is as "on top" as a tab is allowed to get. */
+      .mtg-float { position: fixed; right: 18px; bottom: 18px; z-index: 9999; width: 420px; max-width: calc(100vw - 36px); max-height: 60vh; display: flex; flex-direction: column; background: var(--surface, #16181d); border: 1px solid var(--line, #2a2e37); border-radius: 10px; box-shadow: 0 10px 32px rgba(0,0,0,.45); }
+      .mtg-float-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--line, #2a2e37); cursor: move; font-size: 12.5px; font-weight: 600; color: var(--text, #e6e6e6); }
+      .mtg-float-head button { margin-left: auto; font-size: 12px; padding: 3px 9px; }
+      .mtg-float-body { overflow: auto; padding: 10px 12px; }
+      /* ── learning ─────────────────────────────────────────────────────── */      #view-learning .lrn-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
       #view-learning .lrn-card h3 { font-size: 15px; margin: 0 0 6px; color: var(--text); display: flex; align-items: center; gap: 8px; }
       #view-learning .lrn-card h3 .lrn-count { font-size: 12px; font-weight: 600; color: var(--accent, #5b8cff); background: color-mix(in srgb, var(--accent, #5b8cff) 14%, transparent); padding: 1px 9px; border-radius: 999px; }
       #view-learning .lrn-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
@@ -841,22 +891,53 @@
         </section>
 
         <section id="view-meetings" class="view">
-          <div class="details-layout">
-            <section class="panel list-panel">
-              <div class="detail-panel-header">
-                <div class="panel-title" data-i18n="meetings.title">Meetings</div>
-                <button type="button" id="meetingsRefreshBtn" data-i18n="common.refresh">Refresh</button>
+          <div class="mtg-card">
+            <h3><span data-i18n="meetings.live.title">Meeting status</span></h3>
+            <p class="muted" style="margin-top:0" data-i18n="meetings.live.intro">Start a meeting by hand to record its whole span. Audio and screen text are captured throughout, and the summary is written from that exact window when you end it.</p>
+            <div class="mtg-acts" style="margin-bottom:12px">
+              <button type="button" id="meetingsRefreshBtn" data-i18n="common.refresh">Refresh</button>
+            </div>
+            <div id="mtgLive"></div>
+            <div class="mtg-manual">
+              <div id="mtgManualIdle" class="mtg-manual-idle">
+                <input id="mtgManualTitle" type="text" maxlength="120"
+                       data-i18n-attr="placeholder:meetings.manual.placeholder"
+                       placeholder="What is this meeting about? e.g. Weekly sync">
+                <button id="mtgManualStart" type="button" class="mtg-go" data-i18n="meetings.manual.start">Start meeting</button>
               </div>
-              <div id="meetingsList" class="list empty" data-i18n="meetings.noneDetected">No meetings</div>
-            </section>
-            <section class="panel detail-panel">
-              <div class="detail-panel-header">
-                <div class="panel-title" id="meetingDetailTitle" data-i18n="meetings.details">Meeting details</div>
-                <button type="button" id="meetingSummarizeBtn" class="primary" style="display:none" data-i18n="meetings.summarize">Summarize</button>
+              <div id="mtgManualActive" class="mtg-manual-active" hidden>
+                <div class="mtg-manual-body">
+                  <div class="mtg-manual-name" id="mtgManualName"></div>
+                  <div class="mtg-manual-meta">
+                    <span class="mtg-timer" id="mtgManualTimer">00:00</span>
+                    <span class="muted" data-i18n="meetings.manual.running">recording audio and screen until you stop</span>
+                  </div>
+                </div>
+                <button id="mtgManualStop" type="button" class="mtg-stop" data-i18n="meetings.manual.stop">End meeting</button>
               </div>
-              <div id="meetingRunStatus" class="app-run-status" role="status" aria-live="polite" style="display:none"></div>
-              <div id="meetingDetails" class="detail-card muted-detail" data-i18n="meetings.select">Select a meeting to view its transcript and summary</div>
-            </section>
+              <p class="muted mtg-note" data-i18n="meetings.manual.note">Ending a meeting writes its summary from the speech and on-screen text of that span, and any follow-ups it finds become todos.</p>
+            </div>
+            <div class="mtg-trans-bar">
+              <label class="mtg-trans-toggle">
+                <input type="checkbox" id="mtgTransEnable">
+                <span data-i18n="meetings.translate.enable">Live translation</span>
+              </label>
+              <select id="mtgTransLang" aria-label="Target language">
+                <option value="zh">中文</option>
+                <option value="en">English</option>
+                <option value="ja">日本語</option>
+                <option value="ko">한국어</option>
+              </select>
+              <button type="button" id="mtgTransOpen" data-i18n="meetings.translate.open">Open floating window</button>
+              <span id="mtgTransMsg" class="muted"></span>
+            </div>
+            <p class="muted mtg-note" data-i18n="meetings.translate.help">The floating window stays on top of other apps and keeps showing each line with its translation until you close it.</p>
+          </div>
+
+          <div class="mtg-card">
+            <h3><span data-i18n="meetings.title">Meetings</span> <span id="mtgCount" class="mtg-count" hidden></span></h3>
+            <p class="muted" style="margin-top:0" data-i18n="meetings.list.intro">Each meeting can show what was said, what was on screen, and the summary generated from both.</p>
+            <div id="meetingsList"></div>
           </div>
         </section>
 
@@ -1532,7 +1613,7 @@
       </article>
     </template>
 
-    <script src="/ui/assets/i18n.js?v=20260818-5" defer></script>
-    <script src="/ui/assets/app.js?v=20260818-5" defer></script>
+    <script src="/ui/assets/i18n.js?v=20260818-9" defer></script>
+    <script src="/ui/assets/app.js?v=20260818-9" defer></script>
   </body>
 </html>

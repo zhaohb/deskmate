@@ -154,6 +154,10 @@ def test_capture_loop_fires_meeting_expire_on_first_iteration() -> None:
         def can_capture(self): return False
         def poll_activity(self): return None
         def mark_captured(self): ...
+        # The loop also probes for on-screen change; a double that stops short
+        # of the real interface fails here for the wrong reason.
+        def visual_ready(self, _now): return False
+        def visual_changed(self): return False
 
     orig_state = ed.EventDrivenCapture
     ed.EventDrivenCapture = lambda cfg: _NullState()  # type: ignore[assignment]

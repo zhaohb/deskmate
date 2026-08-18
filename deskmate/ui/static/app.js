@@ -189,7 +189,6 @@ const appTimeRangeUi = {
 
 const todosUi = { filter: "open" };
 const todoTimeRangeUi = { preset: "all" };
-const meetingsUi = { selectedId: null };
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -591,6 +590,7 @@ function connectEventStream() {
     } else if (type === "audio_transcribed") {
       scheduleSection("transcripts", refreshTranscriptsSection);
       onTranslateTranscribed(payload.data || {});
+      mtgTransOnTranscribed(payload.data || {});
     } else if (type === "transcript_translated") {
       // Live translation arrived for a transcript: try to patch the visible row
       // in place (no flicker); fall back to a section refresh if it isn't shown.
@@ -598,6 +598,7 @@ function connectEventStream() {
         scheduleSection("transcripts", refreshTranscriptsSection);
       }
       onTranslateTranslated(payload.data || {});
+      mtgTransOnTranslated(payload.data || {});
     } else if (
       type === "click" ||
       type === "key_text" ||
@@ -5010,129 +5011,389 @@ function formatMeetingTime(start, end) {
   return `${fmt(s)} → ${e.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
 }
 
+// ── meetings ────────────────────────────────────────────────────────────────
+// Same shape as the Learning page: a hand-declared session with a running
+// timer, then per-meeting panels that expand on demand and cache once loaded.
+let mtgTimer = null;
+let mtgStartedAt = 0;
+
+function mtgStopTicker() {
+  if (mtgTimer) { clearInterval(mtgTimer); mtgTimer = null; }
+}
+
+function mtgRenderElapsed() {
+  const el = $("#mtgManualTimer");
+  if (!el || !mtgStartedAt) return;
+  const secs = Math.max(0, Math.floor((Date.now() - mtgStartedAt) / 1000));
+  const pad = (n) => String(n).padStart(2, "0");
+  const h = Math.floor(secs / 3600);
+  el.textContent = h ? `${h}:${pad(Math.floor((secs % 3600) / 60))}:${pad(secs % 60)}`
+    : `${pad(Math.floor(secs / 60))}:${pad(secs % 60)}`;
+}
+
 async function loadMeetings() {
-  const payload = await api("/meetings?limit=50");
+  const [payload, status] = await Promise.all([
+    api("/meetings?limit=50"),
+    api("/meetings/status").catch(() => ({ in_meeting: false })),
+  ]);
   state.meetings = Array.isArray(payload) ? payload : (payload.data || []);
+  renderMeetingLive(status);
   renderMeetings();
+}
+
+function renderMeetingLive(status) {
+  const box = $("#mtgLive");
+  const open = status && status.in_meeting ? status.meeting : null;
+  if (box) {
+    box.innerHTML = `
+      <div class="mtg-live">
+        <div class="mtg-ic">${open ? "🎙️" : "💤"}</div>
+        <div class="mtg-manual-body">
+          <div class="mtg-live-title">${T(open ? "meetings.live.active" : "meetings.live.idle")}</div>
+          <div class="mtg-live-sub">${open ? capEscape(open.name || "") : ""}</div>
+        </div>
+      </div>`;
+  }
+  const idle = $("#mtgManualIdle");
+  const active = $("#mtgManualActive");
+  if (!idle || !active) return;
+  idle.hidden = !!open;
+  active.hidden = !open;
+  mtgStopTicker();
+  if (!open) { mtgStartedAt = 0; return; }
+  const name = $("#mtgManualName");
+  if (name) name.textContent = open.name || T("meetings.untitled");
+  const began = Date.parse(open.started_at || "");
+  mtgStartedAt = Number.isNaN(began) ? Date.now() : began;
+  mtgRenderElapsed();
+  mtgTimer = setInterval(mtgRenderElapsed, 1000);
 }
 
 function renderMeetings() {
   const list = $("#meetingsList");
+  const countEl = $("#mtgCount");
   if (!list) return;
-  list.innerHTML = "";
-  if (!state.meetings.length) {
-    list.classList.add("empty");
-    list.textContent = T("meetings.noneDetected");
+  const rows = state.meetings || [];
+  if (countEl) {
+    if (rows.length) { countEl.textContent = rows.length; countEl.hidden = false; }
+    else { countEl.hidden = true; }
+  }
+  if (!rows.length) {
+    list.innerHTML = `<div class="mtg-empty">${T("meetings.noneDetected")}</div>`;
     return;
   }
-  list.classList.remove("empty");
-  for (const m of state.meetings) {
-    const hasTx = (m.transcript_length || 0) > 0 || (m.segment_count || 0) > 0;
-    const sub = `${formatMeetingTime(m.started_at, m.ended_at)} · ${m.segment_count || 0} seg${hasTx ? "" : " · no transcript"}`;
-    const item = listItem({
-      title: m.name || "Meeting",
-      subtitle: sub,
-      actionLabel: "View",
-      onAction: () => selectMeeting(m.id),
-    });
-    if (meetingsUi.selectedId === m.id) item.classList.add("active");
-    list.appendChild(item);
-  }
+  list.innerHTML = rows.map((m) => `
+    <div class="mtg-item">
+      <div class="mtg-ic">🤝</div>
+      <div class="mtg-body">
+        <div class="mtg-name">${capEscape(m.name || T("meetings.untitled"))}</div>
+        <div class="mtg-meta">
+          ${!m.ended_at ? `<span class="mtg-badge open">${T("meetings.badge.open")}</span>` : ""}
+          <span>${capEscape(formatMeetingTime(m.started_at, m.ended_at))}</span>
+          ${m.started_at ? `<span>${capEscape(timeAgo(m.started_at))}</span>` : ""}
+        </div>
+        <div class="mtg-row-acts">
+          <button type="button" class="ghost" data-mtg-transcript="${m.id}">${T("meetings.show.transcript")}</button>
+          <button type="button" class="ghost" data-mtg-ocr="${m.id}">${T("meetings.show.screen")}</button>
+          <button type="button" class="ghost" data-mtg-video="${m.id}">${T("meetings.video.show")}</button>
+          <button type="button" class="ghost" data-mtg-gen="${m.id}">${T("meetings.summary.generate")}</button>
+          <button type="button" class="ghost" data-mtg-summary="${m.id}">${T("meetings.summary.show")}</button>
+        </div>
+        <div class="mtg-panel mtg-transcript-box" data-mtg-transcript-for="${m.id}" hidden></div>
+        <div class="mtg-panel mtg-ocr-box" data-mtg-ocr-for="${m.id}" hidden></div>
+        <div class="mtg-panel mtg-video-box" data-mtg-video-for="${m.id}" hidden></div>
+        <div class="mtg-panel mtg-summary-box" data-mtg-summary-for="${m.id}" hidden></div>
+      </div>
+    </div>`).join("");
 }
 
-async function selectMeeting(id) {
-  meetingsUi.selectedId = id;
-  renderMeetings();
-  const titleEl = $("#meetingDetailTitle");
-  const detail = $("#meetingDetails");
-  const sumBtn = $("#meetingSummarizeBtn");
-  detail.classList.remove("muted-detail");
-  detail.textContent = T("common.loading");
+function mtgRenderLines(rows, headKey, n) {
+  return `
+    <div class="mtg-panel-head">${T(headKey, { n })}</div>
+    ${rows.map((r) => `
+      <div class="mtg-para">
+        <span class="mtg-para-t">${capEscape(r.time || "")}</span>
+        <span class="mtg-para-x">${capEscape(r.text || "")}</span>
+      </div>`).join("")}`;
+}
+
+async function loadMeetingTranscript(id, host, btn) {
+  host.innerHTML = `<div class="muted">${T("meetings.loading")}</div>`;
+  host.hidden = false;
   try {
-    const data = await api(`/meetings/${id}`);
-    const meeting = data.meeting || {};
-    const segs = data.segments || [];
-    if (titleEl) titleEl.textContent = meeting.name || "Meeting";
-    if (sumBtn) {
-      sumBtn.style.display = "";
-      sumBtn.onclick = () => summarizeMeeting(id);
-    }
-    renderMeetingDetail(meeting, segs);
+    const j = await api(`/meetings/${id}/transcript`);
+    // Detector-linked meetings return `segments`; a hand-declared one returns
+    // `data` from its time window instead.
+    const rows = (j.data || []).length
+      ? j.data
+      : (j.segments || []).map((s) => ({ time: "", text: `${s.speaker_name || ""} ${s.text || ""}`.trim() }));
+    host.innerHTML = rows.length
+      ? mtgRenderLines(rows, "meetings.transcript.count", rows.length)
+      : `<div class="muted">${T("meetings.noTranscript")}</div>`;
+    if (btn) btn.textContent = T("meetings.hide.transcript");
   } catch (err) {
-    detail.textContent = `Failed to load meeting: ${err.message}`;
+    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
   }
 }
 
-function renderMeetingDetail(meeting, segs) {
-  const detail = $("#meetingDetails");
-  detail.innerHTML = "";
-
-  const meta = document.createElement("div");
-  meta.className = "meeting-meta";
-  meta.textContent = `${formatMeetingTime(meeting.started_at, meeting.ended_at)} · ${segs.length} segment(s)`;
-  detail.appendChild(meta);
-
-  if (meeting.note) {
-    const note = document.createElement("div");
-    note.className = "meeting-note";
-    note.innerHTML = simpleMarkdown(meeting.note);
-    detail.appendChild(note);
+async function loadMeetingOcr(id, host, btn) {
+  host.innerHTML = `<div class="muted">${T("meetings.loading")}</div>`;
+  host.hidden = false;
+  try {
+    const j = await api(`/meetings/${id}/ocr`);
+    const rows = j.data || [];
+    host.innerHTML = rows.length
+      ? mtgRenderLines(rows, "meetings.screen.count", j.rows)
+      : `<div class="muted">${T("meetings.noScreen")}</div>`;
+    if (btn) btn.textContent = T("meetings.hide.screen");
+  } catch (err) {
+    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
   }
+}
 
-  const sub = document.createElement("div");
-  sub.className = "meeting-subhead";
-  sub.textContent = "Transcript";
-  detail.appendChild(sub);
+/** Build (once) and play a screen timelapse of the meeting span. */
+async function loadMeetingVideo(id, host, btn) {
+  host.innerHTML = `<div class="muted">${T("meetings.video.building")}</div>`;
+  host.hidden = false;
+  try {
+    const res = await api(`/meetings/${id}/video`, { method: "POST" });
+    if (!res.success) {
+      const msg = res.reason === "ffmpeg_not_found" ? T("meetings.video.noffmpeg")
+        : res.reason === "no_frames" ? T("meetings.video.noframes")
+        : T("meetings.video.failed");
+      host.innerHTML = `<div class="muted">${capEscape(msg)}</div>`;
+      return;
+    }
+    host.innerHTML = `
+      <video class="mtg-video" controls preload="metadata" src="/meetings/${id}/video?t=${Date.now()}"></video>
+      <div class="muted" style="margin-top:6px;font-size:12px">${T("meetings.video.note", { n: res.frame_count })}</div>`;
+    if (btn) btn.textContent = T("meetings.video.hide");
+  } catch (err) {
+    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+  }
+}
 
-  if (!segs.length) {
-    const empty = document.createElement("div");
-    empty.className = "muted-copy";
-    empty.textContent = T("meetings.noTranscript");
-    detail.appendChild(empty);
+function renderMeetingSummary(j) {
+  const ev = j.evidence || {};
+  const list = (rows) => `<ul class="mtg-list">${rows.map((r) => `<li>${capEscape(r)}</li>`).join("")}</ul>`;
+  const todos = (j.todos || []).map((t) => `
+    <div class="mtg-todo">
+      <span>${capEscape(t.text)}</span>
+      ${t.owner ? `<span class="mtg-owner">${capEscape(t.owner)}</span>` : ""}
+      ${t.due ? `<span class="mtg-owner">${capEscape(t.due)}</span>` : ""}
+    </div>`).join("");
+  const note = j.note
+    ? `<div class="muted" style="margin-bottom:8px">${T(
+        j.note === "no_evidence" ? "meetings.summary.noEvidence" : "meetings.summary.noModel",
+      )}</div>`
+    : "";
+  return `
+    <div class="mtg-panel-head">${T("meetings.summary.evidence", {
+      a: ev.transcript_rows || 0, s: ev.screen_rows || 0,
+    })}</div>
+    ${note}
+    ${j.title ? `<div class="mtg-sum-title">${capEscape(j.title)}</div>` : ""}
+    ${j.summary ? `<div class="mtg-sum-body">${capEscape(j.summary)}</div>` : ""}
+    ${(j.key_points || []).length ? `<div class="mtg-sub">${T("meetings.summary.points")}</div>${list(j.key_points)}` : ""}
+    ${(j.decisions || []).length ? `<div class="mtg-sub">${T("meetings.summary.decisions")}</div>${list(j.decisions)}` : ""}
+    ${(j.todos || []).length ? `<div class="mtg-sub">${T("meetings.summary.todos")}</div>${todos}` : ""}`;
+}
+
+async function loadMeetingSummary(id, host, btn, { generate = false } = {}) {
+  host.innerHTML = `<div class="muted">${T(generate ? "meetings.summary.building" : "meetings.loading")}</div>`;
+  host.hidden = false;
+  try {
+    const j = generate
+      ? await api(`/meetings/${id}/summary`, { method: "POST" })
+      : await api(`/meetings/${id}/summary`);
+    if (generate) {
+      // A generated summary can rename the meeting, so the list is refreshed
+      // first — that replaces these nodes, so re-acquire them before writing.
+      await loadMeetings().catch(() => {});
+      host = document.querySelector(`.mtg-summary-box[data-mtg-summary-for="${id}"]`) || host;
+      btn = document.querySelector(`button[data-mtg-summary="${id}"]`) || btn;
+      host.hidden = false;
+    }
+    host.innerHTML = renderMeetingSummary(j);
+    host.dataset.loaded = "1";
+    if (btn) btn.textContent = T("meetings.hide.summary");
+  } catch (err) {
+    const msg = /404|not found|no summary/i.test(String(err.message || err))
+      ? T("meetings.summary.none")
+      : String(err.message || err);
+    host.innerHTML = `<div class="muted">${capEscape(msg)}</div>`;
+  }
+}
+
+/** Expand/collapse a per-meeting panel, loading it the first time only. */
+function mtgBindToggle(attr, boxClass, showKey, hideKey, loader) {
+  $("#meetingsList")?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest(`button[data-${attr}]`);
+    if (!btn) return;
+    const id = btn.dataset[attr.replace(/-([a-z])/g, (_, c) => c.toUpperCase())];
+    const host = document.querySelector(`.${boxClass}[data-${attr}-for="${id}"]`);
+    if (!host) return;
+    if (!host.hidden) { host.hidden = true; btn.textContent = T(showKey); return; }
+    if (host.dataset.loaded === "1") { host.hidden = false; btn.textContent = T(hideKey); return; }
+    host.dataset.loaded = "1";
+    loader(id, host, btn);
+  });
+}
+
+// ── live translation window ─────────────────────────────────────────────────
+// Its own row buffer rather than `state.translate`: that one only fills while
+// the Translate view is open, and this window has to keep working from any page.
+const mtgTrans = { win: null, panel: null, rows: [], byId: new Map(), max: 300 };
+
+function mtgTransSurface() {
+  if (mtgTrans.win && !mtgTrans.win.closed) return mtgTrans.win.document.getElementById("mtgTransBody");
+  return mtgTrans.panel ? mtgTrans.panel.querySelector(".mtg-float-body") : null;
+}
+
+function mtgTransRowHtml(row) {
+  return `<div class="tr-row" data-tid="${row.id}">
+    <div class="tr-time">${capEscape(row.time || "")}</div>
+    <div class="tr-src">${capEscape(row.source || "")}</div>
+    <div class="tr-tgt${row.translation ? "" : " pending"}">${capEscape(row.translation || T("meetings.translate.pending"))}</div>
+  </div>`;
+}
+
+function mtgTransRender() {
+  const host = mtgTransSurface();
+  if (!host) return;
+  host.innerHTML = mtgTrans.rows.length
+    ? mtgTrans.rows.map(mtgTransRowHtml).join("")
+    : `<div class="tr-empty">${T("meetings.translate.waiting")}</div>`;
+  host.scrollTop = host.scrollHeight;
+}
+
+function mtgTransPatch(row) {
+  const host = mtgTransSurface();
+  const el = host && host.querySelector(`.tr-row[data-tid="${row.id}"]`);
+  if (!el) return mtgTransRender();
+  el.querySelector(".tr-src").textContent = row.source || "";
+  const tgt = el.querySelector(".tr-tgt");
+  if (row.translation) {
+    tgt.classList.remove("pending");
+    tgt.textContent = row.translation;
+  }
+  host.scrollTop = host.scrollHeight;
+}
+
+function mtgTransOnTranscribed(payload) {
+  const id = payload && payload.transcript_id;
+  if (id == null || !mtgTransSurface()) return;
+  const key = String(id);
+  let row = mtgTrans.byId.get(key);
+  if (!row) {
+    row = { id, source: payload.text || "", translation: "",
+            time: new Date().toTimeString().slice(0, 8) };
+    mtgTrans.rows.push(row);
+    mtgTrans.byId.set(key, row);
+    if (mtgTrans.rows.length > mtgTrans.max) {
+      const dropped = mtgTrans.rows.shift();
+      mtgTrans.byId.delete(String(dropped.id));
+      return mtgTransRender();
+    }
+    const host = mtgTransSurface();
+    const empty = host.querySelector(".tr-empty");
+    if (empty) empty.remove();
+    host.insertAdjacentHTML("beforeend", mtgTransRowHtml(row));
+    host.scrollTop = host.scrollHeight;
     return;
   }
-  const tx = document.createElement("div");
-  tx.className = "meeting-transcript";
-  for (const seg of segs) {
-    const line = document.createElement("div");
-    line.className = "meeting-seg";
-    const sp = document.createElement("span");
-    sp.className = "seg-speaker";
-    sp.textContent = `${seg.speaker_name || "Speaker"}: `;
-    line.appendChild(sp);
-    line.appendChild(document.createTextNode(seg.text || ""));
-    tx.appendChild(line);
-  }
-  detail.appendChild(tx);
+  if (payload.text) { row.source = payload.text; mtgTransPatch(row); }
 }
 
-async function summarizeMeeting(id) {
-  const statusEl = $("#meetingRunStatus");
-  const btn = $("#meetingSummarizeBtn");
-  statusEl.style.display = "block";
-  statusEl.className = "app-run-status running";
-  statusEl.textContent = `Started ${appRunLabel("meeting-summary")}. Running in the background…`;
-  statusEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  if (btn) btn.disabled = true;
-  try {
-    const result = await api("/apps/meeting-summary/run", {
-      method: "POST",
-      body: JSON.stringify({ meeting_id: id }),
-    });
-    if (result.success) {
-      await selectMeeting(id);
-      statusEl.className = "app-run-status success";
-      statusEl.textContent = T("meetings.summarySaved");
-    } else {
-      statusEl.className = "app-run-status error";
-      statusEl.textContent = `Summarize failed: ${result.stderr || "unknown error"}`;
+function mtgTransOnTranslated(payload) {
+  const id = payload && payload.transcript_id;
+  const text = payload && payload.translation;
+  if (id == null || !text) return;
+  const row = mtgTrans.byId.get(String(id));
+  if (!row) return;
+  row.translation = text;
+  mtgTransPatch(row);
+}
+
+const MTG_TRANS_CSS = `
+  body { margin: 0; font: 13px/1.6 system-ui, "Segoe UI", sans-serif; background: #16181d; color: #e6e6e6; }
+  #mtgTransHead { position: sticky; top: 0; display: flex; gap: 8px; align-items: center;
+    padding: 8px 12px; background: #1b1e24; border-bottom: 1px solid #2a2e37; font-weight: 600; font-size: 12.5px; }
+  #mtgTransBody { padding: 10px 12px; }
+  .tr-row { padding: 8px 0; border-bottom: 1px solid #23262e; }
+  .tr-row:last-child { border-bottom: 0; }
+  .tr-time { font-size: 11px; color: #8a8f98; font-variant-numeric: tabular-nums; }
+  .tr-src { margin-top: 2px; color: #c9cdd6; }
+  .tr-tgt { margin-top: 3px; color: #7fb2ff; font-weight: 600; }
+  .tr-tgt.pending { color: #8a8f98; font-weight: 400; font-style: italic; }
+  .tr-empty { color: #8a8f98; text-align: center; padding: 24px 0; }
+`;
+
+/** Open the translation window: a真 always-on-top window where the browser
+ *  supports Document Picture-in-Picture, else a pinned in-page panel. */
+async function mtgOpenTranslator() {
+  if (mtgTrans.win && !mtgTrans.win.closed) { mtgTrans.win.focus(); return; }
+  if (mtgTrans.panel) { mtgTransRender(); return; }
+
+  const title = T("meetings.translate.title");
+  // Document PiP is the only way a page can own a real always-on-top window.
+  // It can still refuse (unsupported browser, no user gesture), so a refusal
+  // falls through to the pinned panel rather than leaving the user with nothing.
+  if (window.documentPictureInPicture?.requestWindow) {
+    try {
+      const win = await window.documentPictureInPicture.requestWindow({ width: 460, height: 380 });
+      const style = win.document.createElement("style");
+      style.textContent = MTG_TRANS_CSS;
+      win.document.head.appendChild(style);
+      win.document.title = title;
+      win.document.body.innerHTML = `<div id="mtgTransHead">${capEscape(title)}</div><div id="mtgTransBody"></div>`;
+      win.addEventListener("pagehide", () => { mtgTrans.win = null; });
+      mtgTrans.win = win;
+      mtgTransRender();
+      return;
+    } catch (err) {
+      console.warn("[meetings] picture-in-picture unavailable, using in-page panel", err);
     }
-  } catch (err) {
-    statusEl.className = "app-run-status error";
-    statusEl.textContent = `Run error: ${err.message}`;
-  } finally {
-    if (btn) btn.disabled = false;
   }
+
+  const panel = document.createElement("div");
+  panel.className = "mtg-float";
+  panel.innerHTML = `
+    <div class="mtg-float-head">${capEscape(title)}<button type="button" class="ghost">${T("meetings.translate.close")}</button></div>
+    <div class="mtg-float-body"></div>`;
+  const style = document.createElement("style");
+  style.textContent = MTG_TRANS_CSS.replace(/body \{[^}]*\}/, "");
+  panel.appendChild(style);
+  panel.querySelector("button").onclick = () => mtgCloseTranslator();
+  mtgFloatDrag(panel);
+  document.body.appendChild(panel);
+  mtgTrans.panel = panel;
+  mtgTransRender();
+}
+
+function mtgCloseTranslator() {
+  if (mtgTrans.win && !mtgTrans.win.closed) mtgTrans.win.close();
+  mtgTrans.win = null;
+  if (mtgTrans.panel) { mtgTrans.panel.remove(); mtgTrans.panel = null; }
+}
+
+function mtgFloatDrag(panel) {
+  const head = panel.querySelector(".mtg-float-head");
+  let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
+  head.addEventListener("pointerdown", (ev) => {
+    if (ev.target.tagName === "BUTTON") return;
+    dragging = true;
+    const r = panel.getBoundingClientRect();
+    sx = ev.clientX; sy = ev.clientY; ox = r.left; oy = r.top;
+    panel.style.right = "auto"; panel.style.bottom = "auto";
+    head.setPointerCapture(ev.pointerId);
+  });
+  head.addEventListener("pointermove", (ev) => {
+    if (!dragging) return;
+    panel.style.left = `${ox + ev.clientX - sx}px`;
+    panel.style.top = `${oy + ev.clientY - sy}px`;
+  });
+  head.addEventListener("pointerup", () => { dragging = false; });
 }
 
 // ── 续航管家 view (battery saver) ────────────────────────────────────────────
@@ -5378,6 +5639,85 @@ function wireEvents() {
     addTodoFromInput().catch(showError);
   });
   $("#meetingsRefreshBtn")?.addEventListener("click", () => loadMeetings().catch(showError));
+
+  const startMeeting = async () => {
+    const input = $("#mtgManualTitle");
+    const btn = $("#mtgManualStart");
+    if (btn) btn.disabled = true;
+    try {
+      await api("/meetings/start", {
+        method: "POST",
+        body: JSON.stringify({ name: (input?.value || "").trim() }),
+      });
+      if (input) input.value = "";
+      await loadMeetings();
+    } catch (err) {
+      showError(err);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  };
+  $("#mtgManualStart")?.addEventListener("click", () => startMeeting());
+  $("#mtgManualTitle")?.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); startMeeting(); }
+  });
+
+  $("#mtgManualStop")?.addEventListener("click", async () => {
+    const btn = $("#mtgManualStop");
+    if (btn) btn.disabled = true;
+    try {
+      const res = await api("/meetings/stop", { method: "POST", body: JSON.stringify({}) });
+      await loadMeetings();
+      // Ending a meeting is the moment its summary is worth writing; open the
+      // panel so the wait is visible rather than silent.
+      const host = document.querySelector(`.mtg-summary-box[data-mtg-summary-for="${res.id}"]`);
+      const showBtn = document.querySelector(`button[data-mtg-summary="${res.id}"]`);
+      if (host) loadMeetingSummary(res.id, host, showBtn, { generate: true });
+    } catch (err) {
+      showError(err);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  mtgBindToggle("mtg-transcript", "mtg-transcript-box",
+    "meetings.show.transcript", "meetings.hide.transcript", loadMeetingTranscript);
+  mtgBindToggle("mtg-ocr", "mtg-ocr-box",
+    "meetings.show.screen", "meetings.hide.screen", loadMeetingOcr);
+  mtgBindToggle("mtg-video", "mtg-video-box",
+    "meetings.video.show", "meetings.video.hide", loadMeetingVideo);
+  mtgBindToggle("mtg-summary", "mtg-summary-box",
+    "meetings.summary.show", "meetings.hide.summary", loadMeetingSummary);
+
+  const setMeetingTranslation = async (enabled) => {
+    const msg = $("#mtgTransMsg");
+    try {
+      await api("/config/audio/translate", {
+        method: "POST",
+        body: JSON.stringify({ enabled, target_lang: $("#mtgTransLang")?.value || "zh" }),
+      });
+      if (msg) msg.textContent = T(enabled ? "meetings.translate.on" : "meetings.translate.off");
+      if (enabled) await mtgOpenTranslator();
+    } catch (err) {
+      if (msg) msg.textContent = String(err.message || err);
+    }
+  };
+  $("#mtgTransEnable")?.addEventListener("change", (ev) => setMeetingTranslation(ev.target.checked));
+  $("#mtgTransLang")?.addEventListener("change", () => {
+    if ($("#mtgTransEnable")?.checked) setMeetingTranslation(true);
+  });
+  // Opening the window on its own is allowed: the toggle controls the engine,
+  // this only re-opens a window the user closed.
+  $("#mtgTransOpen")?.addEventListener("click", () => mtgOpenTranslator().catch(showError));
+
+  $("#meetingsList")?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-mtg-gen]");
+    if (!btn) return;
+    const id = btn.dataset.mtgGen;
+    const host = document.querySelector(`.mtg-summary-box[data-mtg-summary-for="${id}"]`);
+    const showBtn = document.querySelector(`button[data-mtg-summary="${id}"]`);
+    if (host) loadMeetingSummary(id, host, showBtn, { generate: true });
+  });
   $("#emailRefreshButton")?.addEventListener("click", () => refreshEmail().catch(showError));
   $("#gmailConnectButton")?.addEventListener("click", () => { window.location.href = "/connections/gmail/connect"; });
   $("#outlookConnectButton")?.addEventListener("click", () => { window.location.href = "/connections/outlook/connect"; });
