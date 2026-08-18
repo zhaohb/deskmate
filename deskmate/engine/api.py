@@ -2379,6 +2379,14 @@ def create_app(
         )
         return {"data": rows, "total": len(rows)}
 
+    @app.get("/learning/sessions/{session_id}")
+    def learning_session_detail(session_id: int) -> dict[str, Any]:
+        """Metadata for one study session (title, kind, span, topics, meta)."""
+        row = _learning_store().get_session(session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="session not found")
+        return {"data": row}
+
     @app.get("/learning/sessions/{session_id}/recap")
     def learning_session_recap(session_id: int) -> dict[str, Any]:
         """The study report generated when this session ended, if there is one.

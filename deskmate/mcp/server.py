@@ -9,6 +9,12 @@
   * run_app          — run an app (report generator) and return its result
   * list_app_outputs — list an app's past run outputs
   * get_app_output   — fetch one output file of a past app run
+  * learning_sessions        — list study sessions
+  * learning_session         — get one session's content (recap / transcript / OCR)
+  * learning_session_video   — render a session's screen timelapse (mp4)
+  * learning_reviews         — SM-2 spaced-repetition review queue
+  * grade_learning_review    — record a review result so SM-2 reschedules it
+  * generate_learning_recap  — (re)generate a session's recap (LLM, slow)
 
 All tools call the local HTTP API (default 127.0.0.1:3030) so the MCP server
 can run as a separate process from the recorder."""
@@ -219,6 +225,100 @@ def run_stdio() -> None:
                     "required": ["app_name", "run_id", "filename"],
                 },
             ),
+            Tool(
+                name="deskmate_learning_sessions",
+                description=(
+                    "List the user's study sessions (detected or manually declared). Each row has "
+                    "id, title, kind, started_at/ended_at, duration and topics. Use the id with "
+                    "deskmate_learning_session to fetch that session's content."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string", "enum": ["open", "closed"],
+                                   "description": "Filter by session status."},
+                        "limit": {"type": "integer", "default": 40},
+                    },
+                },
+            ),
+            Tool(
+                name="deskmate_learning_session",
+                description=(
+                    "Get one study session's content by id: metadata plus, on request, the "
+                    "generated recap (markdown + knowledge graph), the audio transcript, and the "
+                    "on-screen text (OCR) for the session's exact time span. Recap is included by "
+                    "default; transcript and OCR are opt-in because they can be large."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session_id": {"type": "integer", "description": "Session id from deskmate_learning_sessions."},
+                        "recap": {"type": "boolean", "default": True, "description": "Include the recap (markdown + graph)."},
+                        "transcript": {"type": "boolean", "default": False, "description": "Include the audio transcript."},
+                        "ocr": {"type": "boolean", "default": False, "description": "Include on-screen text (OCR)."},
+                    },
+                    "required": ["session_id"],
+                },
+            ),
+            Tool(
+                name="deskmate_generate_learning_recap",
+                description=(
+                    "Generate (or regenerate) the recap for a study session from its exact time "
+                    "span, using audio transcript and screen OCR. Runs a local LLM, so it can take "
+                    "minutes. Afterwards fetch it with deskmate_learning_session."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session_id": {"type": "integer", "description": "Session id to generate a recap for."},
+                    },
+                    "required": ["session_id"],
+                },
+            ),
+            Tool(
+                name="deskmate_learning_session_video",
+                description=(
+                    "Render a screen timelapse (mp4) of a study session's exact time span from its "
+                    "captured screenshots, so the user can review what was on screen. Returns the "
+                    "video file path and frame count. Requires ffmpeg."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session_id": {"type": "integer", "description": "Session id from deskmate_learning_sessions."},
+                    },
+                    "required": ["session_id"],
+                },
+            ),
+            Tool(
+                name="deskmate_learning_reviews",
+                description=(
+                    "List the SM-2 spaced-repetition review queue: concepts due for review, ordered "
+                    "by urgency (OVERDUE and low retained mastery first). Each row has concept_id, "
+                    "name, topic, mastery_tier, decayed_mastery and due date."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {"limit": {"type": "integer", "default": 20}},
+                },
+            ),
+            Tool(
+                name="deskmate_grade_learning_review",
+                description=(
+                    "Record a review result for a concept so SM-2 reschedules it. Provide quality "
+                    "(0=blackout … 5=perfect) and/or correct (true/false). Use concept_id from "
+                    "deskmate_learning_reviews."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "concept_id": {"type": "integer", "description": "Concept to grade (from deskmate_learning_reviews)."},
+                        "quality": {"type": "integer", "minimum": 0, "maximum": 5, "description": "0..5 recall quality."},
+                        "correct": {"type": "boolean", "description": "Simple right/wrong when you have no 0..5 grade."},
+                    },
+                    "required": ["concept_id"],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -266,6 +366,71 @@ def run_stdio() -> None:
             else:
                 text = _http_get_text(f"/apps/{app_name}/outputs/{run_id}/{filename}")
                 return [TextContent(type="text", text=text)]
+        elif name == "deskmate_learning_sessions":
+            params = {"limit": arguments.get("limit", 40)}
+            if arguments.get("status"):
+                params["status"] = arguments["status"]
+            data = _http_get("/learning/sessions", params=params)
+        elif name == "deskmate_learning_session":
+            sid = arguments.get("session_id")
+            if sid is None:
+                data = {"error": "session_id is required"}
+            else:
+                meta = _http_get(f"/learning/sessions/{sid}")
+                session = meta.get("data") if isinstance(meta, dict) else None
+                if not session:
+                    data = {"error": f"session {sid} not found"}
+                else:
+                    data = {"session": session}
+                    if arguments.get("recap", True):
+                        recap = _http_get(f"/learning/sessions/{sid}/recap")
+                        if isinstance(recap, dict) and "markdown" in recap:
+                            data["recap"] = {"markdown": recap.get("markdown"), "graph": recap.get("graph")}
+                        else:  # 404 comes back as {"detail": ...}; no recap linked yet
+                            note = recap.get("detail") if isinstance(recap, dict) else "unavailable"
+                            data["recap"] = {"error": f"no recap available: {note}"}
+                    if arguments.get("transcript", False):
+                        data["transcript"] = _http_get(f"/learning/sessions/{sid}/transcript").get("data")
+                    if arguments.get("ocr", False):
+                        data["ocr"] = _http_get(f"/learning/sessions/{sid}/ocr").get("data")
+        elif name == "deskmate_generate_learning_recap":
+            sid = arguments.get("session_id")
+            if sid is None:
+                data = {"error": "session_id is required"}
+            else:
+                data = await _http_post_with_progress(
+                    f"/learning/sessions/{sid}/recap",
+                    None,
+                    timeout=RUN_APP_TIMEOUT,
+                    label=f"deskmate_generate_learning_recap:{sid}",
+                )
+        elif name == "deskmate_learning_session_video":
+            sid = arguments.get("session_id")
+            if sid is None:
+                data = {"error": "session_id is required"}
+            else:
+                data = await _http_post_with_progress(
+                    f"/learning/sessions/{sid}/video",
+                    None,
+                    timeout=RUN_APP_TIMEOUT,
+                    label=f"deskmate_learning_session_video:{sid}",
+                )
+        elif name == "deskmate_learning_reviews":
+            data = _http_get("/learning/reviews", params={"limit": arguments.get("limit", 20)})
+        elif name == "deskmate_grade_learning_review":
+            cid = arguments.get("concept_id")
+            if cid is None:
+                data = {"error": "concept_id is required"}
+            else:
+                body = {}
+                if arguments.get("quality") is not None:
+                    body["quality"] = arguments["quality"]
+                if arguments.get("correct") is not None:
+                    body["correct"] = arguments["correct"]
+                data = (
+                    _http_post(f"/learning/reviews/{cid}/grade", body)
+                    if body else {"error": "provide quality (0..5) or correct (bool)"}
+                )
         else:
             data = {"error": f"unknown tool: {name}"}
         return [TextContent(type="text", text=json.dumps(data, ensure_ascii=False, indent=2))]
