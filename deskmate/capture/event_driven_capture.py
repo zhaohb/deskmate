@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from ..a11y.activity_feed import default as activity_default
 from ..a11y.ui_event_types import CaptureTrigger, CaptureTriggerMsg
 from ..capture.frame_linker import DropReason, FrameCaptured, LinkerMessage
+from ..capture.visual_change import VisualChangeProbe
 from ..fusion import capture_allowed
 from ..logger import get
 
@@ -26,11 +27,15 @@ class EventDrivenCapture:
     """Rate limiting and idle-capture state for event-driven mode."""
 
     def __init__(self, cfg: Config) -> None:
+        self.cfg = cfg
         self.min_interval_s = cfg.capture.min_capture_interval_ms / 1000.0
         self.idle_interval_s = cfg.capture.idle_capture_interval_ms / 1000.0
         self.capture_on_keystroke = cfg.capture.capture_on_keystroke
         self.capture_on_clipboard = cfg.capture.capture_on_clipboard
         self._last_capture = time.monotonic()
+        self.visual_probe_s = cfg.capture.visual_change_probe_ms / 1000.0
+        self._last_probe = time.monotonic()
+        self._probe = VisualChangeProbe(threshold=cfg.capture.visual_change_threshold)
 
     def can_capture(self) -> bool:
         return time.monotonic() - self._last_capture >= self.min_interval_s
@@ -40,6 +45,19 @@ class EventDrivenCapture:
 
     def needs_idle_capture(self) -> bool:
         return time.monotonic() - self._last_capture >= self.idle_interval_s
+
+    def visual_ready(self, now: float) -> bool:
+        """Ready at most once per interval when enabled; read live so the UI
+        toggle applies without a restart. Caller must hold screen access."""
+        if not self.cfg.capture.capture_on_visual_change:
+            return False
+        if now - self._last_probe < self.visual_probe_s:
+            return False
+        self._last_probe = now
+        return True
+
+    def visual_changed(self) -> bool:
+        return bool(self._probe and self._probe.changed())
 
     def poll_activity(self) -> CaptureTrigger | None:
         if self.needs_idle_capture():
@@ -144,8 +162,14 @@ def run_event_driven_capture_loop(
         if drained:
             trigger, corr_ids = _reduce_drained(drained, state)
         else:
-            trigger = state.poll_activity()
             corr_ids = []
+            # Fast visual-change probe first: a fullscreen video keeps the same
+            # app/title, so only changed pixels reveal it. Gated on screen
+            # access so nothing is grabbed while capture is paused.
+            if state.visual_ready(now_mono) and capture_allowed("screen") and state.visual_changed():
+                trigger = CaptureTrigger.VISUAL
+            else:
+                trigger = state.poll_activity()
 
         if trigger is None:
             continue

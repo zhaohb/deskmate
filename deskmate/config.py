@@ -33,6 +33,12 @@ class CaptureConfig(BaseModel):
     debounce_seconds: float = 1.5
     min_capture_interval_ms: int = 200
     idle_capture_interval_ms: int = 30_000
+    # Visual-change trigger: probe a downscaled thumbnail on a fast timer and
+    # capture only when the screen actually changed — catches fullscreen video
+    # whose app/title never change, without spamming a static screen.
+    capture_on_visual_change: bool = True
+    visual_change_probe_ms: int = 1500
+    visual_change_threshold: float = 0.06
     capture_on_keystroke: bool = False
     capture_on_clipboard: bool = False
     record_input_events: bool = True
@@ -624,6 +630,9 @@ enabled = true
 include_screenshot = true
 all_monitors = false
 heartbeat_seconds = 60
+capture_on_visual_change = true
+visual_change_probe_ms = 1500
+visual_change_threshold = 0.06
 screenshot_max_width = 1920
 screenshot_jpeg_quality = 80
 

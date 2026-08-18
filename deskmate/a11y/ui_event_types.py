@@ -35,6 +35,7 @@ class CaptureTrigger(str, Enum):
     CLIPBOARD = "clipboard"
     IDLE = "idle"
     MANUAL = "manual"
+    VISUAL = "visual"
 
     def as_capture_trigger(self) -> str:
         return self.value

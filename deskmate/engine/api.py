@@ -102,6 +102,10 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
             {"section": "audio", "key": "enabled", "type": "bool", "restart": True,
              "label": "启用音频转录",
              "help": "开启后用 Whisper 把麦克风/系统声音转成文字。"},
+            {"section": "audio", "key": "whisper_backend", "type": "choice", "restart": True,
+             "choices": ["onnx_cpu", "openvino_genai"],
+             "label": "转录后端",
+             "help": "onnx_cpu：faster-whisper，兼容性最好；openvino_genai：OpenVINO GenAI，可用 NPU/GPU/CPU。改后需重启。"},
             {"section": "audio", "key": "languages", "type": "csv", "restart": False,
              "label": "转录语言", "placeholder": "zh, en",
              "help": "逗号分隔的 ISO 代码；留空=自动检测。下一段音频即生效，无需重启。"},
@@ -2745,7 +2749,24 @@ def create_app(
 
     @app.get("/capture/control")
     def capture_control_state() -> dict[str, Any]:
-        return {"control": _capture_control().state(), "sources": list(TOGGLEABLE)}
+        return {
+            "control": _capture_control().state(),
+            "sources": list(TOGGLEABLE),
+            "visual_change": bool(cfg.capture.capture_on_visual_change),
+        }
+
+    @app.post("/capture/visual-change")
+    async def capture_visual_change(request: Request) -> dict[str, Any]:
+        """Enable/disable capture-on-visual-change; hot-applies to the running loop."""
+        body = await _safe_json(request)
+        if "enabled" not in body:
+            raise HTTPException(status_code=400, detail="enabled (bool) is required")
+        enabled = bool(body.get("enabled"))
+        from ..config import set_config_value  # noqa: PLC0415
+
+        set_config_value("capture", "capture_on_visual_change", enabled)
+        cfg.capture.capture_on_visual_change = enabled
+        return {"visual_change": enabled}
 
     @app.post("/capture/pause")
     async def capture_pause(request: Request) -> dict[str, Any]:

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260817-manual2" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260818-1" />
     <style>
       /* Scoped styles for the Capture & Unified Timeline view */
       #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
@@ -14,6 +14,8 @@
       #view-capture .cap-pill.live { background: rgba(34,197,94,.15); color: var(--online); }
       #view-capture .cap-pill.paused { background: rgba(224,108,117,.18); color: #e06c75; }
       #view-capture .cap-sources { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+      #view-capture .cap-visual { display: flex; margin-top: 10px; }
+      #view-capture .cap-visual .cap-src { flex: 1 1 auto; }
       #view-capture .cap-src { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; user-select: none; min-width: 130px; }
       #view-capture .cap-src .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
       #view-capture .cap-src.on .dot { background: var(--online); }
@@ -358,6 +360,13 @@
       #view-learning .lrn-tier[data-tier="fluent"] { background: color-mix(in srgb, var(--online, #5fb878) 20%, transparent); color: var(--online, #5fb878); }
       #view-learning .lrn-bar { height: 5px; border-radius: 999px; background: var(--surface-3); overflow: hidden; margin-top: 8px; max-width: 220px; }
       #view-learning .lrn-bar > span { display: block; height: 100%; border-radius: 999px; background: var(--accent, #5b8cff); }
+      #view-learning .lrn-item.lrn-review { padding: 8px 12px; margin-bottom: 7px; }
+      #view-learning .lrn-item.lrn-review .lrn-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      #view-learning .lrn-item.lrn-review .lrn-name { font-size: 13px; }
+      #view-learning .lrn-item.lrn-review .lrn-pct { font-size: 11.5px; color: var(--muted); }
+      #view-learning .lrn-item.lrn-review .lrn-acts { margin: 0 0 0 auto; }
+      #view-learning .lrn-item.lrn-review .lrn-acts button { padding: 3px 10px; font-size: 11.5px; }
+      #view-learning .lrn-more-toggle { display: inline-flex; font-size: 12px; padding: 5px 12px; }
       /* whitelist editor */
       #view-learning .lrn-chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; }
       #view-learning .lrn-chip { display: inline-flex; align-items: center; gap: 7px; padding: 5px 8px 5px 12px; border-radius: 999px; font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--line); color: var(--text); }
@@ -905,6 +914,10 @@
               <button id="capResumeBtn" type="button" data-i18n="capture.resumeBtn">Resume capture</button>
             </div>
             <div class="cap-sources" id="capSources"></div>
+            <div class="cap-visual">
+              <span class="cap-src" id="capVisualToggle" role="button" tabindex="0"><span class="dot"></span><span data-i18n="capture.visual.label">Capture on visual change</span><span class="muted" id="capVisualState" style="margin-left:auto">Off</span></span>
+            </div>
+            <p class="muted" style="margin-top:8px;font-size:12px" data-i18n="capture.visual.help">Captures a frame when the screen picture changes even if the app and title stay the same — e.g. fullscreen video playback.</p>
           </div>
 
           <div class="cap-card">
@@ -1264,16 +1277,16 @@
           </div>
 
           <div class="lrn-card">
-            <h3><span data-i18n="learning.reviews.title">Review queue</span> <span id="lrnReviewCount" class="lrn-count" hidden></span></h3>
-            <p class="muted" style="margin-top:0" data-i18n="learning.reviews.intro">Ranked by SM-2 due date and a decayed estimate of what you still remember. Grading a concept reschedules it.</p>
-            <div id="lrnReviews"></div>
+            <h3><span data-i18n="learning.sessions.title">Study sessions</span> <span id="lrnSessionCount" class="lrn-count" hidden></span></h3>
+            <p class="muted" style="margin-top:0" data-i18n="learning.sessions.intro">Each session shows why it was counted as studying, so a wrong detection is easy to spot.</p>
+            <div id="lrnSessions"></div>
           </div>
 
 
           <div class="lrn-card">
-            <h3><span data-i18n="learning.sessions.title">Study sessions</span> <span id="lrnSessionCount" class="lrn-count" hidden></span></h3>
-            <p class="muted" style="margin-top:0" data-i18n="learning.sessions.intro">Each session shows why it was counted as studying, so a wrong detection is easy to spot.</p>
-            <div id="lrnSessions"></div>
+            <h3><span data-i18n="learning.reviews.title">Review queue</span> <span id="lrnReviewCount" class="lrn-count" hidden></span></h3>
+            <p class="muted" style="margin-top:0" data-i18n="learning.reviews.intro">Ranked by SM-2 due date and a decayed estimate of what you still remember. Grading a concept reschedules it.</p>
+            <div id="lrnReviews"></div>
           </div>
 
         </section>
@@ -1499,7 +1512,7 @@
       </article>
     </template>
 
-    <script src="/ui/assets/i18n.js?v=20260817-manual2" defer></script>
-    <script src="/ui/assets/app.js?v=20260817-manual2" defer></script>
+    <script src="/ui/assets/i18n.js?v=20260818-1" defer></script>
+    <script src="/ui/assets/app.js?v=20260818-1" defer></script>
   </body>
 </html>

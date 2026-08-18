@@ -666,6 +666,21 @@ async function loadCaptureControl() {
   for (const el of box.querySelectorAll(".cap-src")) {
     el.onclick = () => toggleCaptureSource(el.dataset.src, el.classList.contains("off"));
   }
+
+  const vToggle = $("#capVisualToggle");
+  if (vToggle) {
+    const von = !!j.visual_change;
+    vToggle.classList.toggle("on", von);
+    vToggle.classList.toggle("off", !von);
+    const vState = $("#capVisualState");
+    if (vState) vState.textContent = von ? "On" : "Off";
+    vToggle.onclick = () => toggleVisualChange(!vToggle.classList.contains("on"));
+  }
+}
+
+async function toggleVisualChange(enabled) {
+  await api("/capture/visual-change", { method: "POST", body: JSON.stringify({ enabled }) });
+  loadCaptureControl();
 }
 
 async function toggleCaptureSource(source, enabled) {
@@ -1860,29 +1875,40 @@ async function loadLearningReviews() {
     box.innerHTML = lrnEmpty("🧠", "learning.reviews.empty.title", "learning.reviews.empty.body");
     return;
   }
-  box.innerHTML = rows.map((r) => {
+  const renderReviewRow = (r) => {
     const pct = Math.round((Number(r.decayed_mastery) || 0) * 100);
     const tier = r.mastery_tier || "exposure";
     return `
-    <div class="lrn-item" data-concept="${r.concept_id}">
+    <div class="lrn-item lrn-review" data-concept="${r.concept_id}">
       <div class="lrn-body">
-        <div class="lrn-name">${capEscape(r.name || "")}</div>
-        <div class="lrn-meta">
+        <div class="lrn-row">
+          <span class="lrn-name">${capEscape(r.name || "")}</span>
           <span class="lrn-tier" data-tier="${capEscape(tier)}">${TF(`learning.tier.${tier}`, tier)}</span>
           ${r.overdue ? `<span class="lrn-badge overdue">${T("learning.badge.overdue")}</span>` : ""}
           ${!r.overdue && r.weak_mastery ? `<span class="lrn-badge weak">${T("learning.badge.weak")}</span>` : ""}
           ${r.topic ? `<span class="lrn-badge">${capEscape(r.topic)}</span>` : ""}
-          <span>${T("learning.mastery")} ${pct}%</span>
-        </div>
-        <div class="lrn-bar"><span style="width:${pct}%"></span></div>
-        <div class="lrn-acts">
-          <button type="button" class="ghost" data-grade="1">${T("learning.grade.forgot")}</button>
-          <button type="button" class="ghost" data-grade="3">${T("learning.grade.hard")}</button>
-          <button type="button" class="ghost" data-grade="5">${T("learning.grade.easy")}</button>
+          <span class="lrn-pct">${T("learning.mastery")} ${pct}%</span>
+          <span class="lrn-acts">
+            <button type="button" class="ghost" data-grade="1">${T("learning.grade.forgot")}</button>
+            <button type="button" class="ghost" data-grade="3">${T("learning.grade.hard")}</button>
+            <button type="button" class="ghost" data-grade="5">${T("learning.grade.easy")}</button>
+          </span>
         </div>
       </div>
     </div>`;
-  }).join("");
+  };
+
+  const VISIBLE = 5;
+  const rest = rows.slice(VISIBLE);
+  const head = rows.slice(0, VISIBLE).map(renderReviewRow).join("");
+  if (rest.length) {
+    const moreLabel = T("learning.reviews.more", { n: rest.length });
+    box.innerHTML = head
+      + `<div class="lrn-more" hidden>${rest.map(renderReviewRow).join("")}</div>`
+      + `<button type="button" class="ghost lrn-more-toggle" data-more-label="${capEscape(moreLabel)}">${capEscape(moreLabel)}</button>`;
+  } else {
+    box.innerHTML = head;
+  }
 }
 
 async function loadLearningSessions() {
@@ -2354,6 +2380,15 @@ function bindLearningView() {
 
   // Grade a concept → SM-2 reschedules it, so reload the queue.
   $("#lrnReviews")?.addEventListener("click", async (ev) => {
+    const toggle = ev.target.closest(".lrn-more-toggle");
+    if (toggle) {
+      const more = toggle.previousElementSibling;
+      if (more && more.classList.contains("lrn-more")) {
+        more.hidden = !more.hidden;
+        toggle.textContent = more.hidden ? toggle.dataset.moreLabel : T("learning.reviews.less");
+      }
+      return;
+    }
     const btn = ev.target.closest("button[data-grade]");
     if (!btn) return;
     const row = btn.closest("[data-concept]");
