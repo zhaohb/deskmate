@@ -473,6 +473,48 @@ def _write_ffconcat(path: Path, frames: list[dict[str, Any]], fps: float) -> Non
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _render_frames_to_mp4(
+    db: DatabaseManager,
+    *,
+    start_time: str,
+    end_time: str,
+    out_dir: Path,
+    fps: float = 2.0,
+    limit: int = 4000,
+) -> dict[str, Any]:
+    """Build a timelapse mp4 from snapshot frames in a range; never raises for
+    the empty / no-ffmpeg cases so callers can surface a friendly message."""
+    with db._lock:  # noqa: SLF001
+        rows = db._conn.execute(  # noqa: SLF001
+            """SELECT timestamp, snapshot_path FROM frames
+                WHERE timestamp >= ? AND timestamp <= ? AND snapshot_path IS NOT NULL
+                ORDER BY timestamp ASC LIMIT ?""",
+            (start_time, end_time, limit),
+        ).fetchall()
+    frames = [dict(r) for r in rows if r["snapshot_path"] and Path(r["snapshot_path"]).exists()]
+    if not frames:
+        return {"success": False, "reason": "no_frames", "frame_count": 0}
+    out_dir.mkdir(parents=True, exist_ok=True)
+    concat_path = out_dir / "frames.ffconcat"
+    video_path = out_dir / "screen.mp4"
+    _write_ffconcat(concat_path, frames, fps)
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return {"success": False, "reason": "ffmpeg_not_found", "frame_count": len(frames)}
+    result = subprocess.run(  # noqa: S603
+        [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_path),
+         "-r", str(fps), "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+         "-pix_fmt", "yuv420p", str(video_path)],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        log_path = video_path.with_suffix(".ffmpeg.log")
+        log_path.write_text(result.stderr, encoding="utf-8")
+        return {"success": False, "reason": "ffmpeg_failed", "log_path": str(log_path),
+                "frame_count": len(frames)}
+    return {"success": True, "file_path": str(video_path), "frame_count": len(frames)}
+
+
 def _oauth_success_html(data: dict[str, Any]) -> str:
     email = data.get("email") or data.get("instance") or "account"
     return f"""<!doctype html>
@@ -2470,6 +2512,80 @@ def create_app(
             "rows": sum(n for _, n in merged),
             "data": data,
         }
+
+    @app.get("/learning/sessions/{session_id}/ocr")
+    def learning_session_ocr(session_id: int) -> dict[str, Any]:
+        """On-screen text (OCR) captured during the session span, deduped.
+
+        Same span as the transcript and the recap, so the three views describe
+        exactly the declared study window.
+        """
+        row = _learning_store().get_session(session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="session not found")
+        start = str(row.get("started_at") or "")
+        end = str(row.get("ended_at") or "") or datetime.now().astimezone().replace(
+            microsecond=0
+        ).isoformat()
+        if not start:
+            return {"session_id": session_id, "rows": 0, "data": []}
+        with db._lock:  # noqa: SLF001
+            ocr_rows = db._conn.execute(  # noqa: SLF001
+                """SELECT f.timestamp AS ts, f.app_name AS app, COALESCE(o.text,'') AS ocr
+                     FROM frames f
+                     LEFT JOIN ocr_text o ON o.frame_id = f.id
+                    WHERE f.timestamp >= ? AND f.timestamp <= ? AND COALESCE(o.text,'') != ''
+                    ORDER BY f.timestamp ASC LIMIT 3000""",
+                (start, end),
+            ).fetchall()
+        data: list[dict[str, Any]] = []
+        prev = ""
+        for r in ocr_rows:
+            text = " ".join((r["ocr"] or "").split())
+            if not text or text == prev:  # screen is static across most frames
+                continue
+            prev = text
+            data.append({"time": (str(r["ts"]) or "")[11:19], "app": r["app"] or "", "text": text[:1500]})
+        return {
+            "session_id": session_id,
+            "started_at": start,
+            "ended_at": row.get("ended_at"),
+            "rows": len(data),
+            "data": data,
+        }
+
+    @app.post("/learning/sessions/{session_id}/video")
+    async def build_learning_session_video(session_id: int) -> dict[str, Any]:
+        """Render a screen timelapse for the session span so the user can review it."""
+        row = _learning_store().get_session(session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="session not found")
+        start = str(row.get("started_at") or "").strip()
+        end = str(row.get("ended_at") or "").strip() or datetime.now().astimezone().replace(
+            microsecond=0
+        ).isoformat()
+        if not start:
+            raise HTTPException(status_code=400, detail="session has no start time")
+        from anyio import to_thread  # noqa: PLC0415
+
+        out_dir = paths.root() / "exports" / f"learning-session-{session_id}"
+        result = await to_thread.run_sync(
+            lambda: _render_frames_to_mp4(db, start_time=start, end_time=end, out_dir=out_dir)
+        )
+        if result.get("success"):
+            _learning_store().set_session_meta(session_id, {"video_path": result["file_path"]})
+        return {**result, "session_id": session_id}
+
+    @app.get("/learning/sessions/{session_id}/video")
+    def learning_session_video(session_id: int) -> Response:
+        """Stream the rendered session timelapse for in-page <video> playback."""
+        row = _learning_store().get_session(session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="session not found")
+        path = str((row.get("meta") or {}).get("video_path") or "")
+        if not path or not Path(path).is_file():
+            raise HTTPException(status_code=404, detail="no video built for this session")
+        return FileResponse(path, media_type="video/mp4", filename=f"session-{session_id}.mp4")
 
     @app.get("/learning/live")
     def learning_live() -> dict[str, Any]:

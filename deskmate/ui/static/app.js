@@ -1942,10 +1942,14 @@ async function loadLearningSessions() {
         ${s.reason ? `<div class="lrn-why">${T("learning.why")}: ${capEscape(s.reason)}</div>` : ""}
         <div class="lrn-acts">
           <button type="button" class="ghost" data-transcript="${s.id}">${T("learning.transcript.show")}</button>
+          <button type="button" class="ghost" data-ocr="${s.id}">${T("learning.ocr.show")}</button>
+          <button type="button" class="ghost" data-video="${s.id}">${T("learning.video.show")}</button>
           <button type="button" class="ghost" data-generate-recap="${s.id}">${T((s.meta || {}).recap_path ? "learning.recap.regenerate" : "learning.recap.generate")}</button>
           <button type="button" class="ghost" data-recap="${s.id}">${T("learning.recap.show")}</button>
         </div>
         <div class="lrn-transcript" data-for="${s.id}" hidden></div>
+        <div class="lrn-transcript lrn-ocr-box" data-ocr-for="${s.id}" hidden></div>
+        <div class="lrn-transcript lrn-video-box" data-video-for="${s.id}" hidden></div>
         <div class="lrn-transcript lrn-recap-box" data-recap-for="${s.id}" hidden></div>
       </div>
     </div>`;
@@ -2268,6 +2272,52 @@ async function loadSessionTranscript(sessionId, host, btn) {
   }
 }
 
+/** On-screen text (OCR) captured during the session span. */
+async function loadSessionOcr(sessionId, host, btn) {
+  host.innerHTML = `<div class="muted">${T("learning.ocr.loading")}</div>`;
+  host.hidden = false;
+  try {
+    const j = await api(`/learning/sessions/${sessionId}/ocr`);
+    const rows = j.data || [];
+    if (!rows.length) {
+      host.innerHTML = `<div class="muted">${T("learning.ocr.empty")}</div>`;
+      return;
+    }
+    host.innerHTML = `
+      <div class="lrn-transcript-head">${T("learning.ocr.count", { n: j.rows })}</div>
+      ${rows.map((p) => `
+        <div class="lrn-para">
+          <span class="lrn-para-t">${capEscape(p.time)}</span>
+          <span class="lrn-para-x">${capEscape(p.text)}</span>
+        </div>`).join("")}`;
+    if (btn) btn.textContent = T("learning.ocr.hide");
+  } catch (err) {
+    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+  }
+}
+
+/** Build (once) and play a screen timelapse of the session span. */
+async function loadSessionVideo(sessionId, host, btn) {
+  host.innerHTML = `<div class="muted">${T("learning.video.building")}</div>`;
+  host.hidden = false;
+  try {
+    const res = await api(`/learning/sessions/${sessionId}/video`, { method: "POST" });
+    if (!res.success) {
+      const msg = res.reason === "ffmpeg_not_found" ? T("learning.video.noffmpeg")
+        : res.reason === "no_frames" ? T("learning.video.noframes")
+        : T("learning.video.failed");
+      host.innerHTML = `<div class="muted">${capEscape(msg)}</div>`;
+      return;
+    }
+    host.innerHTML = `
+      <video class="lrn-video" controls preload="metadata" src="/learning/sessions/${sessionId}/video?t=${Date.now()}"></video>
+      <div class="muted" style="margin-top:6px;font-size:12px">${T("learning.video.note", { n: res.frame_count })}</div>`;
+    if (btn) btn.textContent = T("learning.video.hide");
+  } catch (err) {
+    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+  }
+}
+
 function refreshLearningView() {
   return Promise.all([
     loadLearningLive().catch((e) => console.error("[learning]", e)),
@@ -2425,6 +2475,48 @@ function bindLearningView() {
     }
     host.dataset.loaded = "1";
     loadSessionTranscript(id, host, btn);
+  });
+
+  // On-screen text (OCR) toggle — same shape as the transcript toggle.
+  $("#lrnSessions")?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-ocr]");
+    if (!btn) return;
+    const id = btn.dataset.ocr;
+    const host = document.querySelector(`.lrn-ocr-box[data-ocr-for="${id}"]`);
+    if (!host) return;
+    if (!host.hidden) {
+      host.hidden = true;
+      btn.textContent = T("learning.ocr.show");
+      return;
+    }
+    if (host.dataset.loaded === "1") {
+      host.hidden = false;
+      btn.textContent = T("learning.ocr.hide");
+      return;
+    }
+    host.dataset.loaded = "1";
+    loadSessionOcr(id, host, btn);
+  });
+
+  // Screen timelapse toggle — builds once, then reuses the cached render.
+  $("#lrnSessions")?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-video]");
+    if (!btn) return;
+    const id = btn.dataset.video;
+    const host = document.querySelector(`.lrn-video-box[data-video-for="${id}"]`);
+    if (!host) return;
+    if (!host.hidden) {
+      host.hidden = true;
+      btn.textContent = T("learning.video.show");
+      return;
+    }
+    if (host.dataset.loaded === "1") {
+      host.hidden = false;
+      btn.textContent = T("learning.video.hide");
+      return;
+    }
+    host.dataset.loaded = "1";
+    loadSessionVideo(id, host, btn);
   });
 
   // Recap expand / collapse, same shape as the transcript toggle above.

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260818-1" />
+    <link rel="stylesheet" href="/ui/assets/app.css?v=20260818-3" />
     <style>
       /* Scoped styles for the Capture & Unified Timeline view */
       #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
@@ -282,14 +282,14 @@
       #view-learning .lrn-warn { margin-top: 12px; padding: 11px 13px; border-radius: var(--radius); font-size: 12.5px; line-height: 1.6; background: color-mix(in srgb, #e0a03c 12%, transparent); border: 1px solid color-mix(in srgb, #e0a03c 40%, var(--line)); color: var(--text); }
       /* manual start / stop — user-declared study sessions */
       #view-learning .lrn-manual { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
-      #view-learning .lrn-manual-idle { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      #view-learning .lrn-manual-idle:not([hidden]) { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
       #view-learning .lrn-manual-idle input { flex: 1 1 300px; min-width: 220px; }
       /* Dark fill, light text. NOT `background: var(--accent)` — the theme sets
          --accent to #ffffff, so pairing it with white text rendered this button
          invisible. */
       #view-learning .lrn-manual-go { background: #000; border-color: var(--line-strong, #3a3a3a); color: #fff; font-weight: 600; }
       #view-learning .lrn-manual-go:hover { background: #111; border-color: var(--accent, #fff); }
-      #view-learning .lrn-manual-active { display: flex; gap: 12px; align-items: center; padding: 13px 14px; border-radius: var(--radius); background: color-mix(in srgb, var(--online, #5fb878) 12%, transparent); border: 1px solid color-mix(in srgb, var(--online, #5fb878) 42%, var(--line)); }
+      #view-learning .lrn-manual-active:not([hidden]) { display: flex; gap: 12px; align-items: center; padding: 13px 14px; border-radius: var(--radius); background: color-mix(in srgb, var(--online, #5fb878) 12%, transparent); border: 1px solid color-mix(in srgb, var(--online, #5fb878) 42%, var(--line)); }
       #view-learning .lrn-manual-active .lrn-manual-body { flex: 1 1 auto; min-width: 0; }
       #view-learning .lrn-manual-name { font-size: 14px; font-weight: 600; color: var(--text); word-break: break-word; }
       #view-learning .lrn-manual-meta { display: flex; gap: 10px; align-items: baseline; margin-top: 5px; font-size: 12px; flex-wrap: wrap; }
@@ -321,6 +321,7 @@
       #view-learning .lrn-para:last-child { margin-bottom: 0; }
       #view-learning .lrn-para-t { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--accent, #5b8cff); font-size: 11.5px; padding-top: 1px; }
       #view-learning .lrn-para-x { flex: 1 1 auto; min-width: 0; color: var(--text); word-break: break-word; }
+      #view-learning .lrn-video { width: 100%; max-height: 460px; border-radius: 6px; background: #000; display: block; }
       #view-learning .lrn-recap { margin: 0; font-family: inherit; font-size: 12.5px; line-height: 1.7; color: var(--text); white-space: pre-wrap; word-break: break-word; }
       #view-learning .lrn-recap-box { max-height: 680px; }
       #view-learning .lrn-graph { margin-bottom: 14px; border: 1px solid var(--line); background: color-mix(in srgb, var(--surface-2) 82%, transparent); border-radius: 6px; overflow: hidden; }
@@ -1512,7 +1513,7 @@
       </article>
     </template>
 
-    <script src="/ui/assets/i18n.js?v=20260818-1" defer></script>
-    <script src="/ui/assets/app.js?v=20260818-1" defer></script>
+    <script src="/ui/assets/i18n.js?v=20260818-3" defer></script>
+    <script src="/ui/assets/app.js?v=20260818-3" defer></script>
   </body>
 </html>
