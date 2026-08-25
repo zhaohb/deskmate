@@ -1,7 +1,7 @@
 # DeskMate
 
 <div style="text-align:center;">
-  <img src="./imgs/deskmate.png" alt="DeskMate" width="900" height="600">
+  <img src="./imgs/deskmate_overview.gif" alt="DeskMate" width="900" height="600">
 </div>
 
 DeskMate is a **local-first** desktop activity recorder for **Windows**. It captures
@@ -225,7 +225,8 @@ come back when needed:
 |---------|-----------|------|
 | OpenVINO-accelerated transcription | Run Whisper faster on Intel NPU/GPU | [docs/04-audio.md](docs/04-audio.md#whisper-backends) |
 | Live speech translation | Translate as you speak, shown in the UI | [docs/18-live-translation.md](docs/18-live-translation.md) |
-| Video-call detection | Auto-detect Teams/Zoom/Meet + meeting notes | [docs/09-meeting-workflow.md](docs/09-meeting-workflow.md) |
+| Learning sessions | Start/end a study block, recap, review queue, knowledge graph | — |
+| Meetings | Hand-declared sessions: transcript, screen text, recap video, summary | [docs/09-meeting-workflow.md](docs/09-meeting-workflow.md) |
 | Gmail / Outlook integration | Search real mailboxes in Ask and apps | [docs/11-connections.md](docs/11-connections.md) |
 | Battery Saver | On battery, move background AI work and user-selected apps onto efficient cores; the SPA view and live status text are localized in Chinese/English | [docs/22-power-manager.md](docs/22-power-manager.md) |
 | Local LoRA fine-tuning | Train a small model on your data (incl. Intel iGPU) | [docs/16-learning-training.md](docs/16-learning-training.md) |
@@ -281,8 +282,9 @@ deskmate ui --no-run-daemon  # view existing data only, don't start new recordin
 | Transcripts | Audio transcriptions |
 | Translate | Live speech translation controls and translated transcript stream |
 | Events | Keyboard / mouse / clipboard / window-focus events |
+| Learning | Start/end a study session; recap, review queue, knowledge graph |
 | Todos | Action items extracted from email + meetings |
-| Meetings | Detected video calls, transcripts, one-click summary |
+| Meetings | Start/end a session; audio + screen text, recap video, summary |
 | Capture | Capture-control view for recording sources and runtime toggles |
 | Training | Local LoRA fine-tuning |
 | Model Service | Start/stop local model backends and inspect service logs |
@@ -314,7 +316,8 @@ page or the CLI. Full list, examples, and how to write your own in
 | App | Purpose |
 |-----|---------|
 | `todo-list` | Unified checkbox todos from **email + meetings** |
-| `meeting-summary` | Summarize the meeting that just ended |
+| `meeting-summary` | Summarize a meeting you started/stopped |
+| `user-learning` | Recap a study session (concepts + notes) |
 | `email-digest` | Inbox overview |
 | `email-compose` | Draft / reply via Gmail or Outlook |
 | `day-recap` / `time-breakdown` / `ai-habits` | Daily recap / time split / AI-tool usage habits |
@@ -391,6 +394,8 @@ deskmate mcp                # in another — the MCP stdio server
 | `deskmate_ask` | action | Natural-language Q&A: an LLM searches your local context and answers (slow) |
 | `deskmate_list_apps` | read | List the report apps (day-recap, standup-update, todo-list, meeting-summary, email-compose, …) |
 | `deskmate_run_app` | action | Run a report app and return its result (slow; params vary per app) |
+| `deskmate_learning_sessions` | read | List recent study sessions |
+| `deskmate_learning_reviews` | read | Due review cards (spaced repetition) |
 | `deskmate_list_app_outputs` | read | List an app's past run outputs |
 | `deskmate_get_app_output` | read | Fetch one output file (markdown/json) of a past run |
 
@@ -417,6 +422,10 @@ locally** — no copy-pasting context. While you work in Claude Code or Cursor y
 - "Use deskmate to run the time-breakdown report for the last hour."
 - "Use deskmate to run day-recap and summarize what I did today."
 - "Use deskmate to run standup-update: what I did, what's next, and any blockers."
+- "Use deskmate to run user-learning for my latest study session."
+
+**deskmate_learning_sessions / reviews** — study recap
+- "Use deskmate to list my recent study sessions and what's due for review."
 
 **deskmate_recent_events / recent_frames** — raw activity stream
 - "Use deskmate to show my last 50 UI events (clicks/focus/typing/clipboard) and summarize what I was just doing."
