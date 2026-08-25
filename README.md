@@ -1,7 +1,7 @@
 # DeskMate
 
 <div style="text-align:center;">
-  <img src="./imgs/deskmate_overview.gif" alt="DeskMate" width="900" height="600">
+  <img src="./imgs/deskmate_overview.gif" alt="DeskMate" width="1200" height="800">
 </div>
 
 DeskMate is a **local-first** desktop activity recorder for **Windows**. It captures
