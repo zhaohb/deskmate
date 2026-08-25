@@ -446,7 +446,7 @@ def _is_self_ui(*, app_name: str = "", window_name: str = "", browser_url: str =
     url = (browser_url or "").lower()
     if any(h in url for h in _SELF_UI_HOSTS):
         return True
-    if "/ui/assets" in url:
+    if "/deskmate/assets" in url or "/ui/assets" in url:
         return True
     return bool(_SELF_UI_TITLE_RE.search(window_name or ""))
 

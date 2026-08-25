@@ -740,6 +740,29 @@ class DatabaseManager:
                 (meeting_id,),
             ).fetchall()
 
+    def delete_meeting(self, meeting_id: int) -> bool:
+        """Remove a meeting and its linked segments. Todos keep their text.
+
+        Capture audio / frames are not deleted. Export files for this meeting
+        (summary / timelapse) live under ``exports/meeting-{id}`` and are
+        removed separately by the API.
+        """
+        with self._lock:
+            if self._conn.execute(
+                "SELECT id FROM meetings WHERE id = ?", (meeting_id,)
+            ).fetchone() is None:
+                return False
+            self._conn.execute(
+                "DELETE FROM meeting_transcript_segments WHERE meeting_id = ?",
+                (meeting_id,),
+            )
+            self._conn.execute(
+                "UPDATE todos SET meeting_id = NULL WHERE meeting_id = ?",
+                (meeting_id,),
+            )
+            self._conn.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
+        return True
+
     def get_speaker_name(self, speaker_id: int) -> str:
         """Return a speaker's display name, or '' if unknown/unnamed."""
         with self._lock:

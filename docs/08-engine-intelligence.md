@@ -14,7 +14,7 @@ in [01 — Architecture](01-architecture.md)).
 | File | Role |
 |------|------|
 | `daemon.py` | Spawns and supervises all background threads (audio, retention, indexing, capture, pipes, schedulers) |
-| `api.py` | FastAPI app: `/search`, `/activity-summary`, `/ask`, `/frames`, `/transcripts`, `/connections/*`, `/health`, `/health/doctor`, `/ui` |
+| `api.py` | FastAPI app: `/search`, `/activity-summary`, `/ask`, `/frames`, `/transcripts`, `/connections/*`, `/health`, `/health/doctor`, `/deskmate` |
 | `cli.py` | Typer CLI entry points (`record`, `serve`, `ui`, `search`, `index`, `mcp`, `health`, `train-lora`) |
 | `doctor.py` | Bilingual self-diagnostics behind `/health/doctor` — see [21 — Diagnostics](21-diagnostics.md) |
 | `llm.py` | Stateless Ollama HTTP client with `FriendlyError` wrapping |

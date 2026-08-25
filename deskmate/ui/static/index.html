@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeskMate</title>
-    <link rel="stylesheet" href="/ui/assets/app.css?v=20260818-9" />
+    <link rel="stylesheet" href="/deskmate/assets/app.css?v=20260825-3" />
     <style>
       /* Scoped styles for the Capture & Unified Timeline view */
       #view-capture .cap-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
@@ -295,6 +295,8 @@
       #view-meetings .mtg-badge.open { background: color-mix(in srgb, var(--online, #5fb878) 18%, transparent); color: var(--online, #5fb878); }
       #view-meetings .mtg-item .mtg-row-acts { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
       #view-meetings .mtg-item .mtg-row-acts button { font-size: 12px; padding: 5px 12px; border-radius: 8px; }
+      #view-meetings .mtg-item .mtg-row-acts button.mtg-del { color: #e06c75; border-color: color-mix(in srgb, #e06c75 55%, var(--line)); }
+      #view-meetings .mtg-item .mtg-row-acts button.mtg-del:hover { background: color-mix(in srgb, #e06c75 14%, transparent); }
       #view-meetings .mtg-panel { margin-top: 10px; padding: 12px; border-radius: var(--radius); background: var(--surface-3); border: 1px solid var(--line); max-height: 420px; overflow: auto; }
       #view-meetings .mtg-video { width: 100%; max-height: 460px; border-radius: 6px; background: #000; display: block; }
       #view-meetings .mtg-panel-head { font-size: 11.5px; color: var(--muted); margin-bottom: 9px; }
@@ -363,6 +365,8 @@
       #view-learning .lrn-item .lrn-meta { font-size: 12px; color: var(--muted); margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
       #view-learning .lrn-item .lrn-acts { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
       #view-learning .lrn-item .lrn-acts button { font-size: 12px; padding: 5px 12px; border-radius: 8px; }
+      #view-learning .lrn-item .lrn-acts button.lrn-del { color: #e06c75; border-color: color-mix(in srgb, #e06c75 55%, var(--line)); }
+      #view-learning .lrn-item .lrn-acts button.lrn-del:hover { background: color-mix(in srgb, #e06c75 14%, transparent); }
       #view-learning .lrn-item.done { opacity: .5; }
       /* spoken record of a session, expanded on demand */
       #view-learning .lrn-transcript { margin-top: 10px; padding: 12px; border-radius: var(--radius); background: var(--surface-3); border: 1px solid var(--line); max-height: 340px; overflow: auto; }
@@ -387,7 +391,13 @@
       #view-learning .lrn-jn-line b { color: var(--muted); font-weight: 600; }
       #view-learning .lrn-jn-act { font-weight: 600; color: var(--text); margin-right: 6px; }
       #view-learning .lrn-jn-title { margin-top: 3px; font-size: 12px; color: var(--text); word-break: break-word; }
+      #view-learning .lrn-jn-doing { margin-top: 3px; font-size: 12.5px; color: var(--text); line-height: 1.5; }
       #view-learning .lrn-jn-detail { margin-top: 2px; font-size: 12px; color: var(--accent, #5b8cff); line-height: 1.55; word-break: break-word; }
+      #view-learning .lrn-jn-rel { display: inline-block; margin-left: 6px; font-size: 11px; padding: 1px 7px; border-radius: 999px; }
+      #view-learning .lrn-jn-rel.on { background: color-mix(in srgb, var(--online, #5fb878) 16%, transparent); color: var(--online, #5fb878); }
+      #view-learning .lrn-jn-rel.off { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
+      #view-learning .lrn-jn-arc { padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+      #view-learning .lrn-jn-arc p { margin: 6px 0 0; font-size: 12.5px; line-height: 1.65; color: var(--text); }
       #view-learning .lrn-jn-points { margin-top: 5px; display: flex; gap: 6px; flex-wrap: wrap; }
       #view-learning .lrn-jn-points span { padding: 2px 8px; border-radius: 999px; background: var(--surface-3); color: var(--muted); font-size: 11px; }
       #view-learning .lrn-badge.lrn-jn-ok { background: color-mix(in srgb, var(--online, #5fb878) 18%, transparent); color: var(--online, #5fb878); }
@@ -412,7 +422,8 @@
       #view-learning .lrn-graph-evidence { padding: 9px 14px; border-top: 1px solid var(--line); font-size: 12px; line-height: 1.5; color: var(--text); }
       #view-learning .lrn-graph-evidence[data-empty="1"] { color: var(--muted); }
       #view-learning .lrn-graph-ev-title { font-weight: 700; margin-bottom: 3px; }
-      #view-learning .lrn-graph-ev-body { color: var(--muted); }
+      #view-learning .lrn-graph-ev-actions { margin-top: 8px; }
+      #view-learning .lrn-item.lrn-review.highlight { border-color: var(--accent, #5b8cff); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #5b8cff) 28%, transparent); }
       #view-learning .lrn-graph-legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 9px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
       #view-learning .lrn-graph-legend span { display: inline-flex; align-items: center; gap: 5px; }
       #view-learning .lrn-graph-legend i { width: 16px; height: 3px; background: var(--graph-color); }
@@ -502,6 +513,7 @@
         </nav>
 
         <nav class="nav nav-secondary">
+          <button class="nav-item" data-view="learning" type="button"><span data-i18n="nav.learning">Learning</span></button>
           <button class="nav-item" data-view="todos" type="button"><span data-i18n="nav.todos">Todos</span></button>
           <button class="nav-item" data-view="meetings" type="button"><span data-i18n="nav.meetings">Meetings</span></button>
           <button class="nav-item" data-view="translate" type="button"><span data-i18n="nav.translate">Translate</span></button>
@@ -510,7 +522,6 @@
           <button class="nav-item" data-view="models" type="button"><span data-i18n="nav.models">Model Service</span></button>
           <button class="nav-item" data-view="doctor" type="button"><span data-i18n="nav.doctor">Diagnostics</span></button>
           <button class="nav-item" data-view="reminders" type="button"><span data-i18n="nav.reminders">Reminders</span></button>
-          <button class="nav-item" data-view="learning" type="button"><span data-i18n="nav.learning">Learning</span></button>
           <button class="nav-item" data-view="power" type="button"><span data-i18n="nav.power">续航管家</span></button>
           <button class="nav-item nav-item--settings" data-view="settings" type="button">
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9 4a7 7 0 0 0-.1-1.1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.9-1.1L16.3 2h-4.6l-.4 2.7a7 7 0 0 0-1.9 1.1l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 3 12a7 7 0 0 0 .1 1.1l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.9 1.1l.4 2.8h4.6l.4-2.7a7 7 0 0 0 1.9-1.1l2.4 1 2-3.4-2-1.6c.06-.36.1-.73.1-1.1Z" fill="currentColor"/></svg>
@@ -1613,7 +1624,7 @@
       </article>
     </template>
 
-    <script src="/ui/assets/i18n.js?v=20260818-9" defer></script>
-    <script src="/ui/assets/app.js?v=20260818-9" defer></script>
+    <script src="/deskmate/assets/i18n.js?v=20260825-3" defer></script>
+    <script src="/deskmate/assets/app.js?v=20260825-3" defer></script>
   </body>
 </html>

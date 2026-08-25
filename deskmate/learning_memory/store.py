@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import threading
 from datetime import datetime
@@ -835,6 +836,35 @@ class LearningStore:
             )
         return True
 
+    def delete_session(self, session_id: int) -> dict[str, Any] | None:
+        """Remove one session row. Linked events lose their session_id.
+
+        Recap / video files recorded in ``meta`` are deleted when they live
+        under the DeskMate home directory. Capture frames and transcripts are
+        left alone — they belong to the recorder, not this sitting.
+        """
+        row = self.get_session(session_id)
+        if not row:
+            return None
+        with self._lock:
+            self._conn.execute(
+                "UPDATE learning_events SET session_id = NULL WHERE session_id = ?",
+                (session_id,),
+            )
+            self._conn.execute(
+                "DELETE FROM learning_sessions WHERE id = ?", (session_id,),
+            )
+        self._cleanup_session_files(row.get("meta") or {})
+        return row
+
+    def _cleanup_session_files(self, meta: Any) -> None:
+        if not isinstance(meta, dict):
+            return
+        for key in ("recap_path", "video_path"):
+            raw = str(meta.get(key) or "").strip()
+            if raw:
+                _unlink_under_home(Path(raw))
+
     def list_sessions(self, *, limit: int = 40, status: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
             if status:
@@ -1060,4 +1090,26 @@ class LearningStore:
                 (limit,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+
+def _unlink_under_home(path: Path) -> None:
+    """Best-effort delete of a file or directory, only if it is under data dir."""
+    try:
+        root = paths.root().resolve()
+        resolved = path.expanduser().resolve()
+    except OSError:
+        return
+    if resolved != root and root not in resolved.parents:
+        return
+    try:
+        if resolved.is_dir():
+            shutil.rmtree(resolved, ignore_errors=True)
+        elif resolved.is_file():
+            resolved.unlink(missing_ok=True)
+            parent = resolved.parent
+            if parent != root and parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+    except OSError as exc:
+        logger.debug("session file cleanup skipped %s: %s", resolved, exc)
+
 

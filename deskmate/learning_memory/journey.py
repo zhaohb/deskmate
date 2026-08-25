@@ -35,6 +35,11 @@ _VIDEO_CUE = re.compile(r"(bilibili|youtube|youtu\.be|\.mp4|\bvideo\b|\u5168\u5c
 # A real search — a search engine's results page or an explicit query, not a
 # tracking param like bilibili's "search-card".
 _SEARCH_CUE = re.compile(r"(google\.com/search|bing\.com/search|duckduckgo\.com|baidu\.com/s\b|[?&]q=|\u641c\u7d22)", re.I)
+# DeskMate's own UI (local dashboard / recap page) is tooling, not courseware.
+_TOOL_CUE = re.compile(
+    r"(deskmate|127\.0\.0\.1:\d+|localhost:\d+)",
+    re.I,
+)
 
 # Error signatures. Kept deliberately broad but anchored on real failure words so
 # a red button or the word "error" in prose does not, on its own, count.
@@ -67,6 +72,7 @@ _ACTIVITY_LABELS = {
     "search": "\u641c\u7d22\u8d44\u6599",
     "code": "\u7f16\u5199\u4ee3\u7801",
     "debug": "\u7ec8\u7aef/\u8c03\u8bd5",
+    "tool": "\u672c\u673a\u5de5\u5177/\u754c\u9762",
     "other": "\u5176\u5b83",
 }
 
@@ -80,6 +86,8 @@ def classify_activity(app_name: str, window_name: str = "", browser_url: str = "
     if any(e in app for e in _EDITORS):
         return "code"
     if any(b in app for b in _BROWSERS):
+        if _TOOL_CUE.search(blob):
+            return "tool"
         if _VIDEO_CUE.search(blob):  # a lecture/video host is a stronger signal than a stray query param
             return "lecture"
         if _SEARCH_CUE.search(blob):
@@ -316,7 +324,7 @@ _RECON_SYSTEM = (
 
 
 def _reconstruct(error: dict[str, Any], window_text: str, *, base: str, model: str, timeout: int) -> dict[str, Any]:
-    from ..engine.llm import chat_ollama  # noqa: PLC0415
+    from deskmate.engine.llm import chat_ollama  # noqa: PLC0415
     from .topics_llm import _load_json_object  # noqa: PLC0415
 
     user = (
@@ -366,17 +374,38 @@ def _window_text(
 
 
 _SEGMENT_SYSTEM = (
-    "You label stretches of a study session. For each numbered stretch you get the "
-    "activity kind, the window title, and sampled on-screen text and speech from "
-    "that exact time range. Return ONLY JSON: "
-    '{"segments":[{"i":0,"detail":"one short clause","points":["concrete thing covered"]}]}. '
-    "`detail` names what was being learned or done — never repeat the activity kind, "
-    "and never just restate the title. `points` lists the specific things the "
-    "evidence shows were actually covered (techniques, APIs, numbers, files, "
-    "commands), 0 for a short stretch and up to 4 for a long one; each under 40 "
-    "characters. Use only the evidence — no points is better than invented ones. "
-    "Write in the SAME language as the evidence: if the evidence is Chinese, every "
-    "detail and point must be Chinese. Keep product and API names in their original form."
+    "You reconstruct what the learner was actually doing in each stretch of a "
+    "study session. For each numbered stretch you get the activity kind, the "
+    "window title, and sampled on-screen text and speech from that exact time "
+    "range. Return ONLY JSON: "
+    '{"segments":[{"i":0,"doing":"what they were doing, one clause",'
+    '"detail":"what it was about, one clause","related":true,'
+    '"related_why":"why this stretch is or is not part of the study",'
+    '"points":["concrete thing covered"]}]}. '
+    "`doing` says the concrete action (watching which talk, reading which page, "
+    "checking DeskMate, searching which error) — never just the activity kind. "
+    "`detail` says what was being learned or inspected. `related` is true only if "
+    "this stretch is about the same course/topic as the rest of the session; "
+    "DeskMate's own UI, chat, email, or unrelated tabs are related=false. "
+    "`related_why` is one short clause. `points` lists techniques/APIs/files/"
+    "commands actually visible, 0 for a short stretch and up to 4 for a long one; "
+    "each under 40 characters. Use only the evidence — empty is better than invented. "
+    "Write in the SAME language as the evidence (Chinese if the evidence is Chinese). "
+    "Keep product and API names in their original form."
+)
+
+_ARC_SYSTEM = (
+    "You write a short wrap-up of one study session from its timeline. Return "
+    "ONLY JSON: "
+    '{"path":"2-4 sentences: how they studied, in order",'
+    '"outcome":"1-2 sentences: what they finished or walked away with",'
+    '"related_note":"one clause on any stretch that was not course content, else empty"}. '
+    "`path` must walk the stretches in time (first … then … finally …) and name "
+    "what was on screen, not just activity kinds. `outcome` answers: after this "
+    "session, what was completed (a talk watched, a page read, a recap opened, "
+    "a bug left unresolved). Do not invent topics or results absent from the "
+    "timeline. Write in the SAME language as the evidence (Chinese if Chinese). "
+    "Keep product names in their original form."
 )
 
 
@@ -421,7 +450,7 @@ def summarize_segments(
     *, base: str, model: str, timeout: int,
 ) -> dict[int, dict[str, Any]]:
     """One call for the whole timeline — per-segment calls would cost a round trip each."""
-    from ..engine.llm import chat_ollama  # noqa: PLC0415
+    from deskmate.engine.llm import chat_ollama  # noqa: PLC0415
     from .topics_llm import _load_json_object  # noqa: PLC0415
 
     blocks: list[str] = []
@@ -452,15 +481,92 @@ def summarize_segments(
             idx = int(row.get("i"))
         except (TypeError, ValueError):
             continue
-        detail = " ".join(str(row.get("detail") or "").split())[:90]
+        doing = " ".join(str(row.get("doing") or "").split())[:80]
+        detail = " ".join(str(row.get("detail") or "").split())[:120]
+        related_why = " ".join(str(row.get("related_why") or "").split())[:80]
+        related = row.get("related")
+        if not isinstance(related, bool):
+            related = None
         points = [
             " ".join(str(p).split())[:40]
             for p in (row.get("points") or [])[:4]
             if isinstance(p, (str, int, float)) and str(p).strip()
         ]
-        if detail or points:
-            out[idx] = {"detail": detail, "points": points}
+        if doing or detail or points or related is not None:
+            out[idx] = {
+                "doing": doing, "detail": detail, "points": points,
+                "related": related, "related_why": related_why,
+            }
     return out
+
+
+def _fallback_related(seg: dict[str, Any]) -> bool:
+    """When the model is silent, tooling stretches are off-topic; the rest stay on."""
+    return seg.get("key") not in ("tool", "other")
+
+
+def _fallback_related_why(seg: dict[str, Any]) -> str:
+    if seg.get("key") == "tool":
+        return "这是 DeskMate 本机界面，不是课件或讲座内容。"
+    return ""
+
+
+def _stamp_fallbacks(seg: dict[str, Any]) -> None:
+    seg.setdefault("doing", "")
+    seg.setdefault("detail", "")
+    seg.setdefault("points", [])
+    seg.setdefault("related", _fallback_related(seg))
+    seg.setdefault("related_why", _fallback_related_why(seg) if not seg.get("related") else "")
+
+
+def summarize_arc(
+    segments: list[dict[str, Any]],
+    ocr_rows: list[dict],
+    audio_rows: list[dict],
+    *,
+    session_title: str = "",
+    base: str,
+    model: str,
+    timeout: int,
+) -> dict[str, str]:
+    """One wrap-up: how the session unfolded, and what it finished."""
+    from deskmate.engine.llm import chat_ollama  # noqa: PLC0415
+    from .topics_llm import _load_json_object  # noqa: PLC0415
+
+    if not segments:
+        return {}
+    lines: list[str] = []
+    for i, seg in enumerate(segments):
+        evidence = _segment_evidence(seg, ocr_rows, audio_rows)
+        related = seg.get("related")
+        related_s = "yes" if related is True else "no" if related is False else "unknown"
+        lines.append(
+            f"#{i} {seg.get('start')} {seg.get('label')} {seg.get('minutes')}m "
+            f"title={seg.get('title') or '-'} doing={seg.get('doing') or '-'} "
+            f"detail={seg.get('detail') or '-'} related={related_s} "
+            f"why={seg.get('related_why') or '-'}\n"
+            f"evidence: {evidence or '-'}"
+        )
+    user = (
+        f"SESSION TITLE: {session_title or '-'}\n\n"
+        + "\n\n".join(lines)[:8000]
+        + "\n\nReturn the JSON now."
+    )
+    try:
+        msg = chat_ollama(
+            [{"role": "system", "content": _ARC_SYSTEM}, {"role": "user", "content": user}],
+            base=base, model=model, num_predict=500, timeout=timeout,
+        )
+        obj = _load_json_object(msg.get("content") or "")
+    except Exception as exc:  # noqa: BLE001 — wrap-up is a nicety
+        logger.debug("session arc failed: %s", exc)
+        return {}
+    path = " ".join(str(obj.get("path") or "").split())[:400]
+    outcome = " ".join(str(obj.get("outcome") or "").split())[:240]
+    related_note = " ".join(str(obj.get("related_note") or "").split())[:160]
+    if not path and not outcome:
+        return {}
+    return {"path": path, "outcome": outcome, "related_note": related_note}
 
 
 def build_journey(
@@ -492,15 +598,20 @@ def build_journey(
     base = model = None
     timeout = 120
     llm_reason = ""
+    arc: dict[str, str] = {}
     if use_llm and (problems or process["segments"]):
         try:
-            from ..engine.llm import resolve_ollama_settings  # noqa: PLC0415
+            from deskmate.engine.llm import resolve_ollama_settings  # noqa: PLC0415
 
             base, model, timeout = resolve_ollama_settings()
         except Exception as exc:  # noqa: BLE001
             logger.debug("ollama settings unavailable: %s", exc)
             base = model = None
             llm_reason = "unavailable"
+
+    if not (base and model):
+        for seg in process["segments"]:
+            _stamp_fallbacks(seg)
 
     if base and model and process["segments"]:
         details = summarize_segments(
@@ -513,8 +624,18 @@ def build_journey(
             llm_reason = "unavailable"
         for i, seg in enumerate(process["segments"]):
             got = details.get(i) or {}
+            seg["doing"] = got.get("doing", "")
             seg["detail"] = got.get("detail", "")
             seg["points"] = got.get("points", [])
+            related = got.get("related")
+            seg["related"] = _fallback_related(seg) if related is None else bool(related)
+            seg["related_why"] = got.get("related_why", "")
+        if details:
+            arc = summarize_arc(
+                process["segments"], ocr_rows, audio_rows,
+                session_title=process["segments"][0].get("title") or "",
+                base=base, model=model, timeout=min(timeout, 120),
+            )
     elif not use_llm:
         llm_reason = "disabled"
 
@@ -546,6 +667,7 @@ def build_journey(
         "started_at": started_at,
         "ended_at": ended_at,
         "process": process,
+        "arc": arc,
         "problems": out_problems,
         "llm_note": llm_reason,
         "summary": {

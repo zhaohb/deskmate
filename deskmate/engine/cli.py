@@ -57,11 +57,11 @@ def serve(host: str | None = None, port: int | None = None, run_daemon: bool = T
 
 @app.command()
 def ui(host: str | None = None, port: int | None = None, run_daemon: bool = True) -> None:
-    """Start the HTTP API and open the browser UI at /ui."""
+    """Start the HTTP API and open the browser UI at /deskmate."""
     cfg = load_config()
     target_host = host or cfg.server.host
     target_port = port or cfg.server.port
-    url = f"http://{target_host}:{target_port}/ui"
+    url = f"http://{target_host}:{target_port}/deskmate"
 
     def _open_browser() -> None:
         time.sleep(1.0)

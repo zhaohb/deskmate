@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from deskmate.learning_memory import pipeline
 from deskmate.learning_memory.extract import ConceptHit, ExtractionResult, LectureItem
-from deskmate.learning_memory.graph import edges_from_lecture_items
+from deskmate.learning_memory.graph import edges_from_lecture_items, graph_from_enrichment
 from deskmate.learning_memory.topics_llm import StructuredExtraction, SubtopicHit, TopicHit
 
 
@@ -118,3 +118,26 @@ def test_pipeline_builds_topic_hierarchy_without_regex_relation_noise(monkeypatc
         ("KV缓存压缩技术", "INT4 KV Cache Compression", "contains"),
     }
     assert all("那大家知道现在像" not in edge["src_name"] for edge in enrichment["edges"])
+
+
+def test_graph_from_enrichment_attaches_node_quotes() -> None:
+    graph = graph_from_enrichment({
+        "topics": [{"name": "NLP", "evidence": ["NLP studies language"]}],
+        "edges": [{
+            "src_name": "Tokenization",
+            "dst_name": "Embedding",
+            "rel": "leads_to",
+            "evidence": "Tokenization leads to Embedding",
+        }],
+        "extraction": {
+            "concepts": [
+                {"name": "Tokenization", "evidence": ["split text into tokens"]},
+                {"name": "Embedding", "evidence": ["vectors from tokens"]},
+            ]
+        },
+    })
+    by_id = {node["id"]: node for node in graph["nodes"]}
+    assert by_id["NLP"] == {"id": "NLP", "kind": "topic", "evidence": "NLP studies language"}
+    assert by_id["Tokenization"]["evidence"] == "split text into tokens"
+    assert by_id["Embedding"]["kind"] == "concept"
+    assert graph["edges"][0]["evidence"] == "Tokenization leads to Embedding"

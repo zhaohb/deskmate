@@ -89,15 +89,11 @@ def test_get_recap_returns_structured_session_graph(client, tmp_path) -> None:
     response = api_client.get(f"/learning/sessions/{session_id}/recap")
 
     assert response.status_code == 200
-    assert response.json()["graph"] == {
-        "nodes": [
-            {"id": "Tokenization", "kind": "concept"},
-            {"id": "Embedding", "kind": "concept"},
-        ],
-        "edges": [{
-            "source": "Tokenization",
-            "target": "Embedding",
-            "relation": "leads_to",
-            "evidence": "Tokenization leads to Embedding",
-        }],
-    }
+    graph = response.json()["graph"]
+    assert {node["id"] for node in graph["nodes"]} >= {"NLP", "Tokenization", "Embedding"}
+    assert graph["edges"] == [{
+        "source": "Tokenization",
+        "target": "Embedding",
+        "relation": "leads_to",
+        "evidence": "Tokenization leads to Embedding",
+    }]

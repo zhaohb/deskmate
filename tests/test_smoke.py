@@ -623,6 +623,8 @@ def test_ui_routes_registered() -> None:
     app = create_app()
     routes = {getattr(route, "path", "") for route in app.router.routes}
     assert "/" in routes
+    assert "/deskmate" in routes
+    assert "/deskmate/assets" in routes
     assert "/ui" in routes
     assert "/ui/assets" in routes
     assert "/api" in routes
@@ -640,6 +642,16 @@ def test_ui_routes_registered() -> None:
     assert "/tags/{content_type}/{item_id}" in routes
     assert "/memories" in routes
     assert "/config/audio/translate" in routes
+
+
+def test_legacy_ui_path_redirects_to_deskmate() -> None:
+    from fastapi.testclient import TestClient
+    from deskmate.engine.api import create_app
+
+    client = TestClient(create_app())
+    response = client.get("/ui", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "/deskmate"
 
 
 def test_classify_model_load_error_ssl() -> None:

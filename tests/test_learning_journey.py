@@ -12,6 +12,7 @@ from deskmate.learning_memory.journey import (
     classify_activity,
     clean_title,
     detect_errors,
+    summarize_arc,
 )
 
 
@@ -39,6 +40,8 @@ def test_classify_activity_covers_the_main_study_modes() -> None:
     assert classify_activity("chrome.exe", "openvino - bilibili", "https://bilibili.com/video/BV1") == "lecture"
     assert classify_activity("chrome.exe", "openvino error", "https://www.google.com/search?q=x") == "search"
     assert classify_activity("chrome.exe", "OpenVINO docs", "https://docs.openvino.ai") == "read"
+    assert classify_activity("chrome.exe", "DeskMate", "http://127.0.0.1:8787") == "tool"
+    assert classify_activity("chrome.exe", "DeskMate — 学习", "") == "tool"
 
 
 def test_build_process_allocates_time_and_merges_segments() -> None:
@@ -108,17 +111,22 @@ def test_detect_errors_ignores_non_error_text() -> None:
 def test_segment_summaries_are_parsed_and_mapped_by_index(monkeypatch) -> None:
     """Covers the model path without a running Ollama — the reply shape is ours."""
     import json as _json
+    import sys
+    import types
 
-    from deskmate.engine import llm as llm_mod
     from deskmate.learning_memory import journey as jn
 
-    monkeypatch.setattr(
-        llm_mod, "chat_ollama",
-        lambda *a, **k: {"content": _json.dumps({"segments": [
-            {"i": 0, "detail": "讲 INT4 KV Cache 压缩与显存收益", "points": ["INT4 KV Cache", "Physical AI API"]},
-            {"i": 1, "detail": "", "points": []},
-        ]}, ensure_ascii=False)},
-    )
+    fake_pkg = types.ModuleType("deskmate.engine")
+    fake_pkg.__path__ = []
+    fake = types.ModuleType("deskmate.engine.llm")
+    fake.chat_ollama = lambda *a, **k: {"content": _json.dumps({"segments": [
+        {"i": 0, "detail": "讲 INT4 KV Cache 压缩与显存收益", "points": ["INT4 KV Cache", "Physical AI API"],
+         "doing": "在看讲座", "related": True},
+        {"i": 1, "detail": "", "points": []},
+    ]}, ensure_ascii=False)}
+    fake.strip_thinking = lambda s: s
+    monkeypatch.setitem(sys.modules, "deskmate.engine", fake_pkg)
+    monkeypatch.setitem(sys.modules, "deskmate.engine.llm", fake)
     segments = [
         {"label": "看讲座/视频", "title": "OpenVINO 新功能", "minutes": 20, "start_ts": "2026-08-17T17:00:00+08:00", "end_ts": "2026-08-17T17:20:00+08:00"},
         {"label": "阅读资料/课件", "title": "docs", "minutes": 5, "start_ts": "2026-08-17T17:20:00+08:00", "end_ts": "2026-08-17T17:25:00+08:00"},
@@ -129,17 +137,101 @@ def test_segment_summaries_are_parsed_and_mapped_by_index(monkeypatch) -> None:
 
     assert out[0]["detail"] == "讲 INT4 KV Cache 压缩与显存收益"
     assert out[0]["points"] == ["INT4 KV Cache", "Physical AI API"]
+    assert out[0]["related"] is True
+    assert out[0]["doing"] == "在看讲座"
     assert 1 not in out  # a stretch with nothing to say is dropped, not blanked
 
 
 def test_segment_summaries_soft_fail_when_the_model_is_down(monkeypatch) -> None:
-    from deskmate.engine import llm as llm_mod
+    import sys
+    import types
+
     from deskmate.learning_memory import journey as jn
+
+    fake = types.ModuleType("deskmate.engine.llm")
 
     def _boom(*_a, **_k):
         raise ConnectionError("connection refused")
 
-    monkeypatch.setattr(llm_mod, "chat_ollama", _boom)
+    fake.chat_ollama = _boom
+    fake.strip_thinking = lambda s: s
+    fake_pkg = types.ModuleType("deskmate.engine")
+    fake_pkg.__path__ = []
+    monkeypatch.setitem(sys.modules, "deskmate.engine", fake_pkg)
+    monkeypatch.setitem(sys.modules, "deskmate.engine.llm", fake)
     segments = [{"label": "看讲座/视频", "title": "t", "start_ts": "2026-08-17T17:00:00+08:00", "end_ts": "2026-08-17T17:20:00+08:00"}]
 
     assert jn.summarize_segments(segments, [], [], base="x", model="m", timeout=5) == {}
+
+
+def test_deskmate_ui_is_not_classified_as_reading_courseware() -> None:
+    """Looking at DeskMate itself is tooling, not 'reading materials'."""
+    frames = [
+        {"ts": "2026-08-21T11:03:00+08:00", "app": "chrome.exe",
+         "window": "2026.2版 OpenVINO™ 的新功能_哔哩哔哩_bilibili - Google Chrome",
+         "url": "https://www.bilibili.com/video/BV1"},
+        {"ts": "2026-08-21T11:27:00+08:00", "app": "chrome.exe",
+         "window": "DeskMate - Google Chrome", "url": "http://127.0.0.1:8787/"},
+        {"ts": "2026-08-21T11:27:36+08:00", "app": "chrome.exe",
+         "window": "DeskMate - Google Chrome", "url": "http://127.0.0.1:8787/"},
+    ]
+    keys = [s["key"] for s in build_process(frames, min_segment_s=0)["segments"]]
+    assert keys == ["lecture", "tool"]
+
+
+def test_build_journey_without_llm_still_flags_tooling_as_unrelated() -> None:
+    from deskmate.learning_memory.journey import build_journey
+
+    frames = [
+        {"ts": "2026-08-21T11:03:00+08:00", "app": "chrome.exe",
+         "window": "OpenVINO 讲座 - Google Chrome", "url": "https://www.bilibili.com/video/BV1"},
+        {"ts": "2026-08-21T11:27:00+08:00", "app": "chrome.exe",
+         "window": "DeskMate - Google Chrome", "url": "http://127.0.0.1:8787/"},
+        {"ts": "2026-08-21T11:27:36+08:00", "app": "chrome.exe",
+         "window": "DeskMate - Google Chrome", "url": "http://127.0.0.1:8787/"},
+    ]
+    out = build_journey(
+        frames=frames, ocr_rows=[], audio_rows=[],
+        started_at="2026-08-21T11:03:00+08:00", ended_at="2026-08-21T11:28:00+08:00",
+        use_llm=False,
+    )
+    by_key = {s["key"]: s for s in out["process"]["segments"]}
+    assert by_key["lecture"]["related"] is True
+    assert by_key["tool"]["related"] is False
+    assert "DeskMate" in by_key["tool"]["related_why"]
+    assert out["arc"] == {}
+    assert out["llm_note"] == "disabled"
+
+
+def test_summarize_arc_tells_the_path_and_the_outcome(monkeypatch) -> None:
+    """The wrap-up must say how the session unfolded and what it finished."""
+    import json as _json
+    import sys
+    import types
+
+    from deskmate.learning_memory import journey as jn
+
+    fake_pkg = types.ModuleType("deskmate.engine")
+    fake_pkg.__path__ = []
+    fake = types.ModuleType("deskmate.engine.llm")
+    fake.chat_ollama = lambda *a, **k: {"content": _json.dumps({
+        "path": "先看 OpenVINO 新功能讲座，再打开 DeskMate 回看本次学习记录。",
+        "outcome": "听完 2026.2 版 OpenVINO 新功能介绍，并用 DeskMate 核对了学习过程。",
+        "related_note": "最后一段是 DeskMate 本机界面，属于学习工具而非课件。",
+    }, ensure_ascii=False)}
+    fake.strip_thinking = lambda s: s
+    monkeypatch.setitem(sys.modules, "deskmate.engine", fake_pkg)
+    monkeypatch.setitem(sys.modules, "deskmate.engine.llm", fake)
+    segments = [
+        {"label": "看讲座/视频", "title": "OpenVINO 新功能", "minutes": 20,
+         "related": True, "doing": "在看 OpenVINO 讲座",
+         "detail": "INT4 KV Cache", "start": "11:03"},
+        {"label": "本机工具/界面", "title": "DeskMate", "minutes": 0.7,
+         "related": False, "doing": "在看 DeskMate 学习页",
+         "detail": "打开学习过程", "start": "11:27"},
+    ]
+    out = summarize_arc(segments, [], [], session_title="OpenVINO 讲座",
+                        base="x", model="m", timeout=10)
+    assert "OpenVINO" in out["path"]
+    assert "DeskMate" in out["outcome"]
+    assert "课件" in out["related_note"]

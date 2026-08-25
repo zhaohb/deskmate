@@ -93,7 +93,7 @@ the 4 P-cores.
 | `GET /power/apps` | Enumerate visible-window apps + per-app throttle-ability + current eco state |
 | `POST /power/apps/eco` `{pid}` | Push user-selected process onto E-cores; returns 409 if unable (likely needs admin) |
 | `POST /power/apps/restore` `{pid}` or `{}` | Restore a specific pid, or omit pid to restore all |
-| `GET /power/ui` | Legacy standalone page entry; now 307-redirects to `/ui` (Battery Saver is a SPA view) |
+| `GET /power/ui` | Legacy standalone page entry; now 307-redirects to `/deskmate` (Battery Saver is a SPA view) |
 
 The UI is a SPA view (`#view-power`, nav button "续航管家" / "Battery Saver",
 `data-view="power"`). Lifecycle mirrors Model Service: enter → start poll, leave

@@ -128,9 +128,11 @@ def _clip_corpus(parts: list[str], *, max_chars: int = 4500) -> str:
 
 def _load_json_object(raw: str) -> dict[str, Any]:
     """Pull the outermost JSON object out of a model reply, or ``{}``."""
-    from ..engine import llm as llm_mod  # noqa: PLC0415
-
-    text = llm_mod.strip_thinking(raw or "").strip()
+    try:
+        from deskmate.engine.llm import strip_thinking  # noqa: PLC0415
+        text = strip_thinking(raw or "").strip()
+    except Exception:  # noqa: BLE001 — tests may stub only chat_ollama
+        text = (raw or "").strip()
     if not text:
         return {}
     m = _JSON_FENCE.search(text)

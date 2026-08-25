@@ -53,7 +53,7 @@ activity detection + MCP**. That's enough for most people.
 ```powershell
 deskmate ui
 ```
-Your browser opens at **http://127.0.0.1:3030/ui** and DeskMate starts recording.
+Your browser opens at **http://127.0.0.1:3030/deskmate** and DeskMate starts recording.
 
 On first run it auto-creates a config and data folder under
 `C:\Users\<your-username>\.deskmate\`. **You're up and running.**
@@ -268,7 +268,7 @@ load, it automatically falls back to CPU.
 
 ### Browser UI
 ```powershell
-deskmate ui                  # record + API + auto-open /ui
+deskmate ui                  # record + API + auto-open /deskmate
 deskmate ui --no-run-daemon  # view existing data only, don't start new recording
 ```
 

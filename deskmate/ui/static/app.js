@@ -1880,7 +1880,7 @@ async function loadLearningReviews() {
     const pct = Math.round((Number(r.decayed_mastery) || 0) * 100);
     const tier = r.mastery_tier || "exposure";
     return `
-    <div class="lrn-item lrn-review" data-concept="${r.concept_id}">
+    <div class="lrn-item lrn-review" data-concept="${r.concept_id}" data-concept-name="${capEscape(r.name || "")}">
       <div class="lrn-body">
         <div class="lrn-row">
           <span class="lrn-name">${capEscape(r.name || "")}</span>
@@ -1948,6 +1948,7 @@ async function loadLearningSessions() {
           <button type="button" class="ghost" data-journey="${s.id}">${T("learning.journey.show")}</button>
           <button type="button" class="ghost" data-generate-recap="${s.id}">${T((s.meta || {}).recap_path ? "learning.recap.regenerate" : "learning.recap.generate")}</button>
           <button type="button" class="ghost" data-recap="${s.id}">${T("learning.recap.show")}</button>
+          <button type="button" class="ghost lrn-del" data-delete="${s.id}">${T("learning.sessions.delete")}</button>
         </div>
         <div class="lrn-transcript" data-for="${s.id}" hidden></div>
         <div class="lrn-transcript lrn-ocr-box" data-ocr-for="${s.id}" hidden></div>
@@ -1994,11 +1995,34 @@ function renderSessionGraph(graph, host) {
 
   const evidenceBox = panel.querySelector(".lrn-graph-evidence");
   evidenceBox.textContent = T("learning.graph.evidenceHint");
-  const setEvidence = (title, body) => {
+  const setEvidence = (title, body, actionHtml = "") => {
     evidenceBox.dataset.empty = "0";
     evidenceBox.innerHTML =
       `<div class="lrn-graph-ev-title">${capEscape(title)}</div>` +
-      `<div class="lrn-graph-ev-body">${capEscape(body)}</div>`;
+      `<div class="lrn-graph-ev-body">${capEscape(body)}</div>` +
+      (actionHtml ? `<div class="lrn-graph-ev-actions">${actionHtml}</div>` : "");
+  };
+
+  const highlightReview = (name) => {
+    const box = $("#lrnReviews");
+    if (!box) return false;
+    box.querySelectorAll(".lrn-review.highlight").forEach((el) => el.classList.remove("highlight"));
+    const needle = (name || "").trim().toLowerCase();
+    if (!needle) return false;
+    const more = box.querySelector(".lrn-more");
+    const toggle = box.querySelector(".lrn-more-toggle");
+    const match = Array.from(box.querySelectorAll(".lrn-review")).find((el) => {
+      const label = (el.dataset.conceptName || el.querySelector(".lrn-name")?.textContent || "").trim().toLowerCase();
+      return label === needle;
+    });
+    if (!match) return false;
+    if (more && more.contains(match) && more.hidden && toggle) {
+      more.hidden = false;
+      toggle.textContent = T("learning.reviews.less");
+    }
+    match.classList.add("highlight");
+    match.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    return true;
   };
 
   const legend = panel.querySelector(".lrn-graph-legend");
@@ -2155,10 +2179,21 @@ function renderSessionGraph(graph, host) {
     const title = document.createElementNS(ns, "title");
     title.textContent = node.id;
     group.appendChild(title);
-    group.addEventListener("click", () => setEvidence(
-      node.id,
-      T(node.kind === "topic" ? "learning.graph.topicNode" : "learning.graph.conceptNode"),
-    ));
+    group.addEventListener("click", () => {
+      const kindLabel = T(node.kind === "topic" ? "learning.graph.topicNode" : "learning.graph.conceptNode");
+      const quote = (node.evidence || "").trim();
+      const inQueue = highlightReview(node.id);
+      const action = inQueue
+        ? `<button type="button" class="ghost" data-open-review>${T("learning.graph.openReview")}</button>`
+        : `<span class="muted">${T("learning.graph.notInReview")}</span>`;
+      setEvidence(
+        `${node.id} · ${kindLabel}`,
+        quote || T("learning.graph.noNodeEvidence"),
+        action,
+      );
+      const reviewBtn = evidenceBox.querySelector("[data-open-review]");
+      if (reviewBtn) reviewBtn.dataset.openReview = node.id;
+    });
     group.addEventListener("mouseenter", () => {
       viewport.querySelectorAll(".lrn-graph-edge").forEach((item) => {
         item.classList.toggle("muted", item.dataset.source !== node.id && item.dataset.target !== node.id);
@@ -2170,6 +2205,11 @@ function renderSessionGraph(graph, host) {
     viewport.appendChild(group);
   });
   panel.querySelector(".lrn-graph-stage").appendChild(svg);
+  evidenceBox.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-open-review]");
+    if (!btn) return;
+    highlightReview(btn.dataset.openReview || "");
+  });
 
   const stage = panel.querySelector(".lrn-graph-stage");
   let zoom = 1;
@@ -2350,17 +2390,28 @@ function renderJourney(j) {
     </div>`;
   }).join("");
 
-  const timeline = segs.map((s) => `
+  const timeline = segs.map((s) => {
+    const related = s.related;
+    const relBadge = related === true
+      ? `<span class="lrn-jn-rel on">${T("learning.journey.related")}</span>`
+      : related === false
+        ? `<span class="lrn-jn-rel off">${T("learning.journey.unrelated")}</span>`
+        : "";
+    return `
     <div class="lrn-para">
       <span class="lrn-para-t">${capEscape(s.start)}</span>
       <span class="lrn-para-x">
         <span class="lrn-jn-act">${capEscape(s.label)}</span>
         <span class="muted">${s.minutes}m${s.app ? ` · ${capEscape(s.app)}` : ""}</span>
+        ${relBadge}
         ${s.title ? `<div class="lrn-jn-title">${capEscape(s.title)}</div>` : ""}
+        ${s.doing ? `<div class="lrn-jn-doing">${capEscape(s.doing)}</div>` : ""}
         ${s.detail ? `<div class="lrn-jn-detail">${capEscape(s.detail)}</div>` : ""}
+        ${s.related_why ? `<div class="muted" style="margin-top:2px;font-size:12px">${capEscape(s.related_why)}</div>` : ""}
         ${(s.points || []).length ? `<div class="lrn-jn-points">${s.points.map((p) => `<span>${capEscape(p)}</span>`).join("")}</div>` : ""}
       </span>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 
   const probList = problems.length ? problems.map((p) => {
     const status = p.status || (p.resolved ? "likely_resolved" : "unresolved");
@@ -2380,6 +2431,14 @@ function renderJourney(j) {
   }).join("") : `<div class="muted">${T("learning.journey.noProblems")}</div>`;
 
   const sum = j.summary || {};
+  const arc = j.arc || {};
+  const arcBox = (arc.path || arc.outcome) ? `
+    <div class="lrn-jn-subhead">${T("learning.journey.arc")}</div>
+    <div class="lrn-jn-arc">
+      ${arc.path ? `<p><b>${T("learning.journey.path")}</b> ${capEscape(arc.path)}</p>` : ""}
+      ${arc.outcome ? `<p><b>${T("learning.journey.outcome")}</b> ${capEscape(arc.outcome)}</p>` : ""}
+      ${arc.related_note ? `<p><b>${T("learning.journey.relatedNote")}</b> ${capEscape(arc.related_note)}</p>` : ""}
+    </div>` : "";
   const note = j.llm_note ? `<div class="muted" style="margin-bottom:8px;font-size:12px">${T("learning.journey.noModel")}</div>` : "";
   return `
     <div class="lrn-transcript-head">${T("learning.journey.summary", {
@@ -2388,6 +2447,7 @@ function renderJourney(j) {
       bad: sum.unresolved_count || 0,
     })}</div>
     ${note}
+    ${arcBox}
     ${alloc.length ? `<div class="lrn-jn-section">${allocBars}</div>` : ""}
     ${segs.length ? `<div class="lrn-jn-subhead">${T("learning.journey.timeline")}</div>${timeline}` : ""}
     <div class="lrn-jn-subhead">${T("learning.journey.problems")}</div>
@@ -2646,6 +2706,21 @@ function bindLearningView() {
     const viewBtn = document.querySelector(`button[data-recap="${id}"]`);
     if (!host) return;
     generateSessionRecap(id, host, btn, viewBtn);
+  });
+
+  $("#lrnSessions")?.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("button[data-delete]");
+    if (!btn) return;
+    const id = btn.dataset.delete;
+    if (!id || !confirm(T("learning.sessions.delete.confirm"))) return;
+    btn.disabled = true;
+    try {
+      await api(`/learning/sessions/${id}`, { method: "DELETE" });
+      await refreshLearningView();
+    } catch (err) {
+      showError(err);
+      btn.disabled = false;
+    }
   });
 }
 
@@ -3003,9 +3078,8 @@ function applyTranslationToRow(payload) {
 
 // ── Live translation view ────────────────────────────────────────────────────
 
-// Load recent transcripts into the translate stream (most recent last) and
-// render. Called when the Translate view opens; afterwards the SSE handlers
-// keep it live without re-fetching.
+// Translate view is a live session only: do not hydrate from past transcripts.
+// SSE handlers append new utterances after the view is marked loaded.
 let _translateControlsWired = false;
 
 async function refreshTranslateView() {
@@ -3018,31 +3092,15 @@ async function refreshTranslateView() {
     console.error("[translate] settings load failed", e);
   }
   updateTranslateStatus();
-  try {
-    const rows = await api("/audio/list?limit=40");
-    const t = state.translate;
-    t.rows = [];
-    t.byId = new Map();
-    // API returns newest-first; show oldest-first so new lines append at the bottom.
-    for (const r of (rows || []).slice().reverse()) {
-      const id = r.id || r.transcription_id;
-      if (id == null) continue;
-      const row = {
-        id,
-        device: r.device || r.device_name || "audio",
-        source: r.transcription || r.redacted_transcription || "",
-        translation: r.translation || "",
-        lang: r.language || "",
-        ts: r.timestamp,
-      };
-      t.rows.push(row);
-      t.byId.set(String(id), row);
-    }
-    t.loaded = true;
-    renderTranslateStream();
-  } catch (e) {
-    console.error("[translate] load failed", e);
-  }
+  const t = state.translate;
+  t.rows = [];
+  t.byId = new Map();
+  t.loaded = true;
+  renderTranslateStream();
+}
+
+function liveTranslationOn() {
+  return (state.config && state.config.audio && state.config.audio.translate_enabled) === true;
 }
 
 function updateTranslateStatus() {
@@ -3088,6 +3146,14 @@ async function postTranslateConfig(patch) {
     });
     if (state.config && state.config.audio) Object.assign(state.config.audio, res);
     updateTranslateStatus();
+    // Off = this page is idle. Drop any in-flight "translating…" rows so the
+    // stream does not keep filling from ordinary audio transcription.
+    if (!liveTranslationOn()) {
+      const t = state.translate;
+      t.rows = [];
+      t.byId = new Map();
+      renderTranslateStream();
+    }
   } catch (e) {
     showError(e);
   }
@@ -3144,7 +3210,10 @@ function appendTranslateRowCells(grid, row) {
 // SSE: a new transcript was produced — append its original immediately and a
 // pending translation placeholder on the same grid row.
 function onTranslateTranscribed(payload) {
-  if (!state.translate.loaded) return; // not viewing/loaded yet; full load handles it
+  if (!state.translate.loaded) return;
+  // Audio transcription always runs; live translation is opt-in. Do not dump
+  // every utterance onto this page (or show a stuck "translating…" cell).
+  if (!liveTranslationOn()) return;
   const id = payload && payload.transcript_id;
   if (id == null) return;
   const t = state.translate;
@@ -5098,6 +5167,7 @@ function renderMeetings() {
           <button type="button" class="ghost" data-mtg-video="${m.id}">${T("meetings.video.show")}</button>
           <button type="button" class="ghost" data-mtg-gen="${m.id}">${T("meetings.summary.generate")}</button>
           <button type="button" class="ghost" data-mtg-summary="${m.id}">${T("meetings.summary.show")}</button>
+          <button type="button" class="ghost mtg-del" data-mtg-delete="${m.id}">${T("meetings.delete")}</button>
         </div>
         <div class="mtg-panel mtg-transcript-box" data-mtg-transcript-for="${m.id}" hidden></div>
         <div class="mtg-panel mtg-ocr-box" data-mtg-ocr-for="${m.id}" hidden></div>
@@ -5717,6 +5787,20 @@ function wireEvents() {
     const host = document.querySelector(`.mtg-summary-box[data-mtg-summary-for="${id}"]`);
     const showBtn = document.querySelector(`button[data-mtg-summary="${id}"]`);
     if (host) loadMeetingSummary(id, host, showBtn, { generate: true });
+  });
+  $("#meetingsList")?.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("button[data-mtg-delete]");
+    if (!btn) return;
+    const id = btn.dataset.mtgDelete;
+    if (!id || !confirm(T("meetings.delete.confirm"))) return;
+    btn.disabled = true;
+    try {
+      await api(`/meetings/${id}`, { method: "DELETE" });
+      await loadMeetings();
+    } catch (err) {
+      showError(err);
+      btn.disabled = false;
+    }
   });
   $("#emailRefreshButton")?.addEventListener("click", () => refreshEmail().catch(showError));
   $("#gmailConnectButton")?.addEventListener("click", () => { window.location.href = "/connections/gmail/connect"; });

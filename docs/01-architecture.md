@@ -25,7 +25,7 @@ entry modes (from the CLI):
 
 - `record` — capture daemon only (no HTTP).
 - `serve` — daemon + HTTP API.
-- `ui` — daemon + HTTP API + opens the browser at `/ui`.
+- `ui` — daemon + HTTP API + opens the browser at `/deskmate`.
 
 ```mermaid
 flowchart TB

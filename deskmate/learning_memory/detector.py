@@ -374,6 +374,16 @@ class LearningSessionDetector:
         self._close(trigger_recap=self.auto_recap_on_end if trigger_recap is None else trigger_recap)
         return sid
 
+    def forget(self, session_id: int) -> None:
+        """Drop in-memory ownership of a session that is being deleted."""
+        if self._session_id != session_id:
+            return
+        self._session_id = None
+        self._kind = None
+        self._title = ""
+        self._manual = False
+        self._last_seen = 0.0
+
     def _open(
         self,
         *,

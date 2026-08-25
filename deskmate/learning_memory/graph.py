@@ -110,3 +110,63 @@ def hierarchy_edges(topics: list[TopicHit], concepts: list[object]) -> list[Conc
             evidence = next(iter(getattr(concept, "evidence", []) or []), "")
             add(parent, name, evidence)
     return out
+
+
+def _first_quote(raw: object) -> str:
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()[:400]
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                return item.strip()[:400]
+    return ""
+
+
+def graph_from_enrichment(enrichment: dict | None) -> dict[str, list[dict[str, str]]]:
+    """Session graph for the recap UI: nodes carry a source quote when we have one."""
+    data = enrichment or {}
+    topic_names: set[str] = set()
+    node_evidence: dict[str, str] = {}
+    for topic in data.get("topics") or []:
+        name = str((topic or {}).get("name") or "").strip()
+        if not name:
+            continue
+        topic_names.add(name)
+        quote = _first_quote((topic or {}).get("evidence"))
+        if quote:
+            node_evidence[name] = quote
+        for subtopic in (topic or {}).get("subtopics") or []:
+            subtopic_name = str((subtopic or {}).get("name") or "").strip()
+            if not subtopic_name:
+                continue
+            topic_names.add(subtopic_name)
+            sub_quote = _first_quote((subtopic or {}).get("evidence"))
+            if sub_quote:
+                node_evidence[subtopic_name] = sub_quote
+    for concept in (data.get("extraction") or {}).get("concepts") or []:
+        name = str((concept or {}).get("name") or "").strip()
+        quote = _first_quote((concept or {}).get("evidence"))
+        if name and quote and name not in node_evidence:
+            node_evidence[name] = quote
+    node_kinds: dict[str, str] = {name: "topic" for name in topic_names}
+    edges: list[dict[str, str]] = []
+    for edge in data.get("edges") or []:
+        source = str((edge or {}).get("src_name") or "").strip()
+        target = str((edge or {}).get("dst_name") or "").strip()
+        if not source or not target:
+            continue
+        node_kinds.setdefault(source, "topic" if source in topic_names else "concept")
+        node_kinds.setdefault(target, "topic" if target in topic_names else "concept")
+        edges.append({
+            "source": source,
+            "target": target,
+            "relation": str(edge.get("rel") or "related"),
+            "evidence": str(edge.get("evidence") or ""),
+        })
+    return {
+        "nodes": [
+            {"id": name, "kind": kind, "evidence": node_evidence.get(name, "")}
+            for name, kind in node_kinds.items()
+        ],
+        "edges": edges,
+    }

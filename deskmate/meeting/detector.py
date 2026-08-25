@@ -176,6 +176,15 @@ class MeetingDetector:
         self.expire_if_idle()
         return self._meeting_id is not None
 
+    def forget(self, meeting_id: int) -> None:
+        """Drop in-memory ownership of a meeting that is being deleted."""
+        if self._meeting_id != meeting_id:
+            return
+        self._meeting_id = None
+        self._profile_name = None
+        self._last_seen = 0.0
+        self._participants = {}
+
     def observe(
         self,
         *,

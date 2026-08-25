@@ -551,6 +551,8 @@ def create_app(
     app.state.cfg = cfg
     app.state.db = db
     app.state.daemon = daemon
+    app.mount("/deskmate/assets", StaticFiles(directory=static_dir()), name="deskmate-assets")
+    # Old bookmarks / cached HTML still request /ui/assets — keep serving them.
     app.mount("/ui/assets", StaticFiles(directory=static_dir()), name="ui-assets")
     started_at = time.time()
 
@@ -1371,6 +1373,25 @@ def create_app(
         if not path.is_file():
             raise HTTPException(status_code=404, detail="no video built for this meeting")
         return FileResponse(path, media_type="video/mp4", filename=f"meeting-{meeting_id}.mp4")
+
+    @app.delete("/meetings/{meeting_id}")
+    def delete_meeting(meeting_id: int) -> dict[str, Any]:
+        """Remove a meeting record, its segments, and local export files.
+
+        Screen frames and audio transcripts captured during the span stay in
+        the recorder — only the meeting wrapper and its derived exports go.
+        """
+        if not db.meeting_by_id(meeting_id):
+            raise HTTPException(status_code=404, detail="meeting not found")
+        daemon = getattr(app.state, "daemon", None)
+        detector = getattr(daemon, "meeting_detector", None) if daemon else None
+        if detector is not None and hasattr(detector, "forget"):
+            detector.forget(meeting_id)
+        if not db.delete_meeting(meeting_id):
+            raise HTTPException(status_code=404, detail="meeting not found")
+        export_dir = paths.root() / "exports" / f"meeting-{meeting_id}"
+        shutil.rmtree(export_dir, ignore_errors=True)
+        return {"ok": True, "id": meeting_id}
 
     @app.post("/meetings/start")
     async def start_meeting(request: Request) -> dict[str, Any]:
@@ -2302,7 +2323,7 @@ def create_app(
     # ─── version / platform ───────────────────────────────────────────────
     @app.get("/")
     def root() -> RedirectResponse:
-        return RedirectResponse(url="/ui", status_code=307)
+        return RedirectResponse(url="/deskmate", status_code=307)
 
     @app.get("/api")
     def api_root() -> dict[str, Any]:
@@ -2334,9 +2355,13 @@ def create_app(
             ],
         }
 
+    @app.get("/deskmate")
+    def deskmate_index():  # noqa: ANN201
+        return FileResponse(index_file(), media_type="text/html")
+
     @app.get("/ui")
     def ui_index():  # noqa: ANN201
-        return FileResponse(index_file(), media_type="text/html")
+        return RedirectResponse(url="/deskmate", status_code=307)
 
     # ─── habits (additive: routines, suggestions, proactive nudges) ───────
     def _habit_store() -> HabitStore:
@@ -2568,6 +2593,22 @@ def create_app(
             raise HTTPException(status_code=404, detail="session not found")
         return {"data": row}
 
+    @app.delete("/learning/sessions/{session_id}")
+    def learning_session_delete(session_id: int) -> dict[str, Any]:
+        """Remove a study session. Recap / video files linked in meta go too.
+
+        Capture frames and transcripts for the same span are kept.
+        """
+        store = _learning_store()
+        if not store.get_session(session_id):
+            raise HTTPException(status_code=404, detail="session not found")
+        det = _learning_detector()
+        if det is not None and hasattr(det, "forget"):
+            det.forget(session_id)
+        if store.delete_session(session_id) is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        return {"ok": True, "id": session_id}
+
     @app.get("/learning/sessions/{session_id}/recap")
     def learning_session_recap(session_id: int) -> dict[str, Any]:
         """The study report generated when this session ended, if there is one.
@@ -2586,37 +2627,14 @@ def create_app(
         md = Path(recap_dir) / "user-learning.md"
         if not md.is_file():
             raise HTTPException(status_code=404, detail="recap file is gone")
-        graph: dict[str, list[dict[str, str]]] = {"nodes": [], "edges": []}
+        graph: dict[str, Any] = {"nodes": [], "edges": []}
         sidecar = Path(recap_dir) / "learning-enrichment.json"
         if sidecar.is_file():
             try:
+                from ..learning_memory.graph import graph_from_enrichment  # noqa: PLC0415
+
                 enrichment = json.loads(sidecar.read_text(encoding="utf-8"))
-                topic_names: set[str] = set()
-                for topic in enrichment.get("topics") or []:
-                    name = str((topic or {}).get("name") or "").strip()
-                    if name:
-                        topic_names.add(name)
-                    for subtopic in (topic or {}).get("subtopics") or []:
-                        subtopic_name = str((subtopic or {}).get("name") or "").strip()
-                        if subtopic_name:
-                            topic_names.add(subtopic_name)
-                node_kinds: dict[str, str] = {}
-                for edge in enrichment.get("edges") or []:
-                    source = str((edge or {}).get("src_name") or "").strip()
-                    target = str((edge or {}).get("dst_name") or "").strip()
-                    if not source or not target:
-                        continue
-                    node_kinds[source] = "topic" if source in topic_names else "concept"
-                    node_kinds[target] = "topic" if target in topic_names else "concept"
-                    graph["edges"].append({
-                        "source": source,
-                        "target": target,
-                        "relation": str(edge.get("rel") or "related"),
-                        "evidence": str(edge.get("evidence") or ""),
-                    })
-                graph["nodes"] = [
-                    {"id": name, "kind": kind} for name, kind in node_kinds.items()
-                ]
+                graph = graph_from_enrichment(enrichment)
             except (OSError, TypeError, ValueError, json.JSONDecodeError):
                 pass
         return {
@@ -3238,7 +3256,7 @@ def create_app(
     def power_ui():  # noqa: ANN201
         # 续航管家 is now a view inside the main SPA; keep this path working for
         # any old bookmark by redirecting into the app.
-        return RedirectResponse(url="/ui", status_code=307)
+        return RedirectResponse(url="/deskmate", status_code=307)
 
     # ─── user-driven app power control (push picked apps to E-core) ──────────
     def _app_power():  # noqa: ANN202
