@@ -298,7 +298,8 @@
       #view-meetings .mtg-item .mtg-row-acts button.mtg-del { color: #e06c75; border-color: color-mix(in srgb, #e06c75 55%, var(--line)); }
       #view-meetings .mtg-item .mtg-row-acts button.mtg-del:hover { background: color-mix(in srgb, #e06c75 14%, transparent); }
       #view-meetings .mtg-panel { margin-top: 10px; padding: 12px; border-radius: var(--radius); background: var(--surface-3); border: 1px solid var(--line); max-height: 420px; overflow: auto; }
-      #view-meetings .mtg-video { width: 100%; max-height: 460px; border-radius: 6px; background: #000; display: block; }
+      #view-meetings .mtg-video-box { max-height: none; overflow: visible; }
+      #view-meetings .mtg-video { display: block; width: auto; height: auto; max-width: 100%; max-height: 85vh; object-fit: contain; border-radius: 6px; background: #000; }
       #view-meetings .mtg-panel-head { font-size: 11.5px; color: var(--muted); margin-bottom: 9px; }
       #view-meetings .mtg-para { display: flex; gap: 10px; margin-bottom: 9px; font-size: 12.5px; line-height: 1.65; }
       #view-meetings .mtg-para-t { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--accent, #5b8cff); font-size: 11.5px; padding-top: 1px; }
@@ -369,13 +370,14 @@
       #view-learning .lrn-item .lrn-acts button.lrn-del:hover { background: color-mix(in srgb, #e06c75 14%, transparent); }
       #view-learning .lrn-item.done { opacity: .5; }
       /* spoken record of a session, expanded on demand */
-      #view-learning .lrn-transcript { margin-top: 10px; padding: 12px; border-radius: var(--radius); background: var(--surface-3); border: 1px solid var(--line); max-height: 340px; overflow: auto; }
+      #view-learning .lrn-transcript { margin-top: 10px; padding: 12px; border-radius: var(--radius); background: var(--surface-3); border: 1px solid var(--line); max-height: 480px; overflow: auto; }
       #view-learning .lrn-transcript-head { font-size: 11.5px; color: var(--muted); margin-bottom: 9px; }
       #view-learning .lrn-para { display: flex; gap: 10px; margin-bottom: 9px; font-size: 12.5px; line-height: 1.65; }
       #view-learning .lrn-para:last-child { margin-bottom: 0; }
       #view-learning .lrn-para-t { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--accent, #5b8cff); font-size: 11.5px; padding-top: 1px; }
       #view-learning .lrn-para-x { flex: 1 1 auto; min-width: 0; color: var(--text); word-break: break-word; }
-      #view-learning .lrn-video { width: 100%; max-height: 460px; border-radius: 6px; background: #000; display: block; }
+      #view-learning .lrn-video-box { max-height: none; overflow: visible; }
+      #view-learning .lrn-video { display: block; width: auto; height: auto; max-width: 100%; max-height: 85vh; object-fit: contain; border-radius: 6px; background: #000; }
       #view-learning .lrn-jn-section { margin-bottom: 10px; }
       #view-learning .lrn-jn-subhead { font-size: 11.5px; font-weight: 700; color: var(--muted); margin: 12px 0 8px; }
       #view-learning .lrn-jn-alloc { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; }
@@ -401,8 +403,9 @@
       #view-learning .lrn-jn-points { margin-top: 5px; display: flex; gap: 6px; flex-wrap: wrap; }
       #view-learning .lrn-jn-points span { padding: 2px 8px; border-radius: 999px; background: var(--surface-3); color: var(--muted); font-size: 11px; }
       #view-learning .lrn-badge.lrn-jn-ok { background: color-mix(in srgb, var(--online, #5fb878) 18%, transparent); color: var(--online, #5fb878); }
-      #view-learning .lrn-recap { margin: 0; font-family: inherit; font-size: 12.5px; line-height: 1.7; color: var(--text); white-space: pre-wrap; word-break: break-word; }
-      #view-learning .lrn-recap-box { max-height: 680px; }
+      #view-learning .lrn-recap { margin: 0; font-family: inherit; font-size: 13.5px; line-height: 1.75; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+      #view-learning .lrn-recap-box { max-height: 88vh; padding: 16px 18px; }
+      #view-learning .lrn-recap-box .lrn-graph-stage { min-height: 380px; max-height: 560px; }
       #view-learning .lrn-graph { margin-bottom: 14px; border: 1px solid var(--line); background: color-mix(in srgb, var(--surface-2) 82%, transparent); border-radius: 6px; overflow: hidden; }
       #view-learning .lrn-graph-head { min-height: 42px; padding: 0 10px 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
       #view-learning .lrn-graph-head strong { font-size: 13px; }
@@ -1624,7 +1627,7 @@
       </article>
     </template>
 
-    <script src="/deskmate/assets/i18n.js?v=20260825-3" defer></script>
-    <script src="/deskmate/assets/app.js?v=20260825-3" defer></script>
+    <script src="/deskmate/assets/i18n.js?v=20260826-4" defer></script>
+    <script src="/deskmate/assets/app.js?v=20260826-4" defer></script>
   </body>
 </html>

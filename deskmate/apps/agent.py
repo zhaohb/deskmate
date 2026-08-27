@@ -1257,6 +1257,7 @@ def _collect_learning_audio_bits(
     summary: dict[str, Any],
     *,
     verbose: bool = False,
+    slides: Any = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """Pull lecture audio for the window, OLDEST FIRST and span-complete.
 
@@ -1312,11 +1313,23 @@ def _collect_learning_audio_bits(
     if rows:
         paragraphs = merge_transcript_paragraphs(rows, _fmt)
         all_rows = sum(n for _, n in paragraphs)
-        # Character budget decides; the line cap is only a runaway guard. Both
-        # keep the span (even sampling), never the head or tail alone.
-        kept = _select_spanning(paragraphs, _AUDIO_MAX_LINES)
-        while kept and sum(len(x[0]) for x in kept) > _AUDIO_MAX_CHARS:
-            kept = _select_spanning(kept, max(1, int(len(kept) * 0.8)))
+        if slides is not None:
+            from .learning_evidence import budget_paragraphs, canonicalize_against_slides  # noqa: PLC0415
+
+            rewritten = canonicalize_against_slides([p[0] for p in paragraphs], slides)
+            paragraphs = [(rewritten[i], paragraphs[i][1]) for i in range(len(paragraphs))]
+            kept = budget_paragraphs(
+                paragraphs,
+                max_lines=_AUDIO_MAX_LINES,
+                max_chars=_AUDIO_MAX_CHARS,
+                anchor_terms=slides.terms(),
+            )
+        else:
+            # Character budget decides; the line cap is only a runaway guard. Both
+            # keep the span (even sampling), never the head or tail alone.
+            kept = _select_spanning(paragraphs, _AUDIO_MAX_LINES)
+            while kept and sum(len(x[0]) for x in kept) > _AUDIO_MAX_CHARS:
+                kept = _select_spanning(kept, max(1, int(len(kept) * 0.8)))
 
         bits = [line for line, _ in kept]
         kept_rows = sum(n for _, n in kept)
@@ -1389,14 +1402,49 @@ def _collect_learning_audio_bits(
     return bits, stats
 
 
-def _collect_courseware_ocr_lines(
+def _collect_courseware_ocr(
+    start: str,
+    end: str,
+    sessions: list[dict[str, Any]],
+    *,
+    verbose: bool = False,
+):
+    """Slide text for the window, chrome stripped before any truncation."""
+    from .learning_evidence import harvest_slide_evidence  # noqa: PLC0415
+
+    blobs: list[str] = []
+    try:
+        from deskmate.db.manager import DatabaseManager  # noqa: PLC0415
+
+        blobs = [
+            str(row["text"] or "")
+            for row in DatabaseManager().ocr_in_range(start, end)
+            if row["text"]
+        ]
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            echo_stderr(f"  [user-learning] OCR DB read failed ({exc}); using /search")
+        blobs = []
+
+    if not blobs:
+        blobs = _courseware_ocr_blobs_from_search(start, end, sessions, verbose=verbose)
+
+    slides = harvest_slide_evidence(blobs)
+    if verbose:
+        echo_stderr(
+            f"  [user-learning] slides: {len(slides.headlines)} titles, "
+            f"{len(slides.lines)} body lines from {len(blobs)} OCR dumps"
+        )
+    return slides
+
+
+def _courseware_ocr_blobs_from_search(
     start: str,
     end: str,
     sessions: list[dict[str, Any]],
     *,
     verbose: bool = False,
 ) -> list[str]:
-    """Extra OCR from courseware / browser study apps for slide text."""
     app_names: list[str] = []
     for s in sessions:
         if s.get("kind") not in {"courseware_view", "material_query", "study_other"}:
@@ -1405,28 +1453,36 @@ def _collect_courseware_ocr_lines(
             if a and a not in app_names:
                 app_names.append(a)
     if not app_names:
-        # Fall back to any session apps — still better than nothing for slides.
         for s in sessions:
             for a in s.get("apps") or []:
                 if a and a not in app_names:
                     app_names.append(a)
 
-    lines: list[str] = []
-    # Backfilled/manual sessions may only carry a declared time span and title,
-    # with no detected app metadata. Search the exact span without an app filter
-    # so their screen OCR is not silently omitted from the recap.
+    blobs: list[str] = []
     search_apps: list[str | None] = app_names[:4] or [None]
     for app in search_apps:
         search_limit = 12 if app else 35
         items = _do_content_search(
             start, end, limit=search_limit, app_name=app, content_type="ocr", verbose=verbose,
         )
-        formatted = format_search_items(items, max_text=550)
-        for fl in formatted:
-            lines.append(fl)
-        if len(lines) >= 35:
+        for item in items:
+            text = str((item.get("content") or {}).get("text") or "").strip()
+            if text:
+                blobs.append(text)
+        if len(blobs) >= 35:
             break
-    return lines[:35]
+    return blobs
+
+
+def _collect_courseware_ocr_lines(
+    start: str,
+    end: str,
+    sessions: list[dict[str, Any]],
+    *,
+    verbose: bool = False,
+) -> list[str]:
+    """Extra OCR from courseware / browser study apps for slide text."""
+    return _collect_courseware_ocr(start, end, sessions, verbose=verbose).prompt_lines()
 
 
 # Last enrichment payload from user-learning prefetch (for app.py sidecar).
@@ -1476,12 +1532,12 @@ def _do_user_learning_prefetch(start: str, end: str, verbose: bool = False) -> s
     audio_bits: list[str] = []
     audio_stats: dict[str, Any] = {}
     courseware_ocr: list[str] = []
+    slides = None
     if sessions:
+        slides = _collect_courseware_ocr(start, end, sessions, verbose=verbose)
+        courseware_ocr = slides.prompt_lines()
         audio_bits, audio_stats = _collect_learning_audio_bits(
-            start, end, summary, verbose=verbose,
-        )
-        courseware_ocr = _collect_courseware_ocr_lines(
-            start, end, sessions, verbose=verbose,
+            start, end, summary, verbose=verbose, slides=slides,
         )
 
     bundle = format_learning_bundle(
@@ -2929,7 +2985,7 @@ def run_agent(
         if verbose:
             echo_stderr("  [agent] user-learning → learning-slice prefetch + single-shot")
         data_text = _do_user_learning_prefetch(start_iso, end_iso, verbose=verbose)
-        return _single_shot_report(
+        report = _single_shot_report(
             pipe_body=pipe_body,
             skill_text=skill_text,
             context_header=context_header,
@@ -2970,6 +3026,12 @@ def run_agent(
             num_predict=6144,
             max_data_chars=22000,
         )
+        covers = G_LEARNING_ENRICHMENT.get("must_cover") or []
+        if covers:
+            from deskmate.learning_memory.pipeline import ensure_must_cover  # noqa: PLC0415
+
+            report = ensure_must_cover(report, covers)
+        return report
 
     # Time breakdown: prefetch with pre-computed minutes + single-shot
     if pipe_md_path.parent.name == "time-breakdown":

@@ -1164,6 +1164,25 @@ class DatabaseManager:
             ).fetchone()
         return int(row["n"] if row else 0)
 
+    def ocr_in_range(self, start_iso: str, end_iso: str) -> list[dict[str, Any]]:
+        """Every non-empty OCR dump inside a window, oldest first.
+
+        Lecture slides live in these blobs, usually buried under browser chrome.
+        Callers must strip that chrome before truncating — taking ``text[:N]``
+        from the front is how slide titles disappear from the recap prompt.
+        """
+        lo, hi = self._ts_bounds(start_iso, end_iso)
+        with self._lock:
+            return self._conn.execute(
+                """SELECT f.id AS frame_id, f.timestamp, o.text AS text
+                     FROM frames f
+                     JOIN ocr_text o ON o.frame_id = f.id
+                    WHERE f.timestamp >= ? AND f.timestamp <= ?
+                      AND TRIM(COALESCE(o.text, '')) <> ''
+                    ORDER BY f.timestamp ASC, f.id ASC""",
+                (lo, hi),
+            ).fetchall()
+
     # ─── tags / memories ─────────────────────────────────────────────────────
     def set_frame_tags(self, frame_id: int, tags: list[str]) -> list[str]:
         clean = [t.strip() for t in tags if t and t.strip()]

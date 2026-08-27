@@ -46,6 +46,9 @@ def test_knowledge_graph_is_scoped_to_the_current_session() -> None:
     assert "只使用当前 session" in prompt
     assert "不得混入其他 session" in prompt
     assert "未抽取到可靠的概念关系" in prompt
+    assert "MUST COVER" in prompt
+    assert "shorter invented graph" in prompt
+    assert "课件标题" in prompt
 
 
 def test_each_learning_session_can_generate_its_own_recap() -> None:
@@ -54,6 +57,40 @@ def test_each_learning_session_can_generate_its_own_recap() -> None:
     assert 'data-generate-recap="${s.id}"' in source
     assert "`/learning/sessions/${sessionId}/recap`" in source
     assert 'method: "POST"' in source
+
+
+def test_in_flight_ui_jobs_survive_view_rerender() -> None:
+    """Status used to live only in list innerHTML, so switching views hid an
+    in-flight recap/summary and looked like the job had finished."""
+    source = APP_JS.read_text(encoding="utf-8")
+
+    assert "const uiJobs = new Map()" in source
+    assert "function beginUiJob" in source
+    assert "function endUiJob" in source
+    assert "function paintUiJobs" in source
+    assert "function hostHasUiJob" in source
+    for token in (
+        "lrn-recap:${sessionId}",
+        "lrn-video:${sessionId}",
+        "lrn-journey:${sessionId}",
+        "lrn-transcript:${sessionId}",
+        "lrn-ocr:${sessionId}",
+        "mtg-summary:${id}",
+        "mtg-video:${id}",
+        "mtg-transcript:${id}",
+        "mtg-ocr:${id}",
+        "app-run:${appName}",
+        'beginUiJob("training"',
+        'beginUiJob("doctor"',
+        "paintUiJobs()",
+    ):
+        assert token in source, token
+    sessions = source[
+        source.index("async function loadLearningSessions") : source.index("function renderSessionGraph")
+    ]
+    assert "paintUiJobs()" in sessions
+    meetings = source[source.index("function renderMeetings") : source.index("function mtgRenderLines")]
+    assert "paintUiJobs()" in meetings
 
 
 def test_session_ocr_falls_back_to_the_exact_span_without_app_metadata() -> None:

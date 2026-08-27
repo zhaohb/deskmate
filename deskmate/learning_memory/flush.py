@@ -84,6 +84,7 @@ def trigger_user_learning_recap(
                             "due_reviews": G_LEARNING_ENRICHMENT.get("due_reviews"),
                             "events": G_LEARNING_ENRICHMENT.get("events"),
                             "edges": G_LEARNING_ENRICHMENT.get("edges"),
+                            "must_cover": G_LEARNING_ENRICHMENT.get("must_cover"),
                             "persisted": G_LEARNING_ENRICHMENT.get("persisted"),
                         },
                         ensure_ascii=False,

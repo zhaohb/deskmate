@@ -68,6 +68,7 @@ def main() -> int:
             "due_reviews": G_LEARNING_ENRICHMENT.get("due_reviews"),
             "events": G_LEARNING_ENRICHMENT.get("events"),
             "edges": G_LEARNING_ENRICHMENT.get("edges"),
+            "must_cover": G_LEARNING_ENRICHMENT.get("must_cover"),
             "session_ids": G_LEARNING_ENRICHMENT.get("session_ids"),
             "persisted": G_LEARNING_ENRICHMENT.get("persisted"),
         }

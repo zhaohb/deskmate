@@ -204,7 +204,9 @@ def test_bundle_flags_unknown_order_on_the_search_fallback() -> None:
     assert "total in window unknown" in bundle
 
 
-def test_manual_session_without_apps_collects_ocr_from_its_exact_span(monkeypatch) -> None:
+def test_manual_session_without_apps_collects_ocr_from_its_exact_span(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DESKMATE_HOME", str(tmp_path))
+    DatabaseManager(tmp_path / "data.db")
     calls: list[tuple[str, str, dict]] = []
 
     def fake_search(start: str, end: str, **kwargs):

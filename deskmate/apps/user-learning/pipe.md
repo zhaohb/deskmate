@@ -67,6 +67,10 @@ Mention whether audio transcripts were available.
   not merely topic names, activity records, or phrases such as “老师提到了……”.
 - Each bullet must be grounded with `主题:` / `结构:*` and/or `录音` / `课件OCR` /
   `[session]`; combine multiple evidence lines into one explanation.
+- Every name in the context block `MUST COVER in 讲了什么 / 课程重点 / 知识图谱`
+  must appear here, or this section must say `材料不足` for that name. Do not
+  drop a short topic because a longer one was discussed more.
+- Prefer `课件标题:` spellings over ASR near-misses of the same name.
 - Do not invent topics/definitions/steps/relations absent from the pre-computed
   block or direct OCR/audio quotes.
 - If structure + transcripts/OCR are thin: "材料不足以还原完整讲解" and list
@@ -79,11 +83,15 @@ Mention whether audio transcripts were available.
 - Keep the technical specifics that make the point verifiable — concrete technique names
   and any number/spec/precision from the evidence, not a generic paraphrase.
 - Ground each point in `结构:*` / `录音` / `课件OCR` / `[session]`.
+- Include every MUST COVER name that is a takeaway, or say why it is not.
 
 ## 知识图谱
 - 只使用当前 session 的 `主题:*`、`结构:关系` 和 `Current-session concept graph
   edges`。不得混入其他 session 或全局历史图谱中的概念和关系。
-- First list 3–10 core nodes as `节点：A、B、C`; include only concepts supported
+- Copy that extracted graph into this section. Do **not** replace it with a
+  shorter invented graph of "major" topics.
+- First list 3–10 core nodes as `节点：A、B、C`; include every MUST COVER name
+  that has an extracted node, plus any other concepts supported
   by this session's audio/OCR or pre-computed structure.
 - Then list directed edges as `A --先决/相关/对比/导致--> B`, followed by one short
   explanation and a `图谱:*` or `结构:关系` citation.

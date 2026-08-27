@@ -1176,7 +1176,12 @@ def format_learning_bundle(
     if ocr_lines:
         # Same silent-truncation hazard as audio: sample across the span rather
         # than keeping the first N slides, and say so when lines were dropped.
-        shown_ocr = _select_spanning(ocr_lines, _OCR_MAX_LINES)
+        # Titles were recovered specifically so they survive the budget.
+        title_lines = [ln for ln in ocr_lines if ln.startswith("课件标题:")]
+        other_lines = [ln for ln in ocr_lines if not ln.startswith("课件标题:")]
+        kept_titles = title_lines[:_OCR_MAX_LINES]
+        remain = max(0, _OCR_MAX_LINES - len(kept_titles))
+        shown_ocr = kept_titles + _select_spanning(other_lines, remain)
         lines.append("")
         lines.append(
             "### Courseware OCR / slides — secondary source for 讲解重点 (cite as 课件OCR)"
@@ -1209,6 +1214,8 @@ def format_learning_bundle(
         "INSTRUCTION: Maximize concrete courseware/lecture content in 讲解重点 and "
         "理解要点 when Audio transcripts / Courseware OCR exist. Ignore chat/shopping/"
         "random entertainment unless listed inside a session. Cite session ids, 录音, "
-        "or 课件OCR. Never invent lecture points without evidence."
+        "or 课件OCR. `课件标题:` lines are slide titles recovered after stripping "
+        "browser chrome — treat them as ground truth spellings. Never invent lecture "
+        "points without evidence."
     )
     return "\n".join(lines)

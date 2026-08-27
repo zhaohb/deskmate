@@ -46,6 +46,254 @@ function TF(key, fallback) {
 function TRN_SOURCE_LABEL_T(src) { return T("training.src." + src + ".label"); }
 function TRN_SOURCE_DESC_T(src) { return T("training.src." + src + ".desc"); }
 
+// Long jobs outlive a view re-render, and the long ones also outlive the page:
+// those endpoints hold the connection open for the whole job, so a reload drops
+// the answer while the server keeps working. Status used to live only in list
+// innerHTML, so switching Learning ↔ Meetings — or reloading — looked like the
+// job had finished. `uiJobs` holds what is running; `/jobs` says what the server
+// is still doing, and the two are reconciled by `syncUiJobs`.
+const uiJobs = new Map();
+
+// Jobs this tab did not start: left over from a reload, or begun in another tab.
+// They have no fetch promise to resolve, so they are polled until the server
+// stops reporting them.
+const jobSync = { restored: new Set(), timer: null, busy: false };
+
+function beginUiJob(key, spec) {
+  if (uiJobs.has(key)) return false;
+  uiJobs.set(key, spec || uiJobSpec(key));
+  paintUiJob(uiJobs.get(key));
+  return true;
+}
+
+function endUiJob(key) {
+  const spec = uiJobs.get(key);
+  uiJobs.delete(key);
+  jobSync.restored.delete(key);
+  if (!spec) return;
+  for (const sel of [spec.btn, spec.disable]) {
+    if (sel) document.querySelectorAll(sel).forEach((el) => { el.disabled = false; });
+  }
+}
+
+function paintUiJobs() {
+  for (const spec of uiJobs.values()) paintUiJob(spec);
+}
+
+function paintUiJob(spec) {
+  if (!spec) return;
+  const host = spec.host && document.querySelector(spec.host);
+  // btn/msg are selector lists so one job can own targets on two views at once
+  // (the study recap is both a Learning button and an Apps run).
+  if (spec.btn) {
+    document.querySelectorAll(spec.btn).forEach((btn) => {
+      btn.disabled = true;
+      if (spec.btnKey) btn.textContent = T(spec.btnKey);
+    });
+  }
+  if (spec.disable) {
+    document.querySelectorAll(spec.disable).forEach((el) => { el.disabled = true; });
+  }
+  if (host) {
+    host.hidden = false;
+    host.innerHTML = `<div class="muted">${spec.detailText || T(spec.detailKey)}</div>`;
+  }
+  if (spec.msg) {
+    document.querySelectorAll(spec.msg).forEach((msg) => {
+      msg.textContent = spec.text || T(spec.msgKey || spec.detailKey);
+      if (spec.showMsg) msg.style.display = spec.showMsg;
+      if (spec.statusClass) msg.className = spec.statusClass;
+    });
+  }
+}
+
+function jobEl(spec, field) {
+  return spec && spec[field] ? document.querySelector(spec[field]) : null;
+}
+
+function hostHasUiJob(host) {
+  if (!host) return false;
+  for (const spec of uiJobs.values()) {
+    if (spec.host && document.querySelector(spec.host) === host) return true;
+  }
+  return false;
+}
+
+function parseJobKey(key) {
+  const sep = String(key || "").indexOf(":");
+  return sep === -1
+    ? { kind: String(key || ""), arg: "" }
+    : { kind: key.slice(0, sep), arg: key.slice(sep + 1) };
+}
+
+/** Every job's UI targets, derived from its key alone.
+ *
+ * The server reports keys and nothing else, so a restored job has to rebuild
+ * its own spec. Keeping one factory for both paths is what makes a restored
+ * hint identical to a freshly clicked one.
+ */
+function uiJobSpec(key) {
+  const { kind, arg } = parseJobKey(key);
+  switch (kind) {
+    case "lrn-recap":
+      return {
+        btn: `button[data-generate-recap="${arg}"]`,
+        viewBtn: `button[data-recap="${arg}"]`,
+        host: `.lrn-recap-box[data-recap-for="${arg}"]`,
+        btnKey: "learning.recap.generating",
+        detailKey: "learning.recap.generating.detail",
+        disable: `button[data-recap="${arg}"]`,
+      };
+    case "lrn-video":
+      return {
+        btn: `button[data-video="${arg}"]`,
+        host: `.lrn-video-box[data-video-for="${arg}"]`,
+        detailKey: "learning.video.building",
+      };
+    case "lrn-journey":
+      return {
+        btn: `button[data-journey="${arg}"]`,
+        host: `.lrn-journey-box[data-journey-for="${arg}"]`,
+        detailKey: "learning.journey.building",
+      };
+    case "lrn-transcript":
+      return {
+        btn: `button[data-transcript="${arg}"]`,
+        host: `.lrn-transcript[data-for="${arg}"]`,
+        detailKey: "learning.transcript.loading",
+      };
+    case "lrn-ocr":
+      return {
+        btn: `button[data-ocr="${arg}"]`,
+        host: `.lrn-ocr-box[data-ocr-for="${arg}"]`,
+        detailKey: "learning.ocr.loading",
+      };
+    case "mtg-summary":
+      return {
+        btn: `button[data-mtg-gen="${arg}"]`,
+        viewBtn: `button[data-mtg-summary="${arg}"]`,
+        host: `.mtg-summary-box[data-mtg-summary-for="${arg}"]`,
+        detailKey: "meetings.summary.building",
+        disable: `button[data-mtg-summary="${arg}"]`,
+      };
+    case "mtg-video":
+      return {
+        btn: `button[data-mtg-video="${arg}"]`,
+        host: `.mtg-video-box[data-mtg-video-for="${arg}"]`,
+        detailKey: "meetings.video.building",
+      };
+    case "mtg-transcript":
+      return {
+        btn: `button[data-mtg-transcript="${arg}"]`,
+        host: `.mtg-transcript-box[data-mtg-transcript-for="${arg}"]`,
+        detailKey: "meetings.loading",
+      };
+    case "mtg-ocr":
+      return {
+        btn: `button[data-mtg-ocr="${arg}"]`,
+        host: `.mtg-ocr-box[data-mtg-ocr-for="${arg}"]`,
+        detailKey: "meetings.loading",
+      };
+    case "app-run": {
+      const spec = {
+        msg: "#appRunStatus",
+        text: `Started ${appRunLabel(arg)}. Running in the background… You can keep using DeskMate.`,
+        statusClass: "app-run-status running",
+        showMsg: "block",
+        disable: ".pipe-row-actions .primary",
+      };
+      // The Learning page runs this same app from its own button, so the job
+      // owns both places at once — otherwise one of the two views looks idle.
+      if (arg === "user-learning") {
+        spec.btn = "#lrnRecapBtn";
+        spec.msg = "#appRunStatus, #lrnRecapMsg";
+        spec.text = "";
+        spec.msgKey = "learning.recap.running";
+        spec.statusClass = "";
+      }
+      return spec;
+    }
+    case "training":
+      return {
+        btn: "#trnStartBtn",
+        msg: "#trnStatus",
+        msgKey: "training.mining",
+        statusClass: "trn-status",
+      };
+    case "doctor":
+      return {
+        btn: "#docRefreshBtn",
+        msg: "#docOverall",
+        msgKey: "doctor.running",
+        statusClass: "cap-pill paused",
+        host: "#docResults",
+        detailKey: "doctor.running",
+      };
+    default:
+      return null;
+  }
+}
+
+async function syncUiJobs() {
+  if (jobSync.busy) return;
+  jobSync.busy = true;
+  let rows;
+  try {
+    rows = (await api("/jobs")).data || [];
+  } catch {
+    return;  // server down / restarting: keep what we have and retry later
+  } finally {
+    jobSync.busy = false;
+  }
+
+  const live = new Set(rows.map((r) => r.key));
+  for (const row of rows) {
+    if (uiJobs.has(row.key)) continue;
+    const spec = uiJobSpec(row.key);
+    if (!spec) continue;
+    jobSync.restored.add(row.key);
+    beginUiJob(row.key, spec);
+  }
+  for (const key of [...jobSync.restored]) {
+    if (live.has(key)) continue;
+    endUiJob(key);
+    showRestoredJobResult(key).catch((e) => console.error("[jobs]", e));
+  }
+  updateJobPoll();
+}
+
+function updateJobPoll() {
+  const want = jobSync.restored.size > 0;
+  if (want && !jobSync.timer) {
+    jobSync.timer = setInterval(() => syncUiJobs(), 2500);
+  } else if (!want && jobSync.timer) {
+    clearInterval(jobSync.timer);
+    jobSync.timer = null;
+  }
+}
+
+/** Pull in what a restored job produced — its `await` was lost with the reload. */
+async function showRestoredJobResult(key) {
+  const { kind, arg } = parseJobKey(key);
+  if (kind.startsWith("lrn-")) {
+    await refreshLearningView();
+    if (kind === "lrn-recap") {
+      const host = document.querySelector(`.lrn-recap-box[data-recap-for="${arg}"]`);
+      const viewBtn = document.querySelector(`button[data-recap="${arg}"]`);
+      if (host) await loadSessionRecap(arg, host, viewBtn);
+    }
+    return;
+  }
+  if (kind.startsWith("mtg-")) {
+    await loadMeetings().catch(() => {});
+    return;
+  }
+  if (kind === "app-run") {
+    await refreshAll().catch(() => {});
+    if (state.currentView === "learning") await refreshLearningView();
+  }
+}
+
 const titles = {
   overview: ["Home", "Search, review recent activity, and run analysis apps"],
   timeline: ["Timeline", "Browse recent frames, screenshots, and metadata"],
@@ -442,6 +690,10 @@ function setView(name) {
   if (name === "settings") {
     refreshSettingsView();
   }
+  // List views rebuild innerHTML on entry; restore any job that is still running
+  // so the "generating…" hint cannot vanish while the request is in flight.
+  paintUiJobs();
+  syncUiJobs();
 }
 
 async function refreshAll() {
@@ -979,15 +1231,14 @@ async function refreshTrainingView() {
     warn.style.display = "";
     warn.textContent = T("training.disabled");
   }
-  return loadTrainingData().catch((e) => console.error("[training]", e));
+  return loadTrainingData().catch((e) => console.error("[training]", e)).finally(() => paintUiJobs());
 }
 
 async function startTraining() {
-  if (trainingUi.running) return;
+  if (trainingUi.running || uiJobs.has("training")) return;
   const sources = selectedTrainingSources();
   const status = $("#trnStatus");
   const meta = $("#trnRunMeta");
-  const btn = $("#trnStartBtn");
   if (!sources.length) {
     if (status) { status.className = "trn-status err"; status.textContent = T("training.selectSource"); }
     return;
@@ -1006,32 +1257,36 @@ async function startTraining() {
   const appFilter = selectedTrainingApps();
   if (appFilter !== null) body.apps = appFilter;  // omitted = all apps
 
+  if (!beginUiJob("training", uiJobSpec("training"))) return;
   trainingUi.running = true;
-  if (btn) btn.disabled = true;
   if (meta) meta.textContent = T("training.running");
-  if (status) { status.className = "trn-status"; status.textContent = T("training.mining"); }
   try {
     const j = await api("/training/lora", { method: "POST", body: JSON.stringify(body) });
+    endUiJob("training");
+    trainingUi.running = false;
+    const doneStatus = $("#trnStatus");
+    const doneMeta = $("#trnRunMeta");
     if (j.status === "skipped") {
-      if (status) { status.className = "trn-status"; status.textContent = T("training.skipped", { reason: j.reason || T("training.noData") }); }
-    } else {
-      if (status) {
-        status.className = "trn-status ok";
-        status.textContent = T("training.done", {
-          samples: j.training_samples ?? "-",
-          epochs: j.epochs ?? "-",
-          steps: j.total_steps ?? "-",
-          loss: typeof j.avg_loss === "number" ? j.avg_loss.toFixed(4) : "-",
-          adapter: j.adapter_path ?? "-",
-        });
-      }
+      if (doneStatus) { doneStatus.className = "trn-status"; doneStatus.textContent = T("training.skipped", { reason: j.reason || T("training.noData") }); }
+    } else if (doneStatus) {
+      doneStatus.className = "trn-status ok";
+      doneStatus.textContent = T("training.done", {
+        samples: j.training_samples ?? "-",
+        epochs: j.epochs ?? "-",
+        steps: j.total_steps ?? "-",
+        loss: typeof j.avg_loss === "number" ? j.avg_loss.toFixed(4) : "-",
+        adapter: j.adapter_path ?? "-",
+      });
     }
-    if (meta) meta.textContent = "";
+    if (doneMeta) doneMeta.textContent = "";
   } catch (err) {
+    endUiJob("training");
+    trainingUi.running = false;
     const msg = err.message || String(err);
-    if (status) {
-      status.className = "trn-status err";
-      status.textContent = T("training.failed", { msg });
+    const failStatus = $("#trnStatus");
+    if (failStatus) {
+      failStatus.className = "trn-status err";
+      failStatus.textContent = T("training.failed", { msg });
     }
     // Surface the install hint whenever the failure is a missing training dep
     // (the API returns e.g. "缺少 transformers, peft" — not just "torch").
@@ -1039,10 +1294,11 @@ async function startTraining() {
     if (warn && /(torch|transformers|peft|训练依赖|deskmate\[training\])/i.test(msg)) {
       warn.style.display = "";
     }
-    if (meta) meta.textContent = "";
+    const failMeta = $("#trnRunMeta");
+    if (failMeta) failMeta.textContent = "";
   } finally {
+    if (uiJobs.has("training")) endUiJob("training");
     trainingUi.running = false;
-    if (btn) btn.disabled = false;
   }
 }
 
@@ -1106,20 +1362,26 @@ const DOC_ICON = { ok: "✓", warn: "!", fail: "✗" };
 const DOC_PILL = { ok: "live", warn: "paused", fail: "paused" };
 
 async function runDoctor() {
-  const overall = $("#docOverall");
+  if (uiJobs.has("doctor")) {
+    paintUiJobs();
+    return;
+  }
+  if (!beginUiJob("doctor", uiJobSpec("doctor"))) return;
   const summary = $("#docSummary");
-  const results = $("#docResults");
-  if (results) results.innerHTML = `<div class="muted">${T("doctor.running")}</div>`;
-  if (overall) { overall.className = "cap-pill paused"; overall.textContent = T("doctor.running"); }
   let rep;
   try {
     // Pass the UI language so the backend localizes every name/message/fix.
     const lang = (window.I18N && I18N.lang) || "en";
     rep = await api("/health/doctor?lang=" + encodeURIComponent(lang));
   } catch (err) {
+    endUiJob("doctor");
+    const results = $("#docResults");
     if (results) results.innerHTML = `<div class="ask-error">${escHtml(err.message || String(err))}</div>`;
     return;
   }
+  endUiJob("doctor");
+  const overall = $("#docOverall");
+  const results = $("#docResults");
   if (overall) {
     overall.className = "cap-pill " + (DOC_PILL[rep.overall] || "paused");
     overall.textContent = T("doctor.overall." + rep.overall);
@@ -1924,6 +2186,7 @@ async function loadLearningSessions() {
   }
   if (!rows.length) {
     box.innerHTML = lrnEmpty("📚", "learning.sessions.empty.title", "learning.sessions.empty.body");
+    paintUiJobs();
     return;
   }
   box.innerHTML = rows.map((s) => {
@@ -1958,6 +2221,7 @@ async function loadLearningSessions() {
       </div>
     </div>`;
   }).join("");
+  paintUiJobs();
 }
 
 function renderSessionGraph(graph, host) {
@@ -2251,6 +2515,7 @@ function renderSessionGraph(graph, host) {
 
 /** Load the report generated when a session ended, if one was linked. */
 async function loadSessionRecap(sessionId, host, btn) {
+  if (uiJobs.has(`lrn-recap:${sessionId}`)) return;
   host.innerHTML = `<div class="muted">${T("learning.recap.loading")}</div>`;
   host.hidden = false;
   try {
@@ -2261,6 +2526,7 @@ async function loadSessionRecap(sessionId, host, btn) {
     report.className = "lrn-recap";
     report.textContent = j.markdown || "";
     host.appendChild(report);
+    host.dataset.loaded = "1";
     if (btn) btn.textContent = T("learning.recap.hide");
   } catch (err) {
     // 404 is the normal case for sessions that did not trigger a recap.
@@ -2273,104 +2539,151 @@ async function loadSessionRecap(sessionId, host, btn) {
 
 /** Generate a report from exactly this session's start/end span, then show it. */
 async function generateSessionRecap(sessionId, host, generateBtn, viewBtn) {
-  generateBtn.disabled = true;
-  const originalText = generateBtn.textContent;
-  generateBtn.textContent = T("learning.recap.generating");
-  host.hidden = false;
-  host.innerHTML = `<div class="muted">${T("learning.recap.generating.detail")}</div>`;
+  const key = `lrn-recap:${sessionId}`;
+  const spec = uiJobSpec(key);
+  if (!beginUiJob(key, spec)) return;
   try {
     await api(`/learning/sessions/${sessionId}/recap`, { method: "POST" });
-    host.dataset.loaded = "1";
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    viewBtn = jobEl(spec, "viewBtn") || viewBtn;
+    generateBtn = jobEl(spec, "btn") || generateBtn;
+    if (host) host.dataset.loaded = "1";
     await loadSessionRecap(sessionId, host, viewBtn);
-    generateBtn.textContent = T("learning.recap.regenerate");
+    if (generateBtn) generateBtn.textContent = T("learning.recap.regenerate");
   } catch (err) {
-    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
-    generateBtn.textContent = originalText;
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    generateBtn = jobEl(spec, "btn") || generateBtn;
+    if (host) host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+    if (generateBtn) generateBtn.textContent = T("learning.recap.generate");
   } finally {
-    generateBtn.disabled = false;
+    generateBtn = jobEl(spec, "btn") || generateBtn;
+    if (generateBtn) generateBtn.disabled = false;
   }
 }
 
 /** Load a session's spoken record on demand — a long class is a lot of DOM. */
 async function loadSessionTranscript(sessionId, host, btn) {
-  host.innerHTML = `<div class="muted">${T("learning.transcript.loading")}</div>`;
-  host.hidden = false;
+  const key = `lrn-transcript:${sessionId}`;
+  const spec = uiJobSpec(key);
+  if (!beginUiJob(key, spec)) return;
   try {
     const j = await api(`/learning/sessions/${sessionId}/transcript`);
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    btn = jobEl(spec, "btn") || btn;
     const rows = j.data || [];
-    if (!rows.length) {
-      host.innerHTML = `<div class="muted">${T("learning.transcript.empty")}</div>`;
-      return;
-    }
-    host.innerHTML = `
+    if (host) {
+      host.hidden = false;
+      if (!rows.length) {
+        host.innerHTML = `<div class="muted">${T("learning.transcript.empty")}</div>`;
+      } else {
+        host.innerHTML = `
       <div class="lrn-transcript-head">${T("learning.transcript.count", { n: j.rows })}</div>
       ${rows.map((p) => `
         <div class="lrn-para">
           <span class="lrn-para-t">${capEscape(p.time)}</span>
           <span class="lrn-para-x">${capEscape(p.text)}</span>
         </div>`).join("")}`;
+      }
+      host.dataset.loaded = "1";
+    }
     if (btn) btn.textContent = T("learning.transcript.hide");
   } catch (err) {
-    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    if (host) host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
   }
 }
 
 /** On-screen text (OCR) captured during the session span. */
 async function loadSessionOcr(sessionId, host, btn) {
-  host.innerHTML = `<div class="muted">${T("learning.ocr.loading")}</div>`;
-  host.hidden = false;
+  const key = `lrn-ocr:${sessionId}`;
+  const spec = uiJobSpec(key);
+  if (!beginUiJob(key, spec)) return;
   try {
     const j = await api(`/learning/sessions/${sessionId}/ocr`);
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    btn = jobEl(spec, "btn") || btn;
     const rows = j.data || [];
-    if (!rows.length) {
-      host.innerHTML = `<div class="muted">${T("learning.ocr.empty")}</div>`;
-      return;
-    }
-    host.innerHTML = `
+    if (host) {
+      host.hidden = false;
+      if (!rows.length) {
+        host.innerHTML = `<div class="muted">${T("learning.ocr.empty")}</div>`;
+      } else {
+        host.innerHTML = `
       <div class="lrn-transcript-head">${T("learning.ocr.count", { n: j.rows })}</div>
       ${rows.map((p) => `
         <div class="lrn-para">
           <span class="lrn-para-t">${capEscape(p.time)}</span>
           <span class="lrn-para-x">${capEscape(p.text)}</span>
         </div>`).join("")}`;
+      }
+      host.dataset.loaded = "1";
+    }
     if (btn) btn.textContent = T("learning.ocr.hide");
   } catch (err) {
-    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    if (host) host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
   }
 }
 
 /** Build (once) and play a screen timelapse of the session span. */
 async function loadSessionVideo(sessionId, host, btn) {
-  host.innerHTML = `<div class="muted">${T("learning.video.building")}</div>`;
-  host.hidden = false;
+  const key = `lrn-video:${sessionId}`;
+  const spec = uiJobSpec(key);
+  if (!beginUiJob(key, spec)) return;
   try {
     const res = await api(`/learning/sessions/${sessionId}/video`, { method: "POST" });
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    btn = jobEl(spec, "btn") || btn;
     if (!res.success) {
       const msg = res.reason === "ffmpeg_not_found" ? T("learning.video.noffmpeg")
         : res.reason === "no_frames" ? T("learning.video.noframes")
         : T("learning.video.failed");
-      host.innerHTML = `<div class="muted">${capEscape(msg)}</div>`;
+      if (host) host.innerHTML = `<div class="muted">${capEscape(msg)}</div>`;
+      if (btn) btn.disabled = false;
       return;
     }
-    host.innerHTML = `
+    if (host) {
+      host.hidden = false;
+      host.innerHTML = `
       <video class="lrn-video" controls preload="metadata" src="/learning/sessions/${sessionId}/video?t=${Date.now()}"></video>
       <div class="muted" style="margin-top:6px;font-size:12px">${T("learning.video.note", { n: res.frame_count })}</div>`;
-    if (btn) btn.textContent = T("learning.video.hide");
+      host.dataset.loaded = "1";
+    }
+    if (btn) { btn.disabled = false; btn.textContent = T("learning.video.hide"); }
   } catch (err) {
-    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    btn = jobEl(spec, "btn") || btn;
+    if (host) host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+    if (btn) btn.disabled = false;
   }
 }
 
 /** Build (once) and render the learning process + errors/resolutions. */
 async function loadSessionJourney(sessionId, host, btn) {
-  host.innerHTML = `<div class="muted">${T("learning.journey.building")}</div>`;
-  host.hidden = false;
+  const key = `lrn-journey:${sessionId}`;
+  const spec = uiJobSpec(key);
+  if (!beginUiJob(key, spec)) return;
   try {
     const j = await api(`/learning/sessions/${sessionId}/journey`, { method: "POST" });
-    host.innerHTML = renderJourney(j);
-    if (btn) btn.textContent = T("learning.journey.hide");
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    btn = jobEl(spec, "btn") || btn;
+    if (host) { host.hidden = false; host.innerHTML = renderJourney(j); host.dataset.loaded = "1"; }
+    if (btn) { btn.disabled = false; btn.textContent = T("learning.journey.hide"); }
   } catch (err) {
-    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    btn = jobEl(spec, "btn") || btn;
+    if (host) host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -2545,22 +2858,31 @@ function bindLearningView() {
   });
 
   $("#lrnRecapBtn")?.addEventListener("click", async () => {
-    const btn = $("#lrnRecapBtn");
-    const msg = $("#lrnRecapMsg");
-    if (btn) btn.disabled = true;
-    if (msg) msg.textContent = T("learning.recap.running");
+    // Same job the Apps page runs, so it carries the server's key — otherwise
+    // one page would show it running and the other would look idle.
+    const key = "app-run:user-learning";
+    if (!beginUiJob(key, uiJobSpec(key))) return;
     try {
       await api("/apps/user-learning/run", {
         method: "POST",
         body: JSON.stringify({ hours: 8 }),
       });
+      endUiJob(key);
+      const doneBtn = $("#lrnRecapBtn");
+      const msg = $("#lrnRecapMsg");
+      if (doneBtn) doneBtn.disabled = false;
       if (msg) msg.textContent = T("learning.recap.done");
       await refreshLearningView();
+      setTimeout(() => {
+        const m = $("#lrnRecapMsg");
+        if (m && !uiJobs.has(key)) m.textContent = "";
+      }, 6000);
     } catch (err) {
+      endUiJob(key);
+      const failBtn = $("#lrnRecapBtn");
+      const msg = $("#lrnRecapMsg");
+      if (failBtn) failBtn.disabled = false;
       if (msg) msg.textContent = String(err.message || err);
-    } finally {
-      if (btn) btn.disabled = false;
-      setTimeout(() => { if (msg) msg.textContent = ""; }, 6000);
     }
   });
 
@@ -2600,6 +2922,7 @@ function bindLearningView() {
     const host = document.querySelector(`.lrn-transcript[data-for="${id}"]`);
     if (!host) return;
     if (!host.hidden) {
+      if (hostHasUiJob(host)) return;
       host.hidden = true;
       btn.textContent = T("learning.transcript.show");
       return;
@@ -2609,7 +2932,6 @@ function bindLearningView() {
       btn.textContent = T("learning.transcript.hide");
       return;
     }
-    host.dataset.loaded = "1";
     loadSessionTranscript(id, host, btn);
   });
 
@@ -2621,6 +2943,7 @@ function bindLearningView() {
     const host = document.querySelector(`.lrn-ocr-box[data-ocr-for="${id}"]`);
     if (!host) return;
     if (!host.hidden) {
+      if (hostHasUiJob(host)) return;
       host.hidden = true;
       btn.textContent = T("learning.ocr.show");
       return;
@@ -2630,7 +2953,6 @@ function bindLearningView() {
       btn.textContent = T("learning.ocr.hide");
       return;
     }
-    host.dataset.loaded = "1";
     loadSessionOcr(id, host, btn);
   });
 
@@ -2642,6 +2964,7 @@ function bindLearningView() {
     const host = document.querySelector(`.lrn-video-box[data-video-for="${id}"]`);
     if (!host) return;
     if (!host.hidden) {
+      if (hostHasUiJob(host)) return;
       host.hidden = true;
       btn.textContent = T("learning.video.show");
       return;
@@ -2651,7 +2974,6 @@ function bindLearningView() {
       btn.textContent = T("learning.video.hide");
       return;
     }
-    host.dataset.loaded = "1";
     loadSessionVideo(id, host, btn);
   });
 
@@ -2663,6 +2985,7 @@ function bindLearningView() {
     const host = document.querySelector(`.lrn-journey-box[data-journey-for="${id}"]`);
     if (!host) return;
     if (!host.hidden) {
+      if (hostHasUiJob(host)) return;
       host.hidden = true;
       btn.textContent = T("learning.journey.show");
       return;
@@ -2672,7 +2995,6 @@ function bindLearningView() {
       btn.textContent = T("learning.journey.hide");
       return;
     }
-    host.dataset.loaded = "1";
     loadSessionJourney(id, host, btn);
   });
 
@@ -2684,6 +3006,7 @@ function bindLearningView() {
     const host = document.querySelector(`.lrn-recap-box[data-recap-for="${id}"]`);
     if (!host) return;
     if (!host.hidden) {
+      if (hostHasUiJob(host)) return;
       host.hidden = true;
       btn.textContent = T("learning.recap.show");
       return;
@@ -2693,7 +3016,6 @@ function bindLearningView() {
       btn.textContent = T("learning.recap.hide");
       return;
     }
-    host.dataset.loaded = "1";
     loadSessionRecap(id, host, btn);
   });
 
@@ -3450,11 +3772,13 @@ function renderApps() {
   container.classList.toggle("empty-state", items.length === 0);
   if (!items.length) {
     container.textContent = T("apps.noMatch");
+    paintUiJobs();
     return;
   }
   for (const app of items) {
     container.appendChild(createAppRow(app));
   }
+  paintUiJobs();
 }
 
 function isDetailPanelOpen() {
@@ -4197,18 +4521,13 @@ async function runApp(appName, runBody = {}) {
     return;
   }
 
-  const statusEl = $("#appRunStatus");
-  statusEl.style.display = "block";
-  statusEl.className = "app-run-status running";
-  const label = appRunLabel(appName);
-  statusEl.textContent = `Started ${label}. Running in the background… You can keep using DeskMate.`;
+  // Keyed per app so it matches what the server reports on /jobs.
+  const key = `app-run:${appName}`;
+  if (!beginUiJob(key, uiJobSpec(key))) return;
+
   focusAppRunStatus();
 
   hideDetailPanel($("#appOutputPanel"));
-
-  for (const btn of document.querySelectorAll(".pipe-row-actions .primary")) {
-    btn.disabled = true;
-  }
 
   try {
     const body = { ...runBody };
@@ -4221,27 +4540,35 @@ async function runApp(appName, runBody = {}) {
       body: JSON.stringify(body),
     });
 
+    endUiJob(key);
+    const doneStatus = $("#appRunStatus");
+    if (doneStatus) doneStatus.style.display = "block";
+
     if (result.success && result.outputs && result.outputs.length > 0) {
       const run = result.outputs[0];
       if (run.report_file) {
-        statusEl.className = "app-run-status success";
-        statusEl.textContent = `${appRunLabel(appName)} completed successfully`;
+        if (doneStatus) {
+          doneStatus.className = "app-run-status success";
+          doneStatus.textContent = `${appRunLabel(appName)} completed successfully`;
+        }
         await showAppOutput(appName, run.run_id, run.report_file);
-      } else {
-        statusEl.className = "app-run-status success";
-        statusEl.textContent = `${appRunLabel(appName)} finished: ${result.output_path || "no report file"}`;
+      } else if (doneStatus) {
+        doneStatus.className = "app-run-status success";
+        doneStatus.textContent = `${appRunLabel(appName)} finished: ${result.output_path || "no report file"}`;
       }
-    } else {
-      statusEl.className = "app-run-status error";
-      statusEl.textContent = `${appRunLabel(appName)} failed: ${result.stderr || "unknown error"}`;
+    } else if (doneStatus) {
+      doneStatus.className = "app-run-status error";
+      doneStatus.textContent = `${appRunLabel(appName)} failed: ${result.stderr || "unknown error"}`;
     }
   } catch (err) {
-    statusEl.className = "app-run-status error";
-    statusEl.textContent = `Run error: ${err.message}`;
-  } finally {
-    for (const btn of document.querySelectorAll(".pipe-row-actions .primary")) {
-      btn.disabled = false;
+    endUiJob(key);
+    const failStatus = $("#appRunStatus");
+    if (failStatus) {
+      failStatus.style.display = "block";
+      failStatus.className = "app-run-status error";
+      failStatus.textContent = `Run error: ${err.message}`;
     }
+  } finally {
     await refreshAll();
   }
 }
@@ -5149,6 +5476,7 @@ function renderMeetings() {
   }
   if (!rows.length) {
     list.innerHTML = `<div class="mtg-empty">${T("meetings.noneDetected")}</div>`;
+    paintUiJobs();
     return;
   }
   list.innerHTML = rows.map((m) => `
@@ -5175,6 +5503,7 @@ function renderMeetings() {
         <div class="mtg-panel mtg-summary-box" data-mtg-summary-for="${m.id}" hidden></div>
       </div>
     </div>`).join("");
+  paintUiJobs();
 }
 
 function mtgRenderLines(rows, headKey, n) {
@@ -5188,58 +5517,91 @@ function mtgRenderLines(rows, headKey, n) {
 }
 
 async function loadMeetingTranscript(id, host, btn) {
-  host.innerHTML = `<div class="muted">${T("meetings.loading")}</div>`;
-  host.hidden = false;
+  const key = `mtg-transcript:${id}`;
+  const spec = uiJobSpec(key);
+  if (!beginUiJob(key, spec)) return;
   try {
     const j = await api(`/meetings/${id}/transcript`);
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    btn = jobEl(spec, "btn") || btn;
     // Detector-linked meetings return `segments`; a hand-declared one returns
     // `data` from its time window instead.
     const rows = (j.data || []).length
       ? j.data
       : (j.segments || []).map((s) => ({ time: "", text: `${s.speaker_name || ""} ${s.text || ""}`.trim() }));
-    host.innerHTML = rows.length
-      ? mtgRenderLines(rows, "meetings.transcript.count", rows.length)
-      : `<div class="muted">${T("meetings.noTranscript")}</div>`;
+    if (host) {
+      host.hidden = false;
+      host.innerHTML = rows.length
+        ? mtgRenderLines(rows, "meetings.transcript.count", rows.length)
+        : `<div class="muted">${T("meetings.noTranscript")}</div>`;
+      host.dataset.loaded = "1";
+    }
     if (btn) btn.textContent = T("meetings.hide.transcript");
   } catch (err) {
-    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    if (host) host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
   }
 }
 
 async function loadMeetingOcr(id, host, btn) {
-  host.innerHTML = `<div class="muted">${T("meetings.loading")}</div>`;
-  host.hidden = false;
+  const key = `mtg-ocr:${id}`;
+  const spec = uiJobSpec(key);
+  if (!beginUiJob(key, spec)) return;
   try {
     const j = await api(`/meetings/${id}/ocr`);
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    btn = jobEl(spec, "btn") || btn;
     const rows = j.data || [];
-    host.innerHTML = rows.length
-      ? mtgRenderLines(rows, "meetings.screen.count", j.rows)
-      : `<div class="muted">${T("meetings.noScreen")}</div>`;
+    if (host) {
+      host.hidden = false;
+      host.innerHTML = rows.length
+        ? mtgRenderLines(rows, "meetings.screen.count", j.rows)
+        : `<div class="muted">${T("meetings.noScreen")}</div>`;
+      host.dataset.loaded = "1";
+    }
     if (btn) btn.textContent = T("meetings.hide.screen");
   } catch (err) {
-    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    if (host) host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
   }
 }
 
 /** Build (once) and play a screen timelapse of the meeting span. */
 async function loadMeetingVideo(id, host, btn) {
-  host.innerHTML = `<div class="muted">${T("meetings.video.building")}</div>`;
-  host.hidden = false;
+  const key = `mtg-video:${id}`;
+  const spec = uiJobSpec(key);
+  if (!beginUiJob(key, spec)) return;
   try {
     const res = await api(`/meetings/${id}/video`, { method: "POST" });
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    btn = jobEl(spec, "btn") || btn;
     if (!res.success) {
       const msg = res.reason === "ffmpeg_not_found" ? T("meetings.video.noffmpeg")
         : res.reason === "no_frames" ? T("meetings.video.noframes")
         : T("meetings.video.failed");
-      host.innerHTML = `<div class="muted">${capEscape(msg)}</div>`;
+      if (host) host.innerHTML = `<div class="muted">${capEscape(msg)}</div>`;
+      if (btn) btn.disabled = false;
       return;
     }
-    host.innerHTML = `
+    if (host) {
+      host.hidden = false;
+      host.innerHTML = `
       <video class="mtg-video" controls preload="metadata" src="/meetings/${id}/video?t=${Date.now()}"></video>
       <div class="muted" style="margin-top:6px;font-size:12px">${T("meetings.video.note", { n: res.frame_count })}</div>`;
-    if (btn) btn.textContent = T("meetings.video.hide");
+      host.dataset.loaded = "1";
+    }
+    if (btn) { btn.disabled = false; btn.textContent = T("meetings.video.hide"); }
   } catch (err) {
-    host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+    endUiJob(key);
+    host = jobEl(spec, "host") || host;
+    btn = jobEl(spec, "btn") || btn;
+    if (host) host.innerHTML = `<div class="muted">${capEscape(String(err.message || err))}</div>`;
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -5270,28 +5632,44 @@ function renderMeetingSummary(j) {
 }
 
 async function loadMeetingSummary(id, host, btn, { generate = false } = {}) {
-  host.innerHTML = `<div class="muted">${T(generate ? "meetings.summary.building" : "meetings.loading")}</div>`;
-  host.hidden = false;
+  const key = generate ? `mtg-summary:${id}` : "";
+  const spec = generate ? uiJobSpec(key) : null;
+  if (generate && !beginUiJob(key, spec)) return;
+  if (!generate) {
+    host.innerHTML = `<div class="muted">${T("meetings.loading")}</div>`;
+    host.hidden = false;
+  }
   try {
     const j = generate
       ? await api(`/meetings/${id}/summary`, { method: "POST" })
       : await api(`/meetings/${id}/summary`);
     if (generate) {
+      endUiJob(key);
       // A generated summary can rename the meeting, so the list is refreshed
       // first — that replaces these nodes, so re-acquire them before writing.
       await loadMeetings().catch(() => {});
-      host = document.querySelector(`.mtg-summary-box[data-mtg-summary-for="${id}"]`) || host;
-      btn = document.querySelector(`button[data-mtg-summary="${id}"]`) || btn;
-      host.hidden = false;
+      host = jobEl(spec, "host") || document.querySelector(`.mtg-summary-box[data-mtg-summary-for="${id}"]`) || host;
+      btn = jobEl(spec, "viewBtn") || document.querySelector(`button[data-mtg-summary="${id}"]`) || btn;
+      const genBtn = jobEl(spec, "btn");
+      if (genBtn) genBtn.disabled = false;
     }
-    host.innerHTML = renderMeetingSummary(j);
-    host.dataset.loaded = "1";
+    if (host) {
+      host.hidden = false;
+      host.innerHTML = renderMeetingSummary(j);
+      host.dataset.loaded = "1";
+    }
     if (btn) btn.textContent = T("meetings.hide.summary");
   } catch (err) {
+    if (generate) {
+      endUiJob(key);
+      host = jobEl(spec, "host") || host;
+      const genBtn = jobEl(spec, "btn");
+      if (genBtn) genBtn.disabled = false;
+    }
     const msg = /404|not found|no summary/i.test(String(err.message || err))
       ? T("meetings.summary.none")
       : String(err.message || err);
-    host.innerHTML = `<div class="muted">${capEscape(msg)}</div>`;
+    if (host) host.innerHTML = `<div class="muted">${capEscape(msg)}</div>`;
   }
 }
 
@@ -5303,9 +5681,13 @@ function mtgBindToggle(attr, boxClass, showKey, hideKey, loader) {
     const id = btn.dataset[attr.replace(/-([a-z])/g, (_, c) => c.toUpperCase())];
     const host = document.querySelector(`.${boxClass}[data-${attr}-for="${id}"]`);
     if (!host) return;
-    if (!host.hidden) { host.hidden = true; btn.textContent = T(showKey); return; }
+    if (!host.hidden) {
+      if (hostHasUiJob(host)) return;
+      host.hidden = true;
+      btn.textContent = T(showKey);
+      return;
+    }
     if (host.dataset.loaded === "1") { host.hidden = false; btn.textContent = T(hideKey); return; }
-    host.dataset.loaded = "1";
     loader(id, host, btn);
   });
 }
@@ -5955,12 +6337,16 @@ if (window.I18N) {
     // Apps rows (Run/History/Schedule buttons, schedule labels) are JS-built — re-render.
     renderApps();
     refreshAppScheduleModalTexts();
+    paintUiJobs();
   });
 }
 
 wireEvents();
 setView("overview");
 refreshAll().catch(showError);
+// A reload loses the pending request but not the job: ask the server what it
+// is still working on and put those hints back.
+syncUiJobs();
 
 // Power capsule: poll independently of the main refresh (cheap OS read).
 pollPowerCapsule();
@@ -5973,6 +6359,7 @@ document.addEventListener("visibilitychange", () => {
     disconnectEventStream();
   } else {
     refreshAll().catch(showError);
+    syncUiJobs();
     connectEventStream();
   }
 });

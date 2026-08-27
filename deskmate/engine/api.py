@@ -47,7 +47,7 @@ from ..screen.redact_image import redact_image_bytes, regions_from_ocr
 from ..screen.video_chunks import video_chunk_path
 from ..ui import index_file, static_dir
 from ..workflow import WorkflowClassifier
-from . import app_schedules
+from . import app_schedules, jobs
 
 logger = get("engine.api")
 
@@ -597,6 +597,16 @@ def create_app(
                 "skip_threshold": params.skip_threshold,
             },
         }
+
+    @app.get("/jobs")
+    def list_jobs() -> dict[str, Any]:
+        """Long jobs still running, so a reloaded page can restore its progress.
+
+        The browser cannot infer this: these endpoints hold the connection open
+        for the whole job, so a reload loses the answer while the work carries
+        on here.
+        """
+        return {"data": jobs.running()}
 
     @app.get("/health/doctor")
     def health_doctor(lang: str = "en") -> dict[str, Any]:
@@ -1296,12 +1306,17 @@ def create_app(
 
         from ..meeting.summary import build_meeting_summary, dedup_key  # noqa: PLC0415
 
-        result = await to_thread.run_sync(
-            lambda: build_meeting_summary(
-                transcript_rows=transcript_rows, ocr_rows=ocr_rows,
-                started_at=start, ended_at=end, name=str(meeting.get("name") or ""),
+        with jobs.track(
+            f"mtg-summary:{meeting_id}",
+            label=str(meeting.get("name") or ""),
+            meta={"meeting_id": meeting_id},
+        ):
+            result = await to_thread.run_sync(
+                lambda: build_meeting_summary(
+                    transcript_rows=transcript_rows, ocr_rows=ocr_rows,
+                    started_at=start, ended_at=end, name=str(meeting.get("name") or ""),
+                )
             )
-        )
         # Follow-ups become real todos so they reach the Todos page, keyed so a
         # regenerated summary updates them instead of duplicating.
         saved = 0
@@ -1359,9 +1374,10 @@ def create_app(
         from anyio import to_thread  # noqa: PLC0415
 
         out_dir = paths.root() / "exports" / f"meeting-{meeting_id}"
-        result = await to_thread.run_sync(
-            lambda: _render_frames_to_mp4(db, start_time=start, end_time=end, out_dir=out_dir)
-        )
+        with jobs.track(f"mtg-video:{meeting_id}", meta={"meeting_id": meeting_id}):
+            result = await to_thread.run_sync(
+                lambda: _render_frames_to_mp4(db, start_time=start, end_time=end, out_dir=out_dir)
+            )
         return {**result, "meeting_id": meeting_id}
 
     @app.get("/meetings/{meeting_id}/video")
@@ -2299,17 +2315,18 @@ def create_app(
         # user-profile / habit-report default to 7 days). The UI always sends an
         # explicit hours for look-back apps, so this only affects direct callers.
         import asyncio as _aio
-        proc = await _aio.create_subprocess_exec(
-            sys.executable, str(app_py), *cmd_args,
-            stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.PIPE,
-            env={
-                **dict(os.environ),
-                "DESKMATE_API": f"http://{cfg.server.host}:{cfg.server.port}",
-                "DESKMATE_HOME": str(paths.root()),
-                "DESKMATE_DB": str(db.path),
-            },
-        )
-        stdout_b, stderr_b = await proc.communicate()
+        with jobs.track(f"app-run:{app_name}", label=app_name, meta={"app": app_name}):
+            proc = await _aio.create_subprocess_exec(
+                sys.executable, str(app_py), *cmd_args,
+                stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.PIPE,
+                env={
+                    **dict(os.environ),
+                    "DESKMATE_API": f"http://{cfg.server.host}:{cfg.server.port}",
+                    "DESKMATE_HOME": str(paths.root()),
+                    "DESKMATE_DB": str(db.path),
+                },
+            )
+            stdout_b, stderr_b = await proc.communicate()
         stdout_text = stdout_b.decode("utf-8", errors="replace").strip()
         stderr_text = stderr_b.decode("utf-8", errors="replace").strip()
         return {
@@ -2661,15 +2678,20 @@ def create_app(
 
         from ..learning_memory.flush import trigger_user_learning_recap  # noqa: PLC0415
 
-        result = await to_thread.run_sync(
-            lambda: trigger_user_learning_recap(
-                verbose=True,
-                background=False,
-                session_id=session_id,
-                start_time=start_time,
-                end_time=end_time,
+        with jobs.track(
+            f"lrn-recap:{session_id}",
+            label=str(row.get("title") or ""),
+            meta={"session_id": session_id},
+        ):
+            result = await to_thread.run_sync(
+                lambda: trigger_user_learning_recap(
+                    verbose=True,
+                    background=False,
+                    session_id=session_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                )
             )
-        )
         if not result.get("ok"):
             raise HTTPException(
                 status_code=500,
@@ -2776,9 +2798,10 @@ def create_app(
         from anyio import to_thread  # noqa: PLC0415
 
         out_dir = paths.root() / "exports" / f"learning-session-{session_id}"
-        result = await to_thread.run_sync(
-            lambda: _render_frames_to_mp4(db, start_time=start, end_time=end, out_dir=out_dir)
-        )
+        with jobs.track(f"lrn-video:{session_id}", meta={"session_id": session_id}):
+            result = await to_thread.run_sync(
+                lambda: _render_frames_to_mp4(db, start_time=start, end_time=end, out_dir=out_dir)
+            )
         if result.get("success"):
             _learning_store().set_session_meta(session_id, {"video_path": result["file_path"]})
         return {**result, "session_id": session_id}
@@ -2840,12 +2863,13 @@ def create_app(
 
         from ..learning_memory.journey import build_journey  # noqa: PLC0415
 
-        result = await to_thread.run_sync(
-            lambda: build_journey(
-                frames=frames, ocr_rows=ocr_rows, audio_rows=audio_rows,
-                started_at=start, ended_at=end,
+        with jobs.track(f"lrn-journey:{session_id}", meta={"session_id": session_id}):
+            result = await to_thread.run_sync(
+                lambda: build_journey(
+                    frames=frames, ocr_rows=ocr_rows, audio_rows=audio_rows,
+                    started_at=start, ended_at=end,
+                )
             )
-        )
         out = {"session_id": session_id, **result}
         try:
             path = _journey_path(session_id)
@@ -3474,15 +3498,16 @@ def create_app(
         )
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "deskmate.learning.training._worker",
-                str(job_file), str(result_file),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env={**dict(os.environ),
-                     "DESKMATE_HOME": str(_paths.root()),
-                     "DESKMATE_DB": str(db.path)},
-            )
-            _out, err = await proc.communicate()
+            with jobs.track("training", label=model_name, meta={"model": model_name}):
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "deskmate.learning.training._worker",
+                    str(job_file), str(result_file),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    env={**dict(os.environ),
+                         "DESKMATE_HOME": str(_paths.root()),
+                         "DESKMATE_DB": str(db.path)},
+                )
+                _out, err = await proc.communicate()
             if proc.returncode != 0 or not result_file.exists():
                 detail = (err.decode("utf-8", "replace")[-800:] if err else "").strip()
                 raise HTTPException(
